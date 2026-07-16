@@ -1,28 +1,5 @@
-export type ScopeAction =
-  | "patch_current_lesson"
-  | "append_section"
-  | "create_branch"
-  | "create_child_lesson"
-  | "create_new_lesson";
-
-export type BoardAction =
-  | "clarify_request"
-  | "no_change"
-  | "edit_board"
-  | "append_section"
-  | "create_new_lesson"
-  | "await_scope_choice"
-  | "await_focus_choice";
-
-export type BoardEditConfirmationAction = "confirm" | "skip";
+export type BoardAction = "no_change" | "edit_board";
 export type ChatInteractionMode = "ask" | "direct_edit";
-export type BoardTaskAction =
-  | "generate_board"
-  | "append_section"
-  | "explain_target"
-  | "rewrite_target"
-  | "expand_target"
-  | "simplify_target";
 export type AIProvider =
   | "openai"
   | "openai_codex"
@@ -61,25 +38,6 @@ export interface BoardDocument {
   content_html: string;
   content_text: string;
   page_settings: DocumentPageSettings;
-}
-
-export type PatchOperationType =
-  | "insert_block"
-  | "delete_block"
-  | "update_block_content"
-  | "replace_range_in_block"
-  | "move_block"
-  | "update_block_style"
-  | "attach_asset";
-
-export interface DiffPreviewItem {
-  op: PatchOperationType;
-  block_id?: string | null;
-  node_path?: number[];
-  heading_path?: string[];
-  before_text?: string;
-  after_text?: string;
-  summary: string;
 }
 
 export type LearningSourceConfirmationStatus = "none" | "confirmed" | "skipped" | "stale";
@@ -130,12 +88,6 @@ export interface LearningRequirementSheet {
   board_scope: string[];
   success_criteria: string;
   risk_notes: string[];
-  target_location?: BoardFocusRef | null;
-  location_status?: "missing" | "selected" | "resolved" | "ambiguous";
-  action_type?: BoardTaskAction | null;
-  action_instruction?: string;
-  location_clarification_question?: string;
-  interaction_rule_draft?: InteractionRuleDraft | null;
   board_workflow?: BoardWorkflow | null;
   work_mode?: InitialLearningWorkMode | null;
   granularity?: InitialLearningGranularity | null;
@@ -160,30 +112,11 @@ export interface BoardTaskRequirementSheet {
   location_status: BoardTaskLocationStatus;
   requested_action?: BoardTaskRequestedAction | null;
   question_or_topic: string;
-  interaction_rule_draft?: InteractionRuleDraft | null;
   missing_items: string[];
   progress: number;
   confirmation_status: BoardTaskConfirmationStatus;
   clarification_question: string;
   failure_count: number;
-}
-
-export interface InteractionRuleDraft {
-  should_start: boolean;
-  rule_text: string;
-  interaction_goal: string;
-  target_hint: string;
-  expected_user_behavior: string;
-  assistant_behavior: string;
-  reference_instruction: string;
-}
-
-export interface InteractionRuleStep {
-  order_index: number;
-  expected_user_input: string;
-  assistant_response: string;
-  source_excerpt: string;
-  completed: boolean;
 }
 
 export interface LearningRequirementChecklistItem {
@@ -246,8 +179,6 @@ export interface CommitRecord {
   operations: Array<Record<string, unknown>>;
   snapshot: BoardDocument;
   metadata?: Record<string, unknown> & {
-    board_patch_diff?: DiffPreviewItem[];
-    board_patch_risk_level?: "low" | "medium" | "high";
     history_node_kind?: "chat" | "document" | "restore" | "system";
     history_node_title?: string;
     history_node_summary?: string;
@@ -276,7 +207,6 @@ export interface Lesson {
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
   board_task_requirements?: BoardTaskRequirementSheet | null;
-  active_interaction_session?: InteractionSession | null;
   history_graph: LessonHistoryGraph;
   created_at: string;
   updated_at: string;
@@ -563,290 +493,6 @@ export interface EvidenceBundle {
   metadata: Record<string, unknown>;
 }
 
-export interface EvidenceConfirmationResult {
-  evidence_bundle: EvidenceBundle;
-  active_requirement_sheet?: LearningRequirementSheet | null;
-  requirement_run_id?: string | null;
-  requirement_version_id?: string | null;
-  requirement_phase?: LearningRequirementRunStatus | null;
-}
-
-export type ResearchSearchMode = "text" | "semantic" | "hybrid";
-export type ResearchContextMode = "retrieval" | "full" | "notes" | "off";
-export type ResearchMessageRole = "user" | "assistant" | "system";
-export type ResearchArtifactStatus = "queued" | "generating" | "ready" | "failed";
-export type ResearchArtifactKind = "insight" | "summary" | "study_guide" | "faq" | "timeline" | "custom" | "podcast";
-export type ResearchArtifactLength = "short" | "medium" | "long";
-
-export interface ResearchCitation {
-  source_ingestion_id: string;
-  source_title: string;
-  source_uri?: string | null;
-  chapter_id: string;
-  section_path: string[];
-  page_range: string;
-  chunk_ids: string[];
-  excerpt: string;
-}
-
-export interface ResearchNote {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  title: string;
-  content: string;
-  tags: string[];
-  citations: ResearchCitation[];
-  created_at: string;
-  updated_at: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface ResearchNoteCreate {
-  title?: string;
-  content: string;
-  tags?: string[];
-  citations?: ResearchCitation[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface ResearchNoteUpdate {
-  title?: string;
-  content?: string;
-  tags?: string[];
-  citations?: ResearchCitation[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface ResearchSearchRequest {
-  query: string;
-  mode?: ResearchSearchMode;
-  source_ingestion_ids?: string[];
-  include_notes?: boolean;
-  limit?: number;
-  token_budget?: number;
-}
-
-export interface ResearchSearchResult {
-  kind: "source" | "note";
-  score: number;
-  evidence?: RetrievalEvidence | null;
-  note?: ResearchNote | null;
-}
-
-export interface ResearchSearchResponse {
-  query: string;
-  mode: ResearchSearchMode;
-  results: ResearchSearchResult[];
-}
-
-export interface ResearchChatMessage {
-  id: string;
-  thread_id: string;
-  role: ResearchMessageRole;
-  content: string;
-  citations: ResearchCitation[];
-  created_at: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface ResearchChatThread {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  title: string;
-  context_mode: ResearchContextMode;
-  source_ingestion_ids: string[];
-  note_ids: string[];
-  created_at: string;
-  updated_at: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface ResearchChatThreadCreate {
-  title?: string;
-  context_mode?: ResearchContextMode;
-  source_ingestion_ids?: string[];
-  note_ids?: string[];
-}
-
-export interface ResearchChatThreadUpdate {
-  title?: string;
-  context_mode?: ResearchContextMode;
-  source_ingestion_ids?: string[];
-  note_ids?: string[];
-}
-
-export interface ResearchChatRequest {
-  message: string;
-  text_model?: AIModelSelection | null;
-  context_mode?: ResearchContextMode;
-  source_ingestion_ids?: string[];
-  note_ids?: string[];
-}
-
-export interface ResearchChatResponse {
-  thread: ResearchChatThread;
-  message: ResearchChatMessage;
-}
-
-export interface ResearchSpeaker {
-  name: string;
-  role?: string;
-  voice?: string;
-  instructions?: string;
-}
-
-export interface ResearchArtifact {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  kind: ResearchArtifactKind;
-  status: ResearchArtifactStatus;
-  title: string;
-  content: string;
-  transcript: string;
-  audio_url?: string | null;
-  source_ingestion_ids: string[];
-  note_ids: string[];
-  citations: ResearchCitation[];
-  error: string;
-  created_at: string;
-  updated_at: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface ResearchArtifactCreate {
-  kind: ResearchArtifactKind;
-  title?: string;
-  instructions?: string;
-  language?: string;
-  tone?: string;
-  length?: ResearchArtifactLength;
-  segment_count?: number | null;
-  source_ingestion_ids?: string[];
-  note_ids?: string[];
-  speakers?: ResearchSpeaker[];
-  text_model?: AIModelSelection | null;
-  synthesize_audio?: boolean;
-}
-
-export interface ResearchAskRequest {
-  question: string;
-  source_ingestion_ids?: string[];
-  note_ids?: string[];
-  include_notes?: boolean;
-  text_model?: AIModelSelection | null;
-  max_queries?: number;
-}
-
-export interface ResearchAskResponse {
-  question: string;
-  search_queries: string[];
-  answer: string;
-  citations: ResearchCitation[];
-}
-
-export interface ResearchCapabilities {
-  native_ingestion: boolean;
-  text_search: boolean;
-  semantic_search: boolean;
-  notes: boolean;
-  persisted_chat: boolean;
-  transformations: boolean;
-  podcast_script: boolean;
-  podcast_audio: boolean;
-  supported_source_types: string[];
-}
-
-export interface ResearchTransformation {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  name: string;
-  instructions: string;
-  output_kind: ResearchArtifactKind;
-  run_on_import: boolean;
-  created_at: string;
-  updated_at: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface ResearchTransformationCreate {
-  name: string;
-  instructions: string;
-  output_kind?: ResearchArtifactKind;
-  run_on_import?: boolean;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ResearchTransformationUpdate {
-  name?: string;
-  instructions?: string;
-  output_kind?: ResearchArtifactKind;
-  run_on_import?: boolean;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ResearchTransformationRun {
-  title?: string;
-  source_ingestion_ids?: string[];
-  note_ids?: string[];
-  text_model?: AIModelSelection | null;
-}
-
-export interface ResearchSpeakerProfile {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  name: string;
-  speakers: ResearchSpeaker[];
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ResearchSpeakerProfileCreate {
-  name: string;
-  speakers: ResearchSpeaker[];
-}
-
-export interface ResearchSpeakerProfileUpdate {
-  name?: string;
-  speakers?: ResearchSpeaker[];
-}
-
-export interface ResearchEpisodeProfile {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  name: string;
-  language: string;
-  tone: string;
-  length: ResearchArtifactLength;
-  segment_count: number;
-  instructions: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ResearchEpisodeProfileCreate {
-  name: string;
-  language?: string;
-  tone?: string;
-  length?: ResearchArtifactLength;
-  segment_count?: number;
-  instructions?: string;
-}
-
-export interface ResearchEpisodeProfileUpdate {
-  name?: string;
-  language?: string;
-  tone?: string;
-  length?: ResearchArtifactLength;
-  segment_count?: number;
-  instructions?: string;
-}
-
 export type ResourcePageRole =
   | "cover"
   | "copyright"
@@ -1105,108 +751,9 @@ export interface BoardFocusRef {
   score_breakdown?: Record<string, number>;
 }
 
-export interface BoardReadContext {
-  target_focus: BoardFocusRef;
-  target_excerpt: string;
-  surrounding_context: string;
-  before_text: string;
-  after_text: string;
-  range_label: string;
-  source_segment_ids: string[];
-  order_start?: number | null;
-  order_end?: number | null;
-  confidence: number;
-}
-
-export interface BoardSearchQueryPlan {
-  query_text: string;
-  search_terms: string[];
-  structured_target: string;
-  scope_hint: string;
-  action_type?: BoardTaskAction | null;
-}
-
-export interface BoardSearchCandidate {
-  match_id: string;
-  source: string;
-  chunk_id?: string | null;
-  source_segment_ids: string[];
-  focus: BoardFocusRef;
-  score: number;
-  score_breakdown: Record<string, number>;
-  reason: string;
-}
-
-export interface BoardSearchEvidence {
-  status: "selected" | "found" | "ambiguous" | "missing" | "content_absent";
-  query_plan: BoardSearchQueryPlan;
-  candidates: BoardSearchCandidate[];
-  selected_match_id?: string | null;
-  source: string;
-  confidence: number;
-  range_label: string;
-  order_start?: number | null;
-  order_end?: number | null;
-  candidate_count: number;
-  failure_reason_code: string;
-  read_context?: BoardReadContext | null;
-  reason: string;
-}
-
-export interface InteractionSession {
-  id: string;
-  status: "active" | "paused";
-  rule_text: string;
-  interaction_goal: string;
-  target_focus?: BoardFocusRef | null;
-  reference_context: string;
-  compliant_input_rule?: string;
-  expected_user_behavior: string;
-  assistant_behavior: string;
-  progress_note: string;
-  pause_reason: string;
-  turn_count: number;
-  source_board_task_run_id?: string | null;
-  source_board_task_version_id?: string | null;
-  source_board_task_route?: string | null;
-  rule_steps?: InteractionRuleStep[];
-  current_step_index?: number;
-  last_violation_reason?: string;
-  sequence_items?: BoardFocusRef[];
-  sequence_index?: number;
-  sequence_mode?: string;
-}
-
-export interface InteractionTurnDecision {
-  route:
-    | "continue_rule"
-    | "rule_violation"
-    | "side_learning_request"
-    | "resume_rule"
-    | "exit_rule"
-    | "new_task";
-  reason: string;
-  progress_note: string;
-  user_intent: string;
-}
-
 export interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
-}
-
-export interface ScopeOption {
-  action: ScopeAction;
-  label: string;
-  description: string;
-}
-
-export interface BoardEditPrompt {
-  topic: string;
-  question: string;
-  reason: string;
-  confirm_label: string;
-  skip_label: string;
 }
 
 export interface BoardDecision {
@@ -1214,28 +761,13 @@ export interface BoardDecision {
   reason: string;
 }
 
-export interface PatchProposal {
-  id: string;
-  rationale: string;
-  commit_label: string;
-  operations: Array<Record<string, unknown>>;
-  diff_preview: Array<Record<string, unknown>>;
-  target_action: ScopeAction;
-  suggested_title?: string | null;
-}
-
 export interface ChatRequestPayload {
   message: string;
   text_model?: AIModelSelection | null;
-  board_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
   formula_ink?: FormulaInkPayload | null;
   interaction_mode?: ChatInteractionMode;
-  scope_action?: ScopeAction | null;
-  board_edit_action?: BoardEditConfirmationAction | null;
-  board_edit_topic?: string | null;
   board_generation_action?: "start" | null;
-  board_task_execution_action?: "resume_confirmed" | null;
   teaching_action?: "continue" | "restart" | null;
   post_generation_action?: "auto_explain" | "stop_after_generation";
   chat_edit_source_commit_id?: string | null;
@@ -1252,15 +784,6 @@ export interface SectionTeachingProgress {
   waiting_for_continue: boolean;
 }
 
-export type AgentTurnRoute =
-  | "ordinary_chat"
-  | "blank_requirement_refine"
-  | "blank_board_generate"
-  | "post_generation_teaching_start"
-  | "board_teaching_continue"
-  | "board_task_refine_or_execute"
-  | "interaction_session_turn";
-
 export type AgentActivityStage =
   | "turn_decision"
   | "resolve_target"
@@ -1271,15 +794,6 @@ export type AgentActivityStage =
   | "final";
 
 export type AgentActivityStatus = "pending" | "running" | "completed" | "blocked" | "failed" | "skipped";
-
-export interface AgentTurnDecision {
-  route: AgentTurnRoute;
-  reason: string;
-  required_role: string;
-  blockers: string[];
-  next_step: string;
-  needs_user_confirmation: boolean;
-}
 
 export interface AgentActivityEvent {
   id: string;
@@ -1327,12 +841,9 @@ export interface GuidedRequirementDiscovery {
 
 export interface ChatResponse {
   chatbot_message: string;
-  agent_turn_decision?: AgentTurnDecision | null;
   agent_activity?: AgentActivityEvent[];
   learning_requirement_sheet: LearningRequirementSheet;
   active_requirement_sheet?: LearningRequirementSheet | null;
-  active_interaction_session?: InteractionSession | null;
-  interaction_decision?: InteractionTurnDecision | null;
   learning_clarification: LearningClarificationStatus;
   requirement_run_id?: string | null;
   requirement_version_id?: string | null;
@@ -1349,19 +860,9 @@ export interface ChatResponse {
   needs_clarification: boolean;
   clarification_questions: string[];
   guided_requirement_discovery?: GuidedRequirementDiscovery | null;
-  patch_proposal?: PatchProposal | null;
-  scope_options: ScopeOption[];
-  board_edit_prompt?: BoardEditPrompt | null;
-  resolved_focus?: BoardFocusRef | null;
-  focus_candidates?: BoardFocusRef[];
-  board_search_evidence?: BoardSearchEvidence | null;
-  evidence_bundle?: EvidenceBundle | null;
-  candidate_evidence_bundle?: EvidenceBundle | null;
   requirement_cleared?: boolean;
   board_document_operation_status?: BoardDocumentOperationStatus;
   board_document_operation_failure_reason?: string | null;
-  board_patch_diff?: DiffPreviewItem[];
-  created_lesson?: Lesson | null;
   teaching_progress?: SectionTeachingProgress | null;
   auto_teaching_operation_status?: "none" | "succeeded" | "failed";
   auto_teaching_operation_failure_reason?: string | null;

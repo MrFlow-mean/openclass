@@ -2069,7 +2069,6 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     assert saved_lesson.board_document.content_text == "# Existing board"
     assert saved_lesson.learning_requirements is None
     assert saved_lesson.board_task_requirements is None
-    assert saved_lesson.active_interaction_session is None
     commit = current_head_commit(saved_lesson)
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["assistant_message_source"] == "codex"
@@ -2650,12 +2649,10 @@ def test_new_and_reloaded_lessons_hide_legacy_ai_runtime(
 
     assert lesson.learning_requirements is None
     assert lesson.board_task_requirements is None
-    assert lesson.active_interaction_session is None
     assert lesson.board_teaching_guide is None
     assert lesson.board_teaching_progress is None
     assert initial_metadata["active_requirement_sheet_after"] is None
     assert initial_metadata["active_board_task_sheet_after"] is None
-    assert initial_metadata["active_interaction_session_after"] is None
 
     lesson.learning_requirements = build_requirements(lesson.title)
     workspace = build_initial_workspace_state()
@@ -2665,7 +2662,6 @@ def test_new_and_reloaded_lessons_hide_legacy_ai_runtime(
     reloaded = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     assert reloaded.learning_requirements is None
     assert reloaded.board_task_requirements is None
-    assert reloaded.active_interaction_session is None
     assert reloaded.board_teaching_guide is None
     assert reloaded.board_teaching_progress is None
 
@@ -2681,7 +2677,6 @@ def test_branch_restore_does_not_revive_legacy_ai_runtime() -> None:
 
     assert lesson.learning_requirements is None
     assert lesson.board_task_requirements is None
-    assert lesson.active_interaction_session is None
     assert lesson.board_teaching_guide is None
     assert lesson.board_teaching_progress is None
 

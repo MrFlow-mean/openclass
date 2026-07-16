@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import {
-  BOARD_MODEL_STORAGE_KEY,
   FALLBACK_MODEL_CATALOG,
   REALTIME_MODEL_STORAGE_KEY,
   TEXT_MODEL_STORAGE_KEY,
@@ -23,7 +22,6 @@ export function useModelCatalog() {
     normalizeCourseStudioModelCatalog(FALLBACK_MODEL_CATALOG)
   );
   const [selectedTextModel, setSelectedTextModel] = useState<AIModelSelection>(FALLBACK_MODEL_CATALOG.defaults.text);
-  const [selectedBoardModel, setSelectedBoardModel] = useState<AIModelSelection>(FALLBACK_MODEL_CATALOG.defaults.text);
   const [selectedRealtimeModel, setSelectedRealtimeModel] = useState<AIModelSelection>(
     FALLBACK_MODEL_CATALOG.defaults.realtime
   );
@@ -36,9 +34,6 @@ export function useModelCatalog() {
         setModelCatalog(catalog);
         setSelectedTextModel(
           resolveModelSelection(catalog.text, readStoredModelSelection(TEXT_MODEL_STORAGE_KEY), catalog.defaults.text)
-        );
-        setSelectedBoardModel(
-          resolveModelSelection(catalog.text, readStoredModelSelection(BOARD_MODEL_STORAGE_KEY), catalog.defaults.text)
         );
         setSelectedRealtimeModel(
           resolveModelSelection(
@@ -57,13 +52,6 @@ export function useModelCatalog() {
             fallbackCatalog.defaults.text
           )
         );
-        setSelectedBoardModel(
-          resolveModelSelection(
-            fallbackCatalog.text,
-            readStoredModelSelection(BOARD_MODEL_STORAGE_KEY),
-            fallbackCatalog.defaults.text
-          )
-        );
         setSelectedRealtimeModel(
           resolveModelSelection(
             fallbackCatalog.realtime,
@@ -77,7 +65,6 @@ export function useModelCatalog() {
   }, []);
 
   const selectedTextOption = findModelOption(modelCatalog.text, selectedTextModel);
-  const selectedBoardOption = findModelOption(modelCatalog.text, selectedBoardModel);
   const selectedRealtimeOption = findModelOption(modelCatalog.realtime, selectedRealtimeModel);
   const selectedRealtimeTransport =
     selectedRealtimeOption?.transport ??
@@ -94,15 +81,6 @@ export function useModelCatalog() {
     setOpenModelMenu(null);
   }
 
-  function selectBoardModel(option: AIModelOption) {
-    if (!option.enabled) {
-      return;
-    }
-    const nextSelection = optionToSelection(option);
-    setSelectedBoardModel(nextSelection);
-    persistModelSelection(BOARD_MODEL_STORAGE_KEY, nextSelection);
-  }
-
   function selectRealtimeModel(option: AIModelOption) {
     if (!option.enabled) {
       return;
@@ -116,16 +94,13 @@ export function useModelCatalog() {
   return {
     modelCatalog,
     selectedTextModel,
-    selectedBoardModel,
     selectedRealtimeModel,
     selectedTextOption,
-    selectedBoardOption,
     selectedRealtimeOption,
     selectedRealtimeTransport,
     openModelMenu,
     setOpenModelMenu,
     selectTextModel,
-    selectBoardModel,
     selectRealtimeModel,
   };
 }
