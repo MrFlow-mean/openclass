@@ -111,6 +111,40 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {
+  const unique = Date.now();
+  const firstTitle = `引用保留页面一 ${unique}`;
+  const secondTitle = `引用保留页面二 ${unique}`;
+  const referencedText = `需要保留的引用内容 ${unique}`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `引用保留课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, firstTitle);
+  await writeEditorTextAndWaitForSave(page, referencedText);
+
+  await page.getByLabel("新建页面").click();
+  await page.getByLabel("新页面名称").fill(secondTitle);
+  await page.getByLabel("确认").click();
+  await expect(page.getByRole("button", { name: `${secondTitle} main` })).toBeVisible();
+
+  await page.getByRole("button", { name: `${firstTitle} main` }).click();
+  const editor = page.locator(".ProseMirror").first();
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.getByRole("button", { name: "引用到输入框" }).click();
+  await expect(page.getByLabel("移除引用")).toBeVisible();
+  await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
+  await page.getByPlaceholder("基于选中内容继续追问").click();
+  await expect(page.getByLabel("移除引用")).toBeVisible();
+
+  await page.getByRole("button", { name: `${secondTitle} main` }).click();
+  await expect(page.getByLabel("移除引用")).toHaveCount(0);
+
+  await page.getByRole("button", { name: `${firstTitle} main` }).click();
+  await expect(page.getByLabel("移除引用")).toBeVisible();
+  await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
+});
+
 test("uses the top-right profile avatar as the only account menu on the home page", async ({ page }) => {
   await enterAsGuest(page);
 

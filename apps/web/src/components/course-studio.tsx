@@ -173,7 +173,7 @@ export function CourseStudio() {
   const currentRequirementCleared =
     !isPreviewMode && !persistedRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
-  const composerSelection = selection && !selectionPopover ? selection : null;
+  const composerSelection = activeComposerState.composerSelection;
   function exitAnyPreviewMode() {
     if (isDraftPreviewMode) {
       boardDraft.resetToLesson(activeLesson);
@@ -285,16 +285,22 @@ export function CourseStudio() {
     updateActiveLessonComposerState((current) => ({
       ...current,
       composerMode: "ask",
+      composerSelection: null,
     }));
   }
 
-  function clearSelection() {
+  function clearTransientSelection() {
     setSelection((current) => (current ? null : current));
     setSelectionPopover((current) => (current ? null : current));
+  }
+
+  function clearSelection() {
+    clearTransientSelection();
     updateActiveLessonComposerState((current) => ({
       ...current,
       composerMode: "ask",
       includeSelectionInPrompt: true,
+      composerSelection: null,
     }));
   }
 
@@ -303,18 +309,19 @@ export function CourseStudio() {
     if (!selectionToFocus) {
       return;
     }
-    setSelection(() =>
+    const normalizedSelection: SelectionRef =
       selectionToFocus.kind === "board"
         ? {
             ...selectionToFocus,
             location_kind: selectionToFocus.location_kind === "insertion_anchor" ? "insertion_anchor" : "target_range",
           }
-        : selectionToFocus
-    );
+        : selectionToFocus;
+    setSelection(normalizedSelection);
     updateActiveLessonComposerState((current) => ({
       ...current,
       composerMode: nextMode,
       includeSelectionInPrompt: true,
+      composerSelection: normalizedSelection,
     }));
     setSelectionPopover(null);
     window.requestAnimationFrame(() => {
@@ -332,6 +339,7 @@ export function CourseStudio() {
       ...current,
       composerMode: "ask",
       includeSelectionInPrompt: true,
+      composerSelection: sourceReference,
     }));
     window.requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -396,6 +404,12 @@ export function CourseStudio() {
     chatAgent.resetAgentState();
   }
 
+  function resetTransientUiForLessonSwitch() {
+    history.setPreviewCommitId(null);
+    chatAgent.resetAgentState({ clearComposerSelection: false });
+    clearTransientSelection();
+  }
+
   const workspaceActions = useWorkspaceActions({
     coursePackage,
     activeLesson,
@@ -404,7 +418,7 @@ export function CourseStudio() {
     updateCoursePackage,
     selectLocalLesson: workspace.selectLocalLesson,
     resetDraftToLesson: boardDraft.resetToLesson,
-    resetTransientUi,
+    resetTransientUi: resetTransientUiForLessonSwitch,
     setError,
     setBusyAction,
     onLessonCreated: () => setIsCreatingLessonInline(false),
@@ -626,7 +640,7 @@ export function CourseStudio() {
           onDocumentChange={handleLocalDocumentChange}
           onStructureRemovalIntent={markStructureRemovalIntent}
           onApplySelection={applySelection}
-          onClearSelection={clearSelection}
+          onClearTransientSelection={clearTransientSelection}
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}

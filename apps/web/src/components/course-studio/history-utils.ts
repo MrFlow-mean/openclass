@@ -21,6 +21,7 @@ export type LessonComposerState = {
   chatInput: string;
   composerMode: ChatInteractionMode;
   includeSelectionInPrompt: boolean;
+  composerSelection: SelectionRef | null;
 };
 export type LessonComposerStateMap = Record<string, LessonComposerState>;
 
@@ -28,6 +29,7 @@ export const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   chatInput: "",
   composerMode: "ask",
   includeSelectionInPrompt: true,
+  composerSelection: null,
 };
 
 export const AUTO_SAVE_DELAY_MS = 1600;

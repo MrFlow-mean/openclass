@@ -21,7 +21,7 @@ type BoardEditorPanelProps = {
   onDocumentChange: (document: BoardDocument) => void;
   onStructureRemovalIntent: () => void;
   onApplySelection: (selection: SelectionRef, position?: SelectionPopoverPosition | null) => void;
-  onClearSelection: () => void;
+  onClearTransientSelection: () => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
@@ -117,7 +117,7 @@ export function BoardEditorPanel({
   onDocumentChange,
   onStructureRemovalIntent,
   onApplySelection,
-  onClearSelection,
+  onClearTransientSelection,
   onImportDocx,
   onExportDocx,
   onExportHtml,
@@ -162,7 +162,7 @@ export function BoardEditorPanel({
         onStructureRemovalIntent={onStructureRemovalIntent}
         onSelectionChange={(payload) => {
           if (!payload) {
-            onClearSelection();
+            onClearTransientSelection();
             return;
           }
           onApplySelection(

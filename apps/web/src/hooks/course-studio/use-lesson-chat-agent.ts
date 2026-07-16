@@ -298,7 +298,7 @@ export function useLessonChatAgent({
     );
   }
 
-  function resetAgentState() {
+  function resetAgentState(options?: { clearComposerSelection?: boolean }) {
     setScopeOptions([]);
     setClarificationQuestions([]);
     setLearningClarity(null);
@@ -309,7 +309,9 @@ export function useLessonChatAgent({
     setBoardEditPrompt(null);
     setLastScopedRequest(null);
     setLastBoardEditRequest(null);
-    clearSelection();
+    if (options?.clearComposerSelection !== false) {
+      clearSelection();
+    }
   }
 
   async function runChatTurn({
