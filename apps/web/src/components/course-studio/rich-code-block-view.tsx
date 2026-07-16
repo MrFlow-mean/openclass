@@ -6,6 +6,7 @@ import { Check, Code2, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { codeLanguageLabel, highlightCode } from "@/lib/code-highlight";
+import { writeTextToClipboard } from "@/lib/clipboard";
 import { formatCodeIndentation } from "@/lib/code-format";
 
 export function RichCodeBlockView({ node, editor }: NodeViewProps) {
@@ -13,7 +14,7 @@ export function RichCodeBlockView({ node, editor }: NodeViewProps) {
   const label = codeLanguageLabel(language);
   const code = node.textContent;
   const isEditable = editor.isEditable;
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const displayCode = useMemo(() => formatCodeIndentation(code, language), [code, language]);
   const highlighted = useMemo(() => highlightCode(displayCode, language), [displayCode, language]);
 
@@ -21,13 +22,9 @@ export function RichCodeBlockView({ node, editor }: NodeViewProps) {
     if (!displayCode.trim()) {
       return;
     }
-    try {
-      await navigator.clipboard.writeText(displayCode);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
+    const succeeded = await writeTextToClipboard(displayCode);
+    setCopyStatus(succeeded ? "copied" : "error");
+    window.setTimeout(() => setCopyStatus("idle"), 1600);
   }
 
   return (
@@ -45,10 +42,10 @@ export function RichCodeBlockView({ node, editor }: NodeViewProps) {
         <button
           type="button"
           className="rich-code-block__copy"
-          aria-label={copied ? "已复制" : "复制代码"}
+          aria-label={copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : "复制代码"}
           onClick={() => void handleCopy()}
         >
-          {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          {copyStatus === "copied" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
         </button>
       </div>
       {isEditable ? (

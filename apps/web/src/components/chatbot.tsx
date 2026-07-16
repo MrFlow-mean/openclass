@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 
+import { writeTextToClipboard } from "@/lib/clipboard";
 import { markdownToChatHtml } from "@/lib/markdown";
 import type {
   AgentActivityEvent,
@@ -247,7 +248,7 @@ export function CourseChatMessage({
   isEditDisabled?: boolean;
 }) {
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const isAssistant = message.role === "assistant";
   const isPending = message.status === "pending";
   const isError = message.status === "error";
@@ -261,13 +262,9 @@ export function CourseChatMessage({
     if (!hasContent) {
       return;
     }
-    try {
-      await navigator.clipboard.writeText(message.content);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      setCopied(false);
-    }
+    const succeeded = await writeTextToClipboard(message.content);
+    setCopyStatus(succeeded ? "copied" : "error");
+    window.setTimeout(() => setCopyStatus("idle"), 1600);
   }
 
   return (
@@ -426,10 +423,11 @@ export function CourseChatMessage({
             <button
               type="button"
               onClick={() => void copyMessage()}
+              aria-label={copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : "复制"}
               className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
             >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? "已复制" : "复制"}
+              {copyStatus === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : "复制"}
             </button>
           </div>
         ) : null}
