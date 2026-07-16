@@ -34,7 +34,9 @@ type CourseStudioSidePanelProps = {
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
   speechAutoEnabled: boolean;
-  speechIsActive: boolean;
+  speechIsLoading: boolean;
+  speechIsPlaying: boolean;
+  speechIsPaused: boolean;
   speechStatusText: string;
   speechOptions: SpeechOptionsResponse;
   speechSelectedVoice: string;
@@ -46,7 +48,9 @@ type CourseStudioSidePanelProps = {
   speechCanSeek: boolean;
   speechCanReplay: boolean;
   onSpeechAutoToggle: () => void;
-  onSpeechStop: () => void;
+  onSpeechCancel: () => void;
+  onSpeechPause: () => void;
+  onSpeechResume: () => void;
   onSpeechReplay: () => void;
   onSpeechSeek: (time: number) => void;
   onSpeechVoiceChange: (voice: string) => void;
@@ -77,7 +81,9 @@ export function CourseStudioSidePanel({
   onError,
   onSourceReference,
   speechAutoEnabled,
-  speechIsActive,
+  speechIsLoading,
+  speechIsPlaying,
+  speechIsPaused,
   speechStatusText,
   speechOptions,
   speechSelectedVoice,
@@ -89,7 +95,9 @@ export function CourseStudioSidePanel({
   speechCanSeek,
   speechCanReplay,
   onSpeechAutoToggle,
-  onSpeechStop,
+  onSpeechCancel,
+  onSpeechPause,
+  onSpeechResume,
   onSpeechReplay,
   onSpeechSeek,
   onSpeechVoiceChange,
@@ -174,7 +182,9 @@ export function CourseStudioSidePanel({
         ) : sidebarTab === "voice" ? (
           <VoiceControlPanel
             autoEnabled={speechAutoEnabled}
-            isActive={speechIsActive}
+            isLoading={speechIsLoading}
+            isPlaying={speechIsPlaying}
+            isPaused={speechIsPaused}
             statusText={speechStatusText}
             model={speechCurrentModel}
             currentText={speechCurrentText}
@@ -186,7 +196,9 @@ export function CourseStudioSidePanel({
             selectedVoice={speechSelectedVoice}
             speechRate={speechRate}
             onAutoToggle={onSpeechAutoToggle}
-            onStop={onSpeechStop}
+            onCancel={onSpeechCancel}
+            onPause={onSpeechPause}
+            onResume={onSpeechResume}
             onReplay={onSpeechReplay}
             onSeek={onSpeechSeek}
             onVoiceChange={onSpeechVoiceChange}

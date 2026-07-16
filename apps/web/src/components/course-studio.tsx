@@ -659,7 +659,9 @@ export function CourseStudio() {
           onError={setError}
           onSourceReference={applySourceReference}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
-          speechIsActive={chatSpeech.isSpeechActive}
+          speechIsLoading={chatSpeech.isSpeechLoading}
+          speechIsPlaying={chatSpeech.isSpeechPlaying}
+          speechIsPaused={chatSpeech.isSpeechPaused}
           speechStatusText={chatSpeech.speechStatusText}
           speechOptions={chatSpeech.speechOptions}
           speechSelectedVoice={chatSpeech.selectedVoice}
@@ -671,7 +673,9 @@ export function CourseStudio() {
           speechCanSeek={chatSpeech.canSeekSpeech}
           speechCanReplay={chatSpeech.canReplaySpeech}
           onSpeechAutoToggle={chatSpeech.toggleAutoSpeak}
-          onSpeechStop={chatSpeech.stopSpeech}
+          onSpeechCancel={chatSpeech.stopSpeech}
+          onSpeechPause={chatSpeech.pauseSpeech}
+          onSpeechResume={chatSpeech.resumeSpeech}
           onSpeechReplay={chatSpeech.replayCurrentSpeech}
           onSpeechSeek={chatSpeech.seekSpeech}
           onSpeechVoiceChange={chatSpeech.selectVoice}

@@ -31,7 +31,7 @@ const DEFAULT_SPEECH_OPTIONS: SpeechOptionsResponse = {
   default_speech_rate: 0,
 };
 
-type SpeechPlaybackStatus = "idle" | "loading" | "playing" | "error";
+type SpeechPlaybackStatus = "idle" | "loading" | "playing" | "paused" | "error";
 
 type UseChatSpeechOptions = {
   lessonId: string | null;
@@ -202,6 +202,31 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     }
   }, [currentSpeechText, speakMessage]);
 
+  const pauseSpeech = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || audio.paused) {
+      return;
+    }
+    audio.pause();
+    setCurrentTime(audio.currentTime);
+    setStatus("paused");
+    setStatusMessage("播报已暂停，可从当前位置继续");
+  }, []);
+
+  const resumeSpeech = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !audio.paused) {
+      return;
+    }
+    try {
+      await audio.play();
+    } catch (error) {
+      releaseAudio();
+      setStatus("error");
+      setStatusMessage(error instanceof Error ? error.message : "浏览器没有成功继续播放音频");
+    }
+  }, [releaseAudio]);
+
   const seekSpeech = useCallback((nextTime: number) => {
     const audio = audioRef.current;
     if (!audio || !Number.isFinite(nextTime)) {
@@ -336,7 +361,9 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
 
   return {
     autoSpeakEnabled,
-    isSpeechActive: status === "loading" || status === "playing",
+    isSpeechLoading: status === "loading",
+    isSpeechPlaying: status === "playing",
+    isSpeechPaused: status === "paused",
     speechStatusText: statusMessage,
     speechOptions,
     selectedVoice,
@@ -345,10 +372,12 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     currentSpeechText,
     currentTime,
     duration,
-    canSeekSpeech: status === "playing" && duration > 0,
-    canReplaySpeech: Boolean(currentSpeechText) && status !== "loading" && status !== "playing",
+    canSeekSpeech: (status === "playing" || status === "paused") && duration > 0,
+    canReplaySpeech: Boolean(currentSpeechText) && (status === "idle" || status === "error"),
     speakMessage,
     replayCurrentSpeech,
+    pauseSpeech,
+    resumeSpeech,
     seekSpeech,
     selectVoice,
     selectSpeechRate,

@@ -1,11 +1,13 @@
 import clsx from "clsx";
-import { RotateCcw, Square, Volume2, VolumeX } from "lucide-react";
+import { Pause, Play, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
 
 type VoiceControlPanelProps = {
   autoEnabled: boolean;
-  isActive: boolean;
+  isLoading: boolean;
+  isPlaying: boolean;
+  isPaused: boolean;
   statusText: string;
   model: string;
   currentText: string;
@@ -17,7 +19,9 @@ type VoiceControlPanelProps = {
   selectedVoice: string;
   speechRate: number;
   onAutoToggle: () => void;
-  onStop: () => void;
+  onCancel: () => void;
+  onPause: () => void;
+  onResume: () => void;
   onReplay: () => void;
   onSeek: (time: number) => void;
   onVoiceChange: (voice: string) => void;
@@ -41,7 +45,9 @@ function formatSpeechRate(value: number) {
 
 export function VoiceControlPanel({
   autoEnabled,
-  isActive,
+  isLoading,
+  isPlaying,
+  isPaused,
   statusText,
   model,
   currentText,
@@ -53,7 +59,9 @@ export function VoiceControlPanel({
   selectedVoice,
   speechRate,
   onAutoToggle,
-  onStop,
+  onCancel,
+  onPause,
+  onResume,
   onReplay,
   onSeek,
   onVoiceChange,
@@ -131,15 +139,35 @@ export function VoiceControlPanel({
           <p className="min-w-0 flex-1 text-xs leading-5 text-gray-500" title={statusText}>
             {statusText}
           </p>
-          {isActive ? (
+          {isLoading ? (
             <button
               type="button"
-              onClick={onStop}
+              onClick={onCancel}
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-              aria-label="停止播报"
+              aria-label="取消生成语音"
             >
-              <Square className="h-3 w-3 fill-current" />
-              停止
+              <X className="h-3 w-3" />
+              取消
+            </button>
+          ) : isPlaying ? (
+            <button
+              type="button"
+              onClick={onPause}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+              aria-label="暂停播报"
+            >
+              <Pause className="h-3 w-3 fill-current" />
+              暂停
+            </button>
+          ) : isPaused ? (
+            <button
+              type="button"
+              onClick={onResume}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+              aria-label="继续播报"
+            >
+              <Play className="h-3 w-3 fill-current" />
+              继续
             </button>
           ) : canReplay ? (
             <button
