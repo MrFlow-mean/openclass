@@ -117,14 +117,34 @@ code. Write every display formula as `$$` on its own lines with LaTeX inside, an
 as normal Markdown text or `**bold**`, never inside a code fence. Do not inspect any other path,
 source code, environment variable, network resource, plugin, or external tool.
 
-The frozen payload may include a `visual_manifest`. Every manifest item is a verified visual from
-the learner-selected source scope. When it is non-empty, write every item\'s `marker` exactly once
-as a standalone ordinary paragraph immediately after the board paragraph that introduces or
-explains that visual. Preserve manifest order. Never alter, invent, duplicate, wrap, or place a
-marker inside a heading, list, table, code fence, formula, link, or image syntax. Do not write image
-bytes, base64, HTML, file paths, or URLs. OpenClass validates the markers and materializes the
-original assets after this turn. Return only a brief completion acknowledgement after the file is
-written.
+The frozen payload may include a `visual_manifest`. Every manifest item is verified evidence from
+the learner-selected source scope. Preserve manifest order and handle every item exactly once.
+
+For a manifest item without `recreation_marker`, write its `marker` exactly once as a standalone
+ordinary paragraph immediately after the paragraph that introduces it. OpenClass will materialize
+the backend-owned editable table or original asset.
+
+For a manifest item with `recreation_marker`, inspect its corresponding image input when
+`image_input_index` is present, otherwise use only its supplied extracted visual description. Choose
+exactly one of these two paths:
+
+1. Editable recreation: use this only when every essential label, value, and relationship is
+readable and the visual is either a regular row/column or grid table, or one single-direction linear
+flow with no branches, cross-links, nested topology, or spatial relationship that would be lost.
+Recreate it as editable Markdown: a Markdown table for tabular data, or ordinary text/list content
+with arrows for a linear flow. Do not use HTML, image syntax, Mermaid, ASCII box art, or a code
+fence. Then write `recreation_marker` exactly once as a standalone paragraph immediately after the
+recreated content.
+
+2. Original asset: use this for complex diagrams, branching or networked flows, dense hardware or
+system layouts, illustrations, ambiguous scans, unreadable labels, or any visual whose meaning
+depends on two-dimensional placement. Write `marker` exactly once as a standalone ordinary
+paragraph after the paragraph that introduces it. OpenClass will insert the verified crop.
+
+Never write both choice markers, and never omit both. Never alter, invent, duplicate, wrap, or place
+a marker inside a heading, list, table, code fence, formula, link, or image syntax. Do not write image
+bytes, base64, HTML, file paths, or URLs. OpenClass validates the choice and placement after this
+turn. Return only a brief completion acknowledgement after the file is written.
 """.strip()
 
 SOURCE_BATCH_SUMMARY_INSTRUCTIONS = """
@@ -873,6 +893,7 @@ def _visual_manifest_payload(
     *,
     plan: BoardInsertionPlan,
     requirement: LearningRequirementSheet,
+    image_input_visual_ids: list[str] | None = None,
 ) -> list[dict[str, object]]:
     visuals_by_id = {
         item.visual_id: item
@@ -883,6 +904,10 @@ def _visual_manifest_payload(
         reference.source_ingestion_id: reference.source_title
         for reference in requirement.source_grounding.confirmed_references
     }
+    image_input_indexes = {
+        visual_id: index
+        for index, visual_id in enumerate(image_input_visual_ids or [])
+    }
     manifest: list[dict[str, object]] = []
     for item in plan.items:
         evidence = visuals_by_id.get(item.visual_id)
@@ -890,6 +915,14 @@ def _visual_manifest_payload(
             {
                 "visual_id": item.visual_id,
                 "marker": item.marker,
+                "original_marker": item.marker,
+                "recreation_marker": item.recreation_marker,
+                "allowed_handling": (
+                    ["editable_recreation", "original_asset"]
+                    if item.recreation_marker
+                    else ["backend_materialization"]
+                ),
+                "image_input_index": image_input_indexes.get(item.visual_id),
                 "order_index": item.order_index,
                 "kind": item.kind,
                 "caption": item.caption,
@@ -939,6 +972,15 @@ def _generate_blank_board(
     visual_manifest = _visual_manifest_payload(
         plan=insertion_plan,
         requirement=prepared_requirement,
+        image_input_visual_ids=(
+            [
+                item.visual_id
+                for item in prepared_requirement.source_grounding.frozen_visual_evidence
+                if not _is_structured_table_evidence(item)
+            ]
+            if image_inputs
+            else []
+        ),
     )
     turn, content = adapter.generate_board(
         BoardGenerationExecutionRequest(

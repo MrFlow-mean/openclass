@@ -121,6 +121,63 @@ def test_codex_marker_without_immediately_preceding_paragraph_has_no_placement()
     assert derive_board_visual_placements(document, plan=plan) == []
 
 
+def test_codex_recreation_marker_keeps_editable_markdown_without_loading_original(
+    tmp_path,
+) -> None:
+    visual = _visual(kind="diagram")
+    plan = build_board_insertion_plan([visual], nonce="fixed")
+    item = plan.items[0]
+    assert item.recreation_marker
+    document = build_document(
+        title="Board",
+        content_text=(
+            "| Stage | Output |\n"
+            "|---|---|\n"
+            "| Input | Transform |\n\n"
+            f"{item.recreation_marker}"
+        ),
+    )
+
+    placements = derive_board_visual_placements(document, plan=plan)
+    assert placements[0]["placement_kind"] == "editable_recreation"
+    assert placements[0]["marker"] == item.recreation_marker
+
+    outcome = apply_board_insertion_plan(
+        document,
+        plan=plan,
+        placements=placements,
+        owner_user_id="owner_a",
+        lesson_id="lesson_a",
+        visual_bytes_resolver=lambda _visual_id: pytest.fail(
+            "an editable recreation must not load or persist the original image"
+        ),
+        asset_store=_store(tmp_path),
+    )
+
+    assert outcome.applied_visual_ids == [item.visual_id]
+    assert outcome.recreated_visual_ids == [item.visual_id]
+    assert outcome.original_visual_ids == []
+    assert outcome.asset_ids == []
+    assert [node["type"] for node in outcome.document.content_json["content"]] == [
+        "table"
+    ]
+    assert "OPENCLASS_VISUAL" not in outcome.document.content_text
+
+
+def test_codex_cannot_choose_original_and_recreation_for_same_visual() -> None:
+    plan = build_board_insertion_plan([_visual(kind="diagram")], nonce="fixed")
+    item = plan.items[0]
+    document = build_document(
+        title="Board",
+        content_text=(
+            f"Editable flow\n\n{item.recreation_marker}\n\n"
+            f"Original introduction\n\n{item.marker}"
+        ),
+    )
+
+    assert derive_board_visual_placements(document, plan=plan) == []
+
+
 def test_board_asset_store_deduplicates_and_authorizes_by_owner(tmp_path) -> None:
     store = _store(tmp_path)
     source_file = tmp_path / "source-chart.png"

@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,6 +21,13 @@ MAX_PDF_OBJECTS_PER_PAGE = 500
 MAX_VECTOR_TEXT_LAYOUT_PAD = 96.0
 MAX_VECTOR_TEXT_CONFIDENT_GAP = 48.0
 VECTOR_TEXT_RENDER_PADDING = 3.0
+SCAN_REGION_SIDE_MARGIN_RATIO = 0.055
+SCAN_REGION_CAPTION_GAP = 4.0
+_FIGURE_CAPTION_RE = re.compile(
+    r"^(?:图|表|figure|fig\.?|table)\s*[A-Za-z0-9IVXivx]+"
+    r"(?:\s*[-–—－.]\s*[A-Za-z0-9IVXivx]+)?(?:\s|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -56,6 +64,21 @@ class _PdfRenderBudget:
 class _PdfTextLine:
     rect: tuple[float, float, float, float]
     text: str
+
+
+@dataclass(frozen=True)
+class _PdfTextRow:
+    rect: tuple[float, float, float, float]
+    text: str
+    fragment_count: int
+
+
+@dataclass(frozen=True)
+class _CaptionAnchoredScanRegion:
+    rect: tuple[float, float, float, float]
+    caption: str
+    caption_rect: tuple[float, float, float, float]
+    text_row_count: int
 
 
 @dataclass(frozen=True)
@@ -101,6 +124,7 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
             page = document.load_page(page_index)
             page_rect = page.rect
             occupied: list[tuple[float, float, float, float]] = []
+            has_full_page_carrier = False
 
             tables = _page_tables(page)
             if len(tables) > MAX_PDF_OBJECTS_PER_PAGE:
@@ -178,7 +202,7 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                 for occurrence_index, image_rect in enumerate(rects):
                     rect = _rect_tuple(image_rect)
                     rounded = tuple(round(value, 2) for value in rect)
-                    if rounded in seen_image_rects or not _useful_region(rect, page_rect):
+                    if rounded in seen_image_rects:
                         continue
                     if _is_full_page_background_region(rect, page_rect):
                         # Scanned/OCR PDFs commonly expose the entire scanned page as
@@ -186,6 +210,9 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                         # not an independently placeable teaching visual.  Genuine
                         # figures remain eligible because they do not hug all four
                         # page edges at once.
+                        has_full_page_carrier = True
+                        continue
+                    if not _useful_region(rect, page_rect):
                         continue
                     if any(_overlap_ratio(rect, prior) > 0.92 for prior in occupied):
                         continue
@@ -279,6 +306,58 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                 occupied.append(render_rect)
             if render_budget.exhausted:
                 break
+
+            if has_full_page_carrier:
+                scan_regions = _caption_anchored_scan_regions(page)
+                if len(scan_regions) > MAX_PDF_OBJECTS_PER_PAGE:
+                    render_budget.exhausted = True
+                    break
+                for region_index, region in enumerate(scan_regions):
+                    rect = region.rect
+                    if any(_overlap_ratio(rect, prior) > 0.72 for prior in occupied):
+                        continue
+                    rendered, width, height = _render_region(
+                        page,
+                        rect,
+                        budget=render_budget,
+                    )
+                    if render_budget.exhausted:
+                        break
+                    if not rendered:
+                        continue
+                    visuals.append(
+                        RawSourceVisual(
+                            kind="diagram",
+                            source_locator=(
+                                f"pdf:page:{page_index + 1}:caption-region:{region_index}"
+                            ),
+                            native_order=native_order,
+                            content=rendered,
+                            mime_type="image/png",
+                            page_no=page_index + 1,
+                            bbox=_normalize_bbox(rect, page_rect),
+                            caption=region.caption,
+                            ocr_text=_text_in_rect(page, rect),
+                            width=width,
+                            height=height,
+                            confidence=0.88,
+                            metadata={
+                                "pdf_region_type": "caption_anchored_scan_region",
+                                "scan_page_carrier": True,
+                                "caption_bbox": _normalize_bbox(
+                                    region.caption_rect,
+                                    page_rect,
+                                ),
+                                "visual_text_row_count": region.text_row_count,
+                                "codex_render_policy": "recreate_simple_or_keep_original",
+                                **_boundary_gap_metadata(page, rect),
+                            },
+                        )
+                    )
+                    native_order += 1
+                    occupied.append(rect)
+                if render_budget.exhausted:
+                    break
     finally:
         document.close()
     if render_budget.exhausted:
@@ -505,6 +584,159 @@ def _page_text_lines(page: Any) -> tuple[list[_PdfTextLine], bool]:
                 continue
             lines.append(_PdfTextLine(rect=rect, text=text))
     return lines, reliable
+
+
+def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion]:
+    """Find local visuals baked into a full-page scan using verified caption layout.
+
+    The crop is derived from page geometry, not a document- or subject-specific
+    caption.  It fails closed unless a centered caption, a preceding prose
+    boundary, and non-prose visual rows all agree on one bounded region.
+    """
+
+    lines, reliable = _page_text_lines(page)
+    if not reliable or not lines:
+        return []
+    rows = _merge_text_lines_into_rows(lines)
+    if not rows:
+        return []
+
+    page_rect = page.rect
+    page_width = max(1.0, float(page_rect.width))
+    page_height = max(1.0, float(page_rect.height))
+    regions: list[_CaptionAnchoredScanRegion] = []
+    for caption in rows:
+        normalized_caption = " ".join(caption.text.split())
+        caption_left = (caption.rect[0] - float(page_rect.x0)) / page_width
+        caption_width = (caption.rect[2] - caption.rect[0]) / page_width
+        if (
+            not _FIGURE_CAPTION_RE.match(normalized_caption)
+            or caption_left < 0.12
+            or caption_left > 0.58
+            or caption_width > 0.76
+        ):
+            continue
+
+        preceding_body_rows = [
+            row
+            for row in rows
+            if row.rect[3] <= caption.rect[1] - 3.0
+            and caption.rect[1] - row.rect[3] <= page_height * 0.48
+            and _looks_like_body_text_row(row, page_rect)
+        ]
+        if not preceding_body_rows:
+            continue
+        boundary = max(preceding_body_rows, key=lambda row: row.rect[3])
+        continuation_rows = [
+            row
+            for row in rows
+            if boundary.rect[3] <= row.rect[1]
+            and row.rect[1] - boundary.rect[3]
+            <= max(8.0, (boundary.rect[3] - boundary.rect[1]) * 0.8)
+            and _looks_like_body_text_continuation(row, page_rect)
+        ]
+        if continuation_rows:
+            boundary = max(continuation_rows, key=lambda row: row.rect[3])
+        line_height = max(1.0, boundary.rect[3] - boundary.rect[1])
+        top = boundary.rect[3] + max(3.0, line_height * 0.35)
+        bottom = caption.rect[1] - SCAN_REGION_CAPTION_GAP
+        height_ratio = (bottom - top) / page_height
+        if height_ratio < 0.065 or height_ratio > 0.56:
+            continue
+
+        visual_rows = [
+            row
+            for row in rows
+            if row.rect[1] >= top - 2.0 and row.rect[3] <= bottom + 2.0
+        ]
+        non_prose_rows = [
+            row
+            for row in visual_rows
+            if row.fragment_count >= 3
+            or (row.rect[2] - row.rect[0]) / page_width < 0.48
+        ]
+        if not visual_rows or not non_prose_rows:
+            continue
+
+        side_margin = page_width * SCAN_REGION_SIDE_MARGIN_RATIO
+        rect = _clip_rect_to_page(
+            (
+                float(page_rect.x0) + side_margin,
+                top,
+                float(page_rect.x1) - side_margin,
+                bottom,
+            ),
+            page_rect,
+        )
+        if not _useful_region(rect, page_rect):
+            continue
+        if any(_overlap_ratio(rect, existing.rect) > 0.80 for existing in regions):
+            continue
+        regions.append(
+            _CaptionAnchoredScanRegion(
+                rect=rect,
+                caption=normalized_caption,
+                caption_rect=caption.rect,
+                text_row_count=len(visual_rows),
+            )
+        )
+    return regions
+
+
+def _merge_text_lines_into_rows(lines: list[_PdfTextLine]) -> list[_PdfTextRow]:
+    grouped: list[list[_PdfTextLine]] = []
+    for line in sorted(lines, key=lambda item: (_rect_center_y(item.rect), item.rect[0])):
+        center = _rect_center_y(line.rect)
+        matching = next(
+            (
+                group
+                for group in reversed(grouped[-4:])
+                if abs(center - _rect_center_y(_union_line_rects(group))) <= 3.5
+            ),
+            None,
+        )
+        if matching is None:
+            grouped.append([line])
+        else:
+            matching.append(line)
+
+    rows: list[_PdfTextRow] = []
+    for group in grouped:
+        ordered = sorted(group, key=lambda item: item.rect[0])
+        rect = _union_line_rects(ordered)
+        text = " ".join(item.text.strip() for item in ordered if item.text.strip())
+        if text:
+            rows.append(
+                _PdfTextRow(
+                    rect=rect,
+                    text=text,
+                    fragment_count=len(ordered),
+                )
+            )
+    return rows
+
+
+def _union_line_rects(lines: list[_PdfTextLine]) -> tuple[float, float, float, float]:
+    return (
+        min(line.rect[0] for line in lines),
+        min(line.rect[1] for line in lines),
+        max(line.rect[2] for line in lines),
+        max(line.rect[3] for line in lines),
+    )
+
+
+def _looks_like_body_text_row(row: _PdfTextRow, page_rect: Any) -> bool:
+    page_width = max(1.0, float(page_rect.width))
+    width_ratio = (row.rect[2] - row.rect[0]) / page_width
+    left_ratio = (row.rect[0] - float(page_rect.x0)) / page_width
+    return row.fragment_count <= 4 and left_ratio <= 0.16 and width_ratio >= 0.68
+
+
+def _looks_like_body_text_continuation(row: _PdfTextRow, page_rect: Any) -> bool:
+    page_width = max(1.0, float(page_rect.width))
+    left_ratio = (row.rect[0] - float(page_rect.x0)) / page_width
+    compact_text = "".join(row.text.split())
+    return row.fragment_count <= 4 and left_ratio <= 0.16 and len(compact_text) >= 6
 
 
 def _valid_text_rect(rect: tuple[float, float, float, float]) -> bool:

@@ -745,13 +745,18 @@ def process_blank_board_turn(
             visual_insertion_metadata = {
                 "board_visual_requested_count": len(insertion_plan.items),
                 "board_visual_applied_ids": list(visual_result.applied_visual_ids),
+                "board_visual_recreated_ids": list(visual_result.recreated_visual_ids),
+                "board_visual_original_ids": list(visual_result.original_visual_ids),
                 "board_visual_asset_ids": list(visual_result.asset_ids),
                 "skipped_visual_placements": list(visual_result.skipped),
             }
             if visual_result.skipped:
                 visual_insertion_notice = (
-                    f"原图已安全插入 {len(visual_result.applied_visual_ids)}/"
-                    f"{len(insertion_plan.items)} 张；其余图片因位置或资产校验未通过而未插入，"
+                    f"视觉内容已安全处理 {len(visual_result.applied_visual_ids)}/"
+                    f"{len(insertion_plan.items)} 项，其中 Codex 可编辑复刻 "
+                    f"{len(visual_result.recreated_visual_ids)} 项、保留原图 "
+                    f"{len(visual_result.original_visual_ids)} 项；其余内容因位置或资产校验"
+                    "未通过而未插入，"
                     "可重新生成后重试。"
                 )
         current_lesson.learning_requirements = None
@@ -769,11 +774,7 @@ def process_blank_board_turn(
                     if request.post_generation_action == "auto_explain"
                     else final_chatbot_message
                 ),
-                "assistant_message_source": (
-                    "codex_board_editor"
-                    if request.post_generation_action == "auto_explain"
-                    else "codex"
-                ),
+                "assistant_message_source": "codex",
                 "document_changed": True,
                 "board_state_before": "empty",
                 "board_state_after": "non_empty",

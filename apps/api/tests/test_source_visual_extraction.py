@@ -101,6 +101,43 @@ def test_pdf_extractor_rejects_full_page_scan_layer_but_keeps_real_figure(
     assert image_visuals[0].bbox[2] < 0.80
 
 
+def test_pdf_extractor_crops_caption_anchored_visual_baked_into_page_scan(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "captioned-scan.pdf"
+    background = ImageReader(io.BytesIO(_png(600, 800, label="scanned page")))
+    pdf = canvas.Canvas(str(path), pagesize=(600, 800))
+    pdf.drawImage(background, 0, 0, width=600, height=800)
+    pdf.drawString(
+        40,
+        710,
+        "The preceding prose establishes a stable full-width boundary before the visual region.",
+    )
+    pdf.drawString(95, 610, "Input")
+    pdf.drawString(230, 610, "Transform")
+    pdf.drawString(410, 610, "Output")
+    pdf.drawString(155, 610, "->")
+    pdf.drawString(350, 610, "->")
+    pdf.drawString(205, 520, "Figure 2-1 Linear process")
+    pdf.save()
+
+    result = extract_pdf_visuals(path)
+
+    scan_regions = [
+        visual
+        for visual in result.visuals
+        if visual.metadata.get("pdf_region_type") == "caption_anchored_scan_region"
+    ]
+    assert result.status == "ready"
+    assert len(scan_regions) == 1
+    region = scan_regions[0]
+    assert region.kind == "diagram"
+    assert region.caption.startswith("Figure 2-1")
+    assert 0.08 < region.bbox[1] < region.bbox[3] < 0.40
+    assert region.metadata["codex_render_policy"] == "recreate_simple_or_keep_original"
+    assert region.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_materialization_preserves_cross_page_and_verified_anchor_fields(
     monkeypatch,
     tmp_path: Path,
