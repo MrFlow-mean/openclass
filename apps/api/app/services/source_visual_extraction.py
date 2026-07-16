@@ -38,7 +38,7 @@ from app.services.source_visual_storage import (
     resolve_source_visual_storage_key,
 )
 
-CURRENT_SOURCE_VISUAL_INDEX_VERSION = 4
+CURRENT_SOURCE_VISUAL_INDEX_VERSION = 5
 MAX_SOURCE_VISUAL_PIXELS = 40_000_000
 
 
