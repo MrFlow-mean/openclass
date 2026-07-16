@@ -19,6 +19,8 @@ _MARKER_TOKEN_RE = re.compile(
     r"\[\[OPENCLASS_VISUAL(?:_RECREATED)?_[A-Za-z0-9_-]+_\d{4}\]\]"
 )
 _MARKER_RE = re.compile(rf"^{_MARKER_TOKEN_RE.pattern}$")
+_LINEAR_FLOW_ARROW_RE = re.compile(r"(?:->|→|⟶|⇒|↓)")
+_NON_LINEAR_FLOW_RE = re.compile(r"(?:<-|←|↑|↙|↘|↖|↗|↔|⇄|⇆)")
 
 
 @dataclass(frozen=True)
@@ -239,9 +241,14 @@ def apply_board_insertion_plan(
         candidates.append((item, {"marker": selected_marker}, marker_index))
 
     replacements: dict[str, dict[str, Any]] = {}
-    for item, placement, _marker_index in candidates:
-        if _string_value(placement, "marker") == item.recreation_marker:
+    recreation_fallback_ids: set[str] = set()
+    for item, placement, marker_index in candidates:
+        selected_marker = _string_value(placement, "marker")
+        selected_recreation = bool(item.recreation_marker and selected_marker == item.recreation_marker)
+        if selected_recreation and _editable_recreation_is_structured(root_nodes, marker_index):
             continue
+        if selected_recreation:
+            recreation_fallback_ids.add(item.visual_id)
         if _is_table_visual(item):
             canonical_table = json.dumps(
                 item.table_data,
@@ -256,7 +263,7 @@ def apply_board_insertion_plan(
             if table_node is None:
                 _record_skip(result, item.visual_id, item.marker, "table_data_invalid", lesson_id=lesson_id)
                 continue
-            replacements[item.marker] = table_node
+            replacements[item.visual_id] = table_node
             continue
 
         resolved = visual_bytes_resolver(item.visual_id)
@@ -296,7 +303,7 @@ def apply_board_insertion_plan(
                 detail=type(exc).__name__,
             )
             continue
-        replacements[item.marker] = _resource_visual_node(item, asset.id)
+        replacements[item.visual_id] = _resource_visual_node(item, asset.id)
 
     candidates_by_index = {
         marker_index: (item, placement)
@@ -310,7 +317,11 @@ def apply_board_insertion_plan(
         if candidate is not None:
             item, placement = candidate
             selected_marker = _string_value(placement, "marker")
-            if item.recreation_marker and selected_marker == item.recreation_marker:
+            if (
+                item.recreation_marker
+                and selected_marker == item.recreation_marker
+                and item.visual_id not in recreation_fallback_ids
+            ):
                 result.applied_visual_ids.append(item.visual_id)
                 result.recreated_visual_ids.append(item.visual_id)
                 ai_usage_logger.log_event(
@@ -321,7 +332,7 @@ def apply_board_insertion_plan(
                     placement_kind="editable_recreation",
                 )
                 continue
-            replacement = replacements.get(item.marker)
+            replacement = replacements.get(item.visual_id)
             if replacement is not None:
                 next_nodes.append(replacement)
                 result.applied_visual_ids.append(item.visual_id)
@@ -336,6 +347,11 @@ def apply_board_insertion_plan(
                     asset_id=asset_id,
                     placement_kind=(
                         "editable_table" if _is_table_visual(item) else "original_asset"
+                    ),
+                    fallback_reason=(
+                        "editable_recreation_failed_structure_validation"
+                        if item.visual_id in recreation_fallback_ids
+                        else ""
                     ),
                 )
             continue
@@ -399,6 +415,33 @@ def _standalone_marker(node: Any) -> str:
         return ""
     text = str(child.get("text") or "").strip()
     return text if _MARKER_RE.fullmatch(text) else ""
+
+
+def _editable_recreation_is_structured(nodes: list[Any], marker_index: int) -> bool:
+    """Accept only a native table or a compact, one-direction linear flow."""
+
+    for node in reversed(nodes[max(0, marker_index - 6):marker_index]):
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") == "heading":
+            return False
+        flow_text = _node_plain_text(node).strip()
+        if node.get("type") == "table":
+            return True
+        if flow_text:
+            break
+    else:
+        return False
+    if not flow_text or _NON_LINEAR_FLOW_RE.search(flow_text):
+        return False
+    arrows = _LINEAR_FLOW_ARROW_RE.findall(flow_text)
+    if not arrows or len(arrows) > 8:
+        return False
+    normalized_directions = {"down" if arrow == "↓" else "forward" for arrow in arrows}
+    if len(normalized_directions) != 1:
+        return False
+    segments = [part.strip() for part in _LINEAR_FLOW_ARROW_RE.split(flow_text) if part.strip()]
+    return 2 <= len(segments) <= 9
 
 
 def _strip_visual_markers(

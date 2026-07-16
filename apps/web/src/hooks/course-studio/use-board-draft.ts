@@ -49,7 +49,12 @@ type UseBoardDraftOptions = {
   onPackageApplied?: () => void;
 };
 
-function buildDocumentSavePayload(document: BoardDocument, reason: AutoSaveReason, baseCommitId: string | null) {
+function buildDocumentSavePayload(
+  document: BoardDocument,
+  reason: AutoSaveReason,
+  baseCommitId: string | null,
+  allowStructureRemoval: boolean
+) {
   if (reason === "manual") {
     return {
       document,
@@ -58,6 +63,7 @@ function buildDocumentSavePayload(document: BoardDocument, reason: AutoSaveReaso
       base_commit_id: baseCommitId,
       metadata: {
         kind: "manual_document_save",
+        ...(allowStructureRemoval ? { structure_removal_intent: true } : {}),
       },
     };
   }
@@ -71,6 +77,7 @@ function buildDocumentSavePayload(document: BoardDocument, reason: AutoSaveReaso
       autosave: true,
       autosave_reason: reason,
       source: "word_board_editor",
+      ...(allowStructureRemoval ? { structure_removal_intent: true } : {}),
     },
   };
 }
@@ -102,6 +109,7 @@ function richStructureCounts(document: BoardDocument) {
     orderedList: 0,
     listItem: 0,
     table: 0,
+    resourceVisualBlock: 0,
     blockquote: 0,
     paragraph: 0,
   };
@@ -153,23 +161,32 @@ function isStructuredDocument(document: BoardDocument) {
   return richStructureScore(richStructureCounts(document)) >= 8;
 }
 
-function wouldFlattenRenderedDocument(currentDocument: BoardDocument, nextDocument: BoardDocument) {
+function wouldFlattenRenderedDocument(
+  currentDocument: BoardDocument,
+  nextDocument: BoardDocument,
+  allowStructureRemoval = false
+) {
   const currentCounts = richStructureCounts(currentDocument);
   const nextCounts = richStructureCounts(nextDocument);
   const currentScore = richStructureScore(currentCounts);
   const headingHierarchyLost = currentCounts.heading >= 2 && nextCounts.heading === 0;
-  const tableStructureLost = currentCounts.table > 0 && nextCounts.table === 0;
+  const tableStructureLost = !allowStructureRemoval && currentCounts.table > 0 && nextCounts.table === 0;
+  const resourceVisualLost =
+    !allowStructureRemoval && currentCounts.resourceVisualBlock > nextCounts.resourceVisualBlock;
+  if (resourceVisualLost) {
+    return true;
+  }
   if (currentScore < 8 && !headingHierarchyLost && !tableStructureLost) {
     return false;
   }
   if (currentCounts.heading + currentCounts.table <= 0) {
     return false;
   }
-  if (nextCounts.heading || nextCounts.table) {
-    return false;
-  }
   if (headingHierarchyLost || tableStructureLost) {
     return true;
+  }
+  if (nextCounts.heading || nextCounts.table) {
+    return false;
   }
   const nextScore = richStructureScore(nextCounts);
   return (
@@ -198,6 +215,7 @@ export function useBoardDraft({
   const isPreviewingRef = useRef(false);
   const ignoredStreamingPreviewRef = useRef<BoardDocument | null>(null);
   const lastStructuredDocumentRef = useRef<BoardDocument | null>(null);
+  const structureRemovalIntentRef = useRef(false);
 
   const [draftDocument, setDraftDocument] = useState<BoardDocument | null>(null);
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
@@ -226,6 +244,7 @@ export function useBoardDraft({
       activeLessonRef.current = lesson;
       draftDocumentRef.current = nextDocument;
       lastStructuredDocumentRef.current = nextDocument && isStructuredDocument(nextDocument) ? nextDocument : null;
+      structureRemovalIntentRef.current = false;
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = false;
       if (!nextDocument || ignoredStreamingPreviewRef.current?.id !== nextDocument.id) {
@@ -247,6 +266,7 @@ export function useBoardDraft({
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = true;
       ignoredStreamingPreviewRef.current = null;
+      structureRemovalIntentRef.current = false;
       setDraftDocument(document);
       setIsDocumentDirty(false);
       setIsPreviewing(true);
@@ -309,6 +329,7 @@ export function useBoardDraft({
         }
         setIsDocumentDirty(false);
         isDocumentDirtyRef.current = false;
+        structureRemovalIntentRef.current = false;
         setAutoSaveStatus("saved");
         setError(null);
         return;
@@ -345,11 +366,11 @@ export function useBoardDraft({
         return true;
       }
       const structuredGuard = lastStructuredDocumentRef.current;
+      const allowStructureRemoval = structureRemovalIntentRef.current;
       if (
         structuredGuard &&
         structuredGuard.id === document.id &&
-        looksLikeSameRenderedDocument(document, structuredGuard) &&
-        wouldFlattenRenderedDocument(structuredGuard, document)
+        wouldFlattenRenderedDocument(structuredGuard, document, allowStructureRemoval)
       ) {
         draftDocumentRef.current = structuredGuard;
         isDocumentDirtyRef.current = false;
@@ -369,7 +390,7 @@ export function useBoardDraft({
       const savedVersion = documentDraftVersionRef.current;
       const isManualSave = reason === "manual";
       const baseCommitId = currentHeadCommitId(lesson);
-      const payload = buildDocumentSavePayload(document, reason, baseCommitId);
+      const payload = buildDocumentSavePayload(document, reason, baseCommitId, allowStructureRemoval);
       if (isManualSave) {
         setBusyAction("save");
       }
@@ -440,11 +461,11 @@ export function useBoardDraft({
         return;
       }
       const structuredGuard = lastStructuredDocumentRef.current;
+      const allowStructureRemoval = structureRemovalIntentRef.current;
       if (
         structuredGuard &&
         structuredGuard.id === document.id &&
-        looksLikeSameRenderedDocument(document, structuredGuard) &&
-        wouldFlattenRenderedDocument(structuredGuard, document)
+        wouldFlattenRenderedDocument(structuredGuard, document, allowStructureRemoval)
       ) {
         draftDocumentRef.current = structuredGuard;
         isDocumentDirtyRef.current = false;
@@ -458,7 +479,7 @@ export function useBoardDraft({
         return;
       }
       const baseCommitId = currentHeadCommitId(lesson);
-      const payload = buildDocumentSavePayload(document, reason, baseCommitId);
+      const payload = buildDocumentSavePayload(document, reason, baseCommitId, allowStructureRemoval);
       const sent = api.saveDocumentBeacon(lesson.id, payload);
       if (!sent) {
         void api.saveDocumentKeepalive(lesson.id, payload).catch(() => undefined);
@@ -475,6 +496,7 @@ export function useBoardDraft({
       }
       const ignoredStreamingPreview = ignoredStreamingPreviewRef.current;
       const structuredGuard = lastStructuredDocumentRef.current;
+      const allowStructureRemoval = structureRemovalIntentRef.current;
       if (
         ignoredStreamingPreview &&
         looksLikeSameRenderedDocument(nextDocument, ignoredStreamingPreview) &&
@@ -489,8 +511,8 @@ export function useBoardDraft({
         return;
       }
       if (
-        looksLikeSameRenderedDocument(nextDocument, lesson.board_document) &&
-        wouldFlattenRenderedDocument(lesson.board_document, nextDocument)
+        nextDocument.id === lesson.board_document.id &&
+        wouldFlattenRenderedDocument(lesson.board_document, nextDocument, allowStructureRemoval)
       ) {
         ignoredStreamingPreviewRef.current = null;
         draftDocumentRef.current = lesson.board_document;
@@ -503,8 +525,7 @@ export function useBoardDraft({
       if (
         structuredGuard &&
         structuredGuard.id === nextDocument.id &&
-        looksLikeSameRenderedDocument(nextDocument, structuredGuard) &&
-        wouldFlattenRenderedDocument(structuredGuard, nextDocument)
+        wouldFlattenRenderedDocument(structuredGuard, nextDocument, allowStructureRemoval)
       ) {
         ignoredStreamingPreviewRef.current = null;
         draftDocumentRef.current = structuredGuard;
@@ -543,6 +564,10 @@ export function useBoardDraft({
     },
     []
   );
+
+  const markStructureRemovalIntent = useCallback(() => {
+    structureRemovalIntentRef.current = true;
+  }, []);
 
   const handleImportDocx = useCallback(
     async (file: File) => {
@@ -650,6 +675,7 @@ export function useBoardDraft({
     flushAutoSave,
     flushAutoSaveWithBeacon,
     handleLocalDocumentChange,
+    markStructureRemovalIntent,
     handleImportDocx,
     handleExportDocx,
     handleExportHtml,

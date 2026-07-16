@@ -10,13 +10,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import SourceIngestionRecord, UserView
+from app.models import BoardDocument, SourceIngestionRecord, UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
+from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
 from app.services.youtube_transcript_adapter import YouTubeTranscript
@@ -142,6 +143,86 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     )
     assert restored.status_code == 200
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
+
+
+def test_autosave_rejects_unintended_table_loss_and_accepts_explicit_removal(
+    api_client: TestClient,
+) -> None:
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Structured save", "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+    structured = build_document(
+        title="Structured save",
+        document_id=lesson["board_document"]["id"],
+        content_text="# Overview\n\n## Details\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+    )
+    saved = api_client.post(
+        f"/api/lessons/{lesson['id']}/document/save",
+        json={
+            "document": structured.model_dump(mode="json"),
+            "metadata": {"kind": "manual_document_save"},
+        },
+    )
+    assert saved.status_code == 200
+    saved_lesson = saved.json()["lessons"][0]
+    saved_commit_id = saved_lesson["history_graph"]["branches"]["main"]["head_commit_id"]
+
+    flattened = build_document(
+        title="Structured save",
+        document_id=structured.id,
+        content_text="# Overview\n\n## Details\n\n| A | B | |---|---| | 1 | 2 |",
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 1},
+                    "content": [{"type": "text", "text": "Overview"}],
+                },
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "Details"}],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "| A | B | |---|---| | 1 | 2 |"}],
+                },
+            ],
+        },
+    )
+    rejected = api_client.post(
+        f"/api/lessons/{lesson['id']}/document/save",
+        json={
+            "document": flattened.model_dump(mode="json"),
+            "base_commit_id": saved_commit_id,
+            "metadata": {"kind": "auto_document_save", "autosave": True},
+        },
+    )
+    assert rejected.status_code == 200
+    rejected_lesson = rejected.json()["lessons"][0]
+    assert rich_structure_counts(BoardDocument.model_validate(rejected_lesson["board_document"]))["table"] == 1
+    assert rejected_lesson["history_graph"]["branches"]["main"]["head_commit_id"] == saved_commit_id
+
+    accepted = api_client.post(
+        f"/api/lessons/{lesson['id']}/document/save",
+        json={
+            "document": flattened.model_dump(mode="json"),
+            "base_commit_id": saved_commit_id,
+            "metadata": {
+                "kind": "auto_document_save",
+                "autosave": True,
+                "structure_removal_intent": True,
+            },
+        },
+    )
+    assert accepted.status_code == 200
+    assert rich_structure_counts(
+        BoardDocument.model_validate(accepted.json()["lessons"][0]["board_document"])
+    )["table"] == 0
 
 
 def test_export_docx_rejects_empty_board_document(api_client: TestClient) -> None:

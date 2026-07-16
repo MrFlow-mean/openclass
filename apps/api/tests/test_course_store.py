@@ -4,7 +4,7 @@ import sqlite3
 from app.models import BoardDocument, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
-from app.services.rich_document import build_document, rich_structure_counts
+from app.services.rich_document import build_document, rich_structure_counts, would_flatten_rich_document
 
 
 def _append_lesson(workspace, title: str = "测试页面"):
@@ -26,6 +26,55 @@ def test_initial_workspace_has_no_subject_demo_lessons() -> None:
     assert workspace.packages[0].open_lesson_ids == []
     assert workspace.packages[0].active_lesson_id is None
     assert workspace.packages[0].workspace_tab_order == []
+
+
+def test_structure_guard_rejects_table_loss_even_when_headings_remain() -> None:
+    current = build_document(
+        title="Structured",
+        content_text="# Overview\n\n## Details\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+    )
+    flattened = build_document(
+        title="Structured",
+        content_text="# Overview\n\n## Details\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 1},
+                    "content": [{"type": "text", "text": "Overview"}],
+                },
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "Details"}],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "| A | B | |---|---| | 1 | 2 |"}],
+                },
+            ],
+        },
+    )
+
+    assert would_flatten_rich_document(current_document=current, new_document=flattened)
+
+
+def test_structure_guard_allows_explicit_table_removal() -> None:
+    current = build_document(
+        title="Structured",
+        content_text="# Overview\n\n## Details\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+    )
+    edited = build_document(
+        title="Structured",
+        content_text="# Overview\n\n## Details\n\nThe table was intentionally removed.",
+    )
+
+    assert not would_flatten_rich_document(
+        current_document=current,
+        new_document=edited,
+        allow_structure_removal=True,
+    )
 
 
 def test_sqlite_store_round_trips_workspace_without_store_json(tmp_path) -> None:

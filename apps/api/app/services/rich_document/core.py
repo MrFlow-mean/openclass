@@ -1896,6 +1896,7 @@ def would_flatten_rich_document(
     current_document: BoardDocument,
     new_document: BoardDocument,
     operation: str | None = None,
+    allow_structure_removal: bool = False,
 ) -> bool:
     if operation is not None and operation != "replace_document":
         return False
@@ -1904,7 +1905,10 @@ def would_flatten_rich_document(
 
     old_counts = rich_structure_counts(current_document)
     new_counts = rich_structure_counts(new_document)
-    if old_counts.get("resourceVisualBlock", 0) > new_counts.get("resourceVisualBlock", 0):
+    if (
+        not allow_structure_removal
+        and old_counts.get("resourceVisualBlock", 0) > new_counts.get("resourceVisualBlock", 0)
+    ):
         return True
     old_score = rich_structure_score(old_counts)
     if old_score < 8:
@@ -1912,17 +1916,21 @@ def would_flatten_rich_document(
 
     if _would_degrade_leading_heading_hierarchy(current_document, new_document):
         return True
-    if new_counts.get("heading", 0) or new_counts.get("table", 0):
-        return False
 
     old_primary_structure = old_counts.get("heading", 0) + old_counts.get("table", 0)
     if old_primary_structure <= 0:
         return False
 
     heading_hierarchy_lost = old_counts.get("heading", 0) >= 2 and new_counts.get("heading", 0) == 0
-    table_structure_lost = old_counts.get("table", 0) > 0 and new_counts.get("table", 0) == 0
+    table_structure_lost = (
+        not allow_structure_removal
+        and old_counts.get("table", 0) > 0
+        and new_counts.get("table", 0) == 0
+    )
     if heading_hierarchy_lost or table_structure_lost:
         return True
+    if new_counts.get("heading", 0) or new_counts.get("table", 0):
+        return False
 
     new_score = rich_structure_score(new_counts)
     structure_dropped = new_score <= max(2, int(old_score * 0.5))

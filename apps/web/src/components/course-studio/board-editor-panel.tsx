@@ -19,6 +19,7 @@ type BoardEditorPanelProps = {
   toolbarCollapsed: boolean;
   onExitPreviewMode: () => void;
   onDocumentChange: (document: BoardDocument) => void;
+  onStructureRemovalIntent: () => void;
   onApplySelection: (selection: SelectionRef, position?: SelectionPopoverPosition | null) => void;
   onClearSelection: () => void;
   onImportDocx: (file: File) => void;
@@ -114,6 +115,7 @@ export function BoardEditorPanel({
   toolbarCollapsed,
   onExitPreviewMode,
   onDocumentChange,
+  onStructureRemovalIntent,
   onApplySelection,
   onClearSelection,
   onImportDocx,
@@ -157,6 +159,7 @@ export function BoardEditorPanel({
         teachingFocus={teachingFocus}
         toolbarCollapsed={toolbarCollapsed}
         onDocumentChange={onDocumentChange}
+        onStructureRemovalIntent={onStructureRemovalIntent}
         onSelectionChange={(payload) => {
           if (!payload) {
             onClearSelection();

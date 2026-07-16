@@ -132,6 +132,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
     package.active_lesson_id = lesson.id
     current_head = current_head_commit(lesson)
     is_autosave = request.metadata.get("autosave") is True or request.metadata.get("kind") == "auto_document_save"
+    allow_structure_removal = request.metadata.get("structure_removal_intent") is True
     guard_document: BoardDocument | None = None
     if request.base_commit_id and request.base_commit_id != current_head.id:
         if is_autosave:
@@ -144,6 +145,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         if would_flatten_rich_document(
             current_document=guard_document,
             new_document=request.document,
+            allow_structure_removal=allow_structure_removal,
         ):
             return package_view_for_lesson(workspace, package, lesson.id)
     with bind_ai_request_context(
@@ -174,6 +176,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         if is_autosave and guard_document and would_flatten_rich_document(
             current_document=guard_document,
             new_document=committed_head.snapshot,
+            allow_structure_removal=allow_structure_removal,
         ):
             _rollback_unpersisted_commit(
                 lesson,

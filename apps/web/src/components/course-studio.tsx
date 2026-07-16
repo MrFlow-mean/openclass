@@ -142,6 +142,7 @@ export function CourseStudio() {
     flushAutoSave,
     flushAutoSaveWithBeacon,
     handleLocalDocumentChange,
+    markStructureRemovalIntent,
     handleImportDocx,
     handleExportDocx,
     handleExportHtml,
@@ -623,6 +624,7 @@ export function CourseStudio() {
           toolbarCollapsed={topCollapsed}
           onExitPreviewMode={exitAnyPreviewMode}
           onDocumentChange={handleLocalDocumentChange}
+          onStructureRemovalIntent={markStructureRemovalIntent}
           onApplySelection={applySelection}
           onClearSelection={clearSelection}
           onImportDocx={(file) => void handleImportDocx(file)}

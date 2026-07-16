@@ -629,6 +629,7 @@ export function WordBoardEditor({
   teachingFocus,
   toolbarCollapsed,
   onDocumentChange,
+  onStructureRemovalIntent,
   onSelectionChange,
   onImportDocx,
   onExportDocx,
@@ -641,6 +642,7 @@ export function WordBoardEditor({
   teachingFocus?: BoardFocusRef | null;
   toolbarCollapsed: boolean;
   onDocumentChange: (document: BoardDocument) => void;
+  onStructureRemovalIntent: () => void;
   onSelectionChange: (
     selection: {
       locationKind: BoardTaskLocationKind;
@@ -1229,7 +1231,10 @@ export function WordBoardEditor({
           <ToolbarButton
             title="删除表格"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().deleteTable().run()}
+            onClick={() => {
+              onStructureRemovalIntent();
+              editor?.chain().focus().deleteTable().run();
+            }}
           >
             <Trash2 className="h-4 w-4" />
           </ToolbarButton>
@@ -1301,7 +1306,10 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<Trash2 className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().deleteTable().run()}
+          onClick={() => {
+            onStructureRemovalIntent();
+            editor?.chain().focus().deleteTable().run();
+          }}
         />
       </div>
     );

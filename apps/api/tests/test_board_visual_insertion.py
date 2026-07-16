@@ -193,6 +193,61 @@ def test_codex_recreation_marker_keeps_editable_markdown_without_loading_origina
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
 
 
+def test_unstructured_recreation_falls_back_to_verified_original(tmp_path) -> None:
+    visual = _visual(kind="diagram")
+    plan = build_board_insertion_plan([visual], nonce="fixed")
+    item = plan.items[0]
+    document = build_document(
+        title="Board",
+        content_text=f"A prose summary is not a visual recreation.\n\n{item.recreation_marker}",
+    )
+
+    outcome = apply_board_insertion_plan(
+        document,
+        plan=plan,
+        placements=derive_board_visual_placements(document, plan=plan),
+        owner_user_id="owner_a",
+        lesson_id="lesson_a",
+        visual_bytes_resolver=lambda _visual_id: (visual, _PNG),
+        asset_store=_store(tmp_path),
+    )
+
+    assert outcome.applied_visual_ids == [item.visual_id]
+    assert outcome.recreated_visual_ids == []
+    assert outcome.original_visual_ids == [item.visual_id]
+    assert len(outcome.asset_ids) == 1
+    assert [node["type"] for node in outcome.document.content_json["content"]] == [
+        "paragraph",
+        "resourceVisualBlock",
+    ]
+
+
+def test_single_direction_linear_flow_is_accepted_as_editable_recreation(tmp_path) -> None:
+    visual = _visual(kind="diagram")
+    plan = build_board_insertion_plan([visual], nonce="fixed")
+    item = plan.items[0]
+    document = build_document(
+        title="Board",
+        content_text=f"Input → Transform → Output\n\n{item.recreation_marker}",
+    )
+
+    outcome = apply_board_insertion_plan(
+        document,
+        plan=plan,
+        placements=derive_board_visual_placements(document, plan=plan),
+        owner_user_id="owner_a",
+        lesson_id="lesson_a",
+        visual_bytes_resolver=lambda _visual_id: pytest.fail(
+            "a verified linear recreation must not load the original image"
+        ),
+        asset_store=_store(tmp_path),
+    )
+
+    assert outcome.recreated_visual_ids == [item.visual_id]
+    assert outcome.original_visual_ids == []
+    assert [node["type"] for node in outcome.document.content_json["content"]] == ["paragraph"]
+
+
 def test_codex_first_marker_wins_when_both_visual_forms_are_present() -> None:
     plan = build_board_insertion_plan([_visual(kind="diagram")], nonce="fixed")
     item = plan.items[0]
