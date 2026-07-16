@@ -34,7 +34,10 @@ from app.services.source_structure_indexer import (
     _verify_pdf_toc_nodes,
 )
 from app.services.source_structure_store import SourceStructureStore
-from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
+from app.services.source_visual_extraction import (
+    CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+    SourceVisualExtractionResult,
+)
 
 
 def _source_record(path: Path, *, mime_type: str) -> SourceIngestionRecord:
@@ -104,6 +107,82 @@ def test_epub_ncx_preserves_native_parent_child_hierarchy(tmp_path: Path) -> Non
     assert chapters[2].parent_id == chapters[1].id
     assert chapters[3].parent_id is None
     assert chapters[2].path == ["Part I", "Overview", "Details"]
+    assert chapters[0].source_locator == "epub:OEBPS/cover.xhtml"
+    assert chapters[1].source_locator == "epub:OEBPS/overview.xhtml#overview"
+    assert chapters[0].body_start_offset == chapters[1].body_start_offset
+    assert chapters[0].body_end_offset == chapters[3].body_start_offset
+
+
+def test_failed_visual_rebuild_still_persists_new_epub_structure(tmp_path: Path) -> None:
+    class FailedVisualExtractor:
+        @staticmethod
+        def extract(**_kwargs):
+            return SourceVisualExtractionResult(
+                status="failed",
+                warnings=["visual object budget exceeded"],
+            )
+
+    epub_path = tmp_path / "nested-book.epub"
+    _write_nested_ncx_epub(epub_path)
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    record = _source_record(epub_path, mime_type="application/epub+zip")
+    source_store.save_source(record)
+    structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            id="structure_stale",
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="ready",
+            strategy="epub_navigation",
+            visual_index_status="failed",
+            visual_index_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+            metadata={"structure_index_version": CURRENT_SOURCE_STRUCTURE_INDEX_VERSION},
+        ),
+        chapters=[
+            SourceChapter(
+                id="chapter_stale",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                title="Stale chapter",
+                body_start_offset=0,
+                body_end_offset=13,
+                anchor_status="verified",
+            )
+        ],
+        chunks=[
+            SourceChunk(
+                id="chunk_stale",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                chapter_id="chapter_stale",
+                text="Stale chapter",
+                start_offset=0,
+                end_offset=13,
+            )
+        ],
+    )
+
+    rebuilt = SourceStructureIndexer(
+        store=structure_store,
+        visual_extractor=FailedVisualExtractor(),
+    ).rebuild_structure(record)
+    view = structure_store.get_structure_view(source=record)
+
+    assert rebuilt.status == "ready"
+    assert rebuilt.visual_index_status == "failed"
+    assert "visual object budget exceeded" in rebuilt.warnings
+    assert [chapter.title for chapter in view.chapters] == [
+        "Part I",
+        "Overview",
+        "Details",
+        "Part II",
+    ]
+    assert [chunk.text for chunk in view.chunks] != ["Stale chapter"]
 
 
 def test_chapter_range_closing_does_not_flatten_navigation_order() -> None:
@@ -745,13 +824,14 @@ def _write_nested_ncx_epub(path: Path) -> None:
             <package xmlns="http://www.idpf.org/2007/opf" version="2.0">
               <manifest>
                 <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-                <item id="part1" href="part1.xhtml" media-type="application/xhtml+xml"/>
+                <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
                 <item id="overview" href="overview.xhtml" media-type="application/xhtml+xml"/>
                 <item id="details" href="details.xhtml" media-type="application/xhtml+xml"/>
                 <item id="part2" href="part2.xhtml" media-type="application/xhtml+xml"/>
+                <item id="cover-image" href="cover.png" media-type="image/png"/>
               </manifest>
               <spine toc="toc">
-                <itemref idref="part1"/><itemref idref="overview"/>
+                <itemref idref="cover"/><itemref idref="overview"/>
                 <itemref idref="details"/><itemref idref="part2"/>
               </spine>
             </package>""",
@@ -763,13 +843,13 @@ def _write_nested_ncx_epub(path: Path) -> None:
               <navMap>
                 <navPoint id="part1">
                   <navLabel><text>Part I</text></navLabel>
-                  <content src="part1.xhtml"/>
+                  <content src="cover.xhtml"/>
                   <navPoint id="overview">
                     <navLabel><text>Overview</text></navLabel>
-                    <content src="overview.xhtml"/>
+                    <content src="overview.xhtml#overview"/>
                     <navPoint id="details">
                       <navLabel><text>Details</text></navLabel>
-                      <content src="details.xhtml"/>
+                      <content src="details.xhtml#details"/>
                     </navPoint>
                   </navPoint>
                 </navPoint>
@@ -780,15 +860,25 @@ def _write_nested_ncx_epub(path: Path) -> None:
               </navMap>
             </ncx>""",
         )
+        archive.writestr(
+            "OEBPS/cover.xhtml",
+            '<html><body><img src="cover.png" alt=""/></body></html>',
+        )
+        archive.writestr(
+            "OEBPS/cover.png",
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ),
+        )
         for name, title in (
-            ("part1.xhtml", "Part I"),
             ("overview.xhtml", "Overview"),
             ("details.xhtml", "Details"),
             ("part2.xhtml", "Part II"),
         ):
+            anchor = Path(name).stem
             archive.writestr(
                 f"OEBPS/{name}",
-                f"<html><body><h1>{title}</h1><p>{title} body.</p></body></html>",
+                f'<html><body><h1 id="{anchor}">{title}</h1><p>{title} body.</p></body></html>',
             )
 
 

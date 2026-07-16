@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote
 
 from app.models import (
     SourceChapter,
@@ -36,7 +37,6 @@ from app.services.source_ingestion_jobs import SourceIngestionCoordinator
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 from app.services.source_visual_extraction import (
     CURRENT_SOURCE_VISUAL_INDEX_VERSION,
-    SourceVisualExtractionFatalError,
     SourceVisualExtractionResult,
     SourceVisualExtractor,
     source_visual_extractor,
@@ -46,7 +46,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 6
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 7
 SourceIndexProgressCallback = Callable[[str, int], None]
 
 
@@ -92,6 +92,20 @@ class ParsedSourceDocument:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _EpubNavigationItem:
+    target: str
+    fragment: str
+    label: str
+    order: int
+    level: int
+
+    @property
+    def source_locator(self) -> str:
+        suffix = f"#{self.fragment}" if self.fragment else ""
+        return f"epub:{self.target}{suffix}"
+
+
 class SourceStructureIndexer:
     def __init__(
         self,
@@ -130,8 +144,8 @@ class SourceStructureIndexer:
                 # Reuse the public rebuild boundary for lazy upgrades.  Besides
                 # preserving the existing observable contract, this keeps text,
                 # chapter, chunk, and visual identities on one atomic save path.
-                # rebuild_structure retains the previous usable bundle if either
-                # structural or visual parsing fails.
+                # Structure-only upgrades preserve the current visual index so
+                # a visual rebuild cannot block newer chapter parsing.
                 if not structure_is_current and visuals_are_current:
                     if progress_callback is None:
                         return self.rebuild_structure(record, preserve_existing_visuals=True)
@@ -265,10 +279,28 @@ class SourceStructureIndexer:
                         visual_result.status == "failed"
                         and previous is not None
                         and previous.status in {"ready", "linear_only"}
+                        and previous.visual_index_status in {"ready", "partial"}
                     ):
-                        raise SourceVisualExtractionFatalError(
-                            "; ".join(visual_result.warnings)
-                            or "Source visual extraction failed."
+                        previous_view = self.store.get_structure_view(
+                            source=record,
+                            chunk_limit=0,
+                        )
+                        visual_result = SourceVisualExtractionResult(
+                            status=previous.visual_index_status,
+                            visuals=_reanchor_existing_visuals(
+                                previous_view.visuals,
+                                structure=building,
+                                chapters=chapters,
+                                chunks=chunks,
+                            ),
+                            warnings=list(
+                                dict.fromkeys(
+                                    [
+                                        *visual_result.warnings,
+                                        "视觉索引重建失败，已保留上一次可用的视觉索引。",
+                                    ]
+                                )
+                            ),
                         )
                 except Exception as visual_exc:
                     if previous is not None and previous.status in {"ready", "linear_only"}:
@@ -984,7 +1016,7 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         nav_items = _epub_navigation_items(archive, names)
         nav_chapters = _chapters_from_epub_nav(nav_items, docs, offset_by_name)
         if nav_chapters:
-            _close_chapter_ranges(nav_chapters, len(full_text))
+            _close_epub_navigation_ranges(nav_chapters, len(full_text))
             return ParsedSourceDocument(
                 text=full_text,
                 chapters=nav_chapters,
@@ -1039,8 +1071,8 @@ def _epub_spine_items(archive: SafeSourceArchive) -> list[str]:
 def _epub_navigation_items(
     archive: SafeSourceArchive,
     names: list[str],
-) -> list[tuple[str, str, int, int]]:
-    items: list[tuple[str, str, int, int]] = []
+) -> list[_EpubNavigationItem]:
+    items: list[_EpubNavigationItem] = []
     nav_names = [name for name in names if re.search(r"(^|/)(nav|toc)\.(xhtml|html|htm)$", name, re.I)]
     for name in nav_names:
         try:
@@ -1055,9 +1087,17 @@ def _epub_navigation_items(
         for href, label, level in parser.links:
             if not label.strip() or not href.strip():
                 continue
-            target = f"{base}/{href.split('#', 1)[0]}".lstrip("/")
+            target, fragment = _epub_navigation_target(base, href)
             if target:
-                items.append((target, _clean_label(label), len(items), level))
+                items.append(
+                    _EpubNavigationItem(
+                        target=target,
+                        fragment=fragment,
+                        label=_clean_label(label),
+                        order=len(items),
+                        level=level,
+                    )
+                )
     if items:
         return _dedupe_nav_items(items)
     for name in [entry for entry in names if entry.lower().endswith(".ncx")]:
@@ -1097,8 +1137,17 @@ def _epub_navigation_items(
                     elif child_tag == "content":
                         src = child.attrib.get("src", "")
                 if label and src:
-                    target = f"{base}/{src.split('#', 1)[0]}".lstrip("/")
-                    items.append((target, _clean_label(label), len(items), level))
+                    target, fragment = _epub_navigation_target(base, src)
+                    if target:
+                        items.append(
+                            _EpubNavigationItem(
+                                target=target,
+                                fragment=fragment,
+                                label=_clean_label(label),
+                                order=len(items),
+                                level=level,
+                            )
+                        )
                 visit(point, level + 1)
 
         visit(nav_map)
@@ -1106,41 +1155,60 @@ def _epub_navigation_items(
 
 
 def _chapters_from_epub_nav(
-    nav_items: list[tuple[str, str, int, int]],
+    nav_items: list[_EpubNavigationItem],
     docs: list[tuple[str, str, list[DetectedChapter]]],
     offset_by_name: dict[str, int],
 ) -> list[DetectedChapter]:
     docs_by_name = {name: text for name, text, _headings in docs}
     chapters: list[DetectedChapter] = []
-    for target, label, order, navigation_level in nav_items:
-        if target not in docs_by_name:
-            continue
-        base_offset = offset_by_name.get(target)
-        if base_offset is None:
-            continue
-        text = docs_by_name[target]
-        local_index = _find_title_offset(text, label)
-        start_offset = base_offset + max(local_index, 0)
-        number = _number_from_title(label)
+    for item in nav_items:
+        text = docs_by_name.get(item.target, "")
+        base_offset = offset_by_name.get(item.target)
+        local_index = _find_title_offset(text, item.label)
+        start_offset = (
+            base_offset + max(local_index, 0)
+            if base_offset is not None
+            else None
+        )
+        if local_index >= 0:
+            confidence = 0.95
+        elif base_offset is not None:
+            confidence = 0.78
+        else:
+            confidence = 0.5
+        number = _number_from_title(item.label)
         numbered_level = len(number.split(".")) if number else 1
         chapters.append(
             DetectedChapter(
-                title=label,
+                title=item.label,
                 number=number,
-                level=max(1, navigation_level, numbered_level),
-                source_locator=f"epub:{target}",
+                level=max(1, item.level, numbered_level),
+                source_locator=item.source_locator,
                 start_offset=start_offset,
-                confidence=0.95 if local_index >= 0 else 0.78,
-                verified=True,
+                confidence=confidence,
+                verified=base_offset is not None,
                 metadata={
                     "source": "epub_navigation",
-                    "file": target,
-                    "nav_order": order,
-                    "navigation_level": navigation_level,
+                    "file": item.target,
+                    "fragment": item.fragment,
+                    "nav_order": item.order,
+                    "navigation_level": item.level,
+                    "direct_anchor_verified": base_offset is not None,
                 },
             )
         )
     return chapters
+
+
+def _epub_navigation_target(base: str, href: str) -> tuple[str, str]:
+    target_path, separator, fragment = html.unescape(href).partition("#")
+    decoded_path = unquote(target_path.strip())
+    if not decoded_path:
+        return ("", fragment.strip() if separator else "")
+    target = posixpath.normpath(posixpath.join(base, decoded_path)).lstrip("/")
+    if target == ".." or target.startswith("../"):
+        return ("", "")
+    return (target, unquote(fragment.strip()) if separator else "")
 
 
 @dataclass
@@ -1754,6 +1822,61 @@ def _close_chapter_ranges(chapters: list[DetectedChapter], text_length: int) -> 
             chapter.page_end = next_chapter.page_start if next_chapter and next_chapter.page_start else chapter.page_start
 
 
+def _close_epub_navigation_ranges(
+    chapters: list[DetectedChapter],
+    text_length: int,
+) -> None:
+    for index, chapter in enumerate(chapters):
+        subtree_end = next(
+            (
+                candidate_index
+                for candidate_index in range(index + 1, len(chapters))
+                if chapters[candidate_index].level <= chapter.level
+            ),
+            len(chapters),
+        )
+        descendants = chapters[index + 1 : subtree_end]
+        first_descendant_anchor = next(
+            (
+                candidate
+                for candidate in descendants
+                if candidate.verified and candidate.start_offset is not None
+            ),
+            None,
+        )
+        if chapter.start_offset is None and first_descendant_anchor is not None:
+            chapter.start_offset = first_descendant_anchor.start_offset
+            chapter.verified = True
+            chapter.confidence = max(
+                chapter.confidence,
+                min(0.9, first_descendant_anchor.confidence),
+            )
+            chapter.metadata = {
+                **chapter.metadata,
+                "anchor_source": "first_verified_descendant",
+            }
+        if chapter.start_offset is None:
+            continue
+        next_scope_anchor = next(
+            (
+                candidate.start_offset
+                for candidate in chapters[subtree_end:]
+                if candidate.verified and candidate.start_offset is not None
+            ),
+            None,
+        )
+        chapter.end_offset = max(
+            chapter.start_offset,
+            next_scope_anchor if next_scope_anchor is not None else text_length,
+        )
+        if descendants:
+            chapter.metadata = {
+                **chapter.metadata,
+                "navigation_container": True,
+                "range_source": "navigation_subtree",
+            }
+
+
 def _chapter_for_chunk(
     start: int,
     end: int,
@@ -1971,16 +2094,16 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _dedupe_nav_items(
-    items: list[tuple[str, str, int, int]],
-) -> list[tuple[str, str, int, int]]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[tuple[str, str, int, int]] = []
-    for target, label, order, level in items:
-        key = (target, label)
+    items: list[_EpubNavigationItem],
+) -> list[_EpubNavigationItem]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[_EpubNavigationItem] = []
+    for item in items:
+        key = (item.target, item.fragment, item.label)
         if key in seen:
             continue
         seen.add(key)
-        deduped.append((target, label, order, level))
+        deduped.append(item)
     return deduped
 
 
