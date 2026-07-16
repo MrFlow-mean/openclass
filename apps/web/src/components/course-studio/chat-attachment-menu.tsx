@@ -2,7 +2,8 @@
 
 import clsx from "clsx";
 import { FilePlus2, FileText, ImagePlus, LoaderCircle, Plus, X } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type ChangeEvent, type RefObject } from "react";
+import { createPortal } from "react-dom";
 
 import { api } from "@/lib/api";
 import type { ChatAttachmentRef, SourceIngestionRecord } from "@/types";
@@ -83,19 +84,23 @@ export function ChatAttachmentMenu({
   packageId,
   attachments,
   disabled,
+  menuAboveRef,
   onChange,
   onError,
 }: {
   packageId: string;
   attachments: ChatAttachmentRef[];
   disabled: boolean;
+  menuAboveRef: RefObject<HTMLElement | null>;
   onChange: (attachments: ChatAttachmentRef[]) => void;
   onError: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingFileIds = attachments
@@ -143,7 +148,8 @@ export function ChatAttachmentMenu({
       return;
     }
     function closeMenu(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false);
       }
     }
@@ -159,6 +165,35 @@ export function ChatAttachmentMenu({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function updateMenuPosition() {
+      const trigger = rootRef.current;
+      const menu = menuRef.current;
+      const boundary = menuAboveRef.current;
+      if (!trigger || !menu || !boundary) {
+        return;
+      }
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const boundaryRect = boundary.getBoundingClientRect();
+      setMenuPosition({
+        left: Math.max(8, Math.min(triggerRect.left, window.innerWidth - menuRect.width - 8)),
+        top: Math.max(8, boundaryRect.top - menuRect.height - 8),
+      });
+    }
+    const frameId = window.requestAnimationFrame(updateMenuPosition);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [menuAboveRef, open]);
 
   async function uploadFiles(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -210,69 +245,84 @@ export function ChatAttachmentMenu({
     }
   }
 
+  const menu =
+    open && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label="添加内容"
+            style={menuPosition ?? { left: 0, top: 0, visibility: "hidden" }}
+            className="fixed z-[100] w-48 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => imageInputRef.current?.click()}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
+            >
+              <ImagePlus className="h-4 w-4 text-gray-500" />
+              添加图片
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
+            >
+              <FilePlus2 className="h-4 w-4 text-gray-500" />
+              添加文件
+            </button>
+          </div>,
+          document.body
+        )
+      : null;
+
   return (
-    <div ref={rootRef} className="relative shrink-0">
-      <input
-        ref={imageInputRef}
-        type="file"
-        multiple
-        accept="image/*"
-        onChange={(event) => void uploadFiles(event)}
-        className="hidden"
-        disabled={disabled || isUploading}
-        data-testid="chat-image-input"
-      />
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        accept={FILE_ACCEPT}
-        onChange={(event) => void uploadFiles(event)}
-        className="hidden"
-        disabled={disabled || isUploading}
-        data-testid="chat-file-input"
-      />
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        disabled={disabled || isUploading}
-        aria-label={isUploading ? "正在添加附件" : "添加附件"}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        className={clsx(
-          "flex h-8 w-8 items-center justify-center rounded-full text-gray-600 transition hover:bg-gray-100 hover:text-black disabled:cursor-not-allowed disabled:opacity-50",
-          open && "bg-gray-100 text-black"
-        )}
-        title={isUploading ? `上传中 ${uploadProgress ?? 0}%` : "添加附件"}
-      >
-        {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-      </button>
-      {open ? (
-        <div
-          role="menu"
-          aria-label="添加内容"
-          className="absolute bottom-11 left-0 z-40 w-48 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl"
+    <>
+      <div ref={rootRef} className="relative shrink-0">
+        <input
+          ref={imageInputRef}
+          type="file"
+          multiple
+          accept="image/*"
+          onChange={(event) => void uploadFiles(event)}
+          className="hidden"
+          disabled={disabled || isUploading}
+          data-testid="chat-image-input"
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={FILE_ACCEPT}
+          onChange={(event) => void uploadFiles(event)}
+          className="hidden"
+          disabled={disabled || isUploading}
+          data-testid="chat-file-input"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            if (!open) {
+              setMenuPosition(null);
+            }
+            setOpen(!open);
+          }}
+          disabled={disabled || isUploading}
+          aria-label={isUploading ? "正在添加附件" : "添加附件"}
+          aria-expanded={open}
+          aria-haspopup="menu"
+          className={clsx(
+            "flex h-8 w-8 items-center justify-center rounded-full text-gray-600 transition hover:bg-gray-100 hover:text-black disabled:cursor-not-allowed disabled:opacity-50",
+            open && "bg-gray-100 text-black"
+          )}
+          title={isUploading ? `上传中 ${uploadProgress ?? 0}%` : "添加附件"}
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => imageInputRef.current?.click()}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
-          >
-            <ImagePlus className="h-4 w-4 text-gray-500" />
-            添加图片
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-100 hover:text-black"
-          >
-            <FilePlus2 className="h-4 w-4 text-gray-500" />
-            添加文件
-          </button>
-        </div>
-      ) : null}
-    </div>
+          {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+        </button>
+      </div>
+      {menu}
+    </>
   );
 }
