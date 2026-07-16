@@ -4,6 +4,7 @@ import hashlib
 import html
 import posixpath
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -19,7 +20,12 @@ from app.models import (
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
-from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
+from app.services.pdf_toc_parser import (
+    PdfOutlineAnchor,
+    PdfTocNode,
+    extract_pdf_toc,
+    extract_pdf_toc_from_range,
+)
 from app.services.native_source_index import source_chunk_text_hash
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_archive import SafeSourceArchive
@@ -806,6 +812,35 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
                 "printed_page_mapping_support": extraction.mapping_support,
                 "ocr_toc_node_count": len(extraction.nodes),
             }
+    elif not outline_chapters:
+        detected_toc_pages = [page for page in pages[:30] if _looks_like_toc_page(page.text)]
+        if detected_toc_pages:
+            extraction = extract_pdf_toc_from_range(
+                path,
+                page_start=min(page.page_no for page in detected_toc_pages),
+                page_end=max(page.page_no for page in detected_toc_pages),
+            )
+            warnings.extend(extraction.warnings)
+            if extraction.nodes:
+                printed_page_offset, mapping_support = _verify_pdf_toc_nodes(
+                    extraction.nodes,
+                    pages,
+                )
+                layout_chapters = [
+                    chapter
+                    for chapter in _chapters_from_pdf_toc(extraction.nodes, pages)
+                    if chapter.verified
+                ]
+                if any(chapter.verified for chapter in layout_chapters):
+                    chapters = layout_chapters
+                    strategy = "pdf_layout_toc"
+                    toc_metadata = {
+                        "toc_page_start": extraction.toc_page_start,
+                        "toc_page_end": extraction.toc_page_end,
+                        "printed_page_offset": printed_page_offset,
+                        "printed_page_mapping_support": mapping_support,
+                        "ocr_toc_node_count": len(extraction.nodes),
+                    }
     if not any(chapter.verified for chapter in chapters):
         toc_fallback = _pdf_toc_chapters(pages, full_text)
         if toc_fallback:
@@ -1225,13 +1260,18 @@ def _chapters_from_pdf_toc(nodes: list[PdfTocNode], pages: list[PageText]) -> li
             else None
         )
         verified = node.verified and page is not None
+        local_offset = _find_title_offset(page.text, node.title) if page is not None else -1
         chapters.append(
             DetectedChapter(
                 title=node.title,
-                number=node.number,
+                number=node.number or _number_from_title(node.title),
                 level=node.level,
                 source_locator=f"pdf:toc-page:{node.toc_page}:printed:{node.printed_page}",
-                start_offset=page.start_offset if verified and page else None,
+                start_offset=(
+                    page.start_offset + local_offset
+                    if verified and page and local_offset >= 0
+                    else page.start_offset if verified and page else None
+                ),
                 page_start=page.page_no if verified and page else None,
                 confidence=node.confidence,
                 verified=verified,
@@ -1239,6 +1279,62 @@ def _chapters_from_pdf_toc(nodes: list[PdfTocNode], pages: list[PageText]) -> li
             )
         )
     return chapters
+
+
+def _verify_pdf_toc_nodes(nodes: list[PdfTocNode], pages: list[PageText]) -> tuple[int | None, int]:
+    if not nodes:
+        return None, 0
+    for index, node in enumerate(nodes):
+        if node.printed_page > 0 or index == 0:
+            continue
+        parent = nodes[index - 1]
+        if parent.printed_page > 0 and node.level > parent.level:
+            node.printed_page = parent.printed_page
+            node.metadata = {**node.metadata, "printed_page_inferred": True}
+    last_toc_page = max(node.toc_page for node in nodes)
+    body_pages = [page for page in pages if page.page_no > last_toc_page]
+    direct_matches: dict[int, PageText] = {}
+    offset_votes: Counter[int] = Counter()
+    for index, node in enumerate(nodes):
+        for page in body_pages:
+            if _find_title_offset(page.text, node.title) < 0:
+                continue
+            direct_matches[index] = page
+            if node.printed_page > 0:
+                offset_votes[page.page_no - node.printed_page] += 1
+            break
+    printed_page_offset: int | None = None
+    mapping_support = 0
+    if offset_votes:
+        printed_page_offset, mapping_support = offset_votes.most_common(1)[0]
+        if mapping_support < 2:
+            printed_page_offset = None
+    pages_by_number = {page.page_no: page for page in body_pages}
+    for index, node in enumerate(nodes):
+        direct_page = direct_matches.get(index)
+        if node.printed_page <= 0 and direct_page is not None and printed_page_offset is not None:
+            node.printed_page = max(1, direct_page.page_no - printed_page_offset)
+            node.metadata = {**node.metadata, "printed_page_inferred": True}
+        mapped_page = (
+            pages_by_number.get(node.printed_page + printed_page_offset)
+            if printed_page_offset is not None and node.printed_page > 0
+            else None
+        )
+        page = mapped_page or direct_page
+        if page is None:
+            continue
+        node.physical_page = page.page_no
+        node.verified = True
+        node.confidence = 0.9 if mapped_page is not None else 0.82
+        node.metadata = {
+            **node.metadata,
+            "verification": (
+                "verified_printed_page_mapping" if mapped_page is not None else "body_title_match"
+            ),
+            "printed_page_offset": printed_page_offset,
+            "printed_page_mapping_support": mapping_support,
+        }
+    return printed_page_offset, mapping_support
 
 
 def _merge_pdf_navigation(
@@ -1302,9 +1398,8 @@ def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedCha
     if not toc_pages:
         return []
     body_pages = [page for page in pages if page.page_no > max(toc.page_no for toc in toc_pages)]
-    chapters: list[DetectedChapter] = []
+    candidates: list[tuple[str, int, PageText]] = []
     seen: set[tuple[str, int]] = set()
-    has_root = False
     for toc_page in toc_pages[:6]:
         for line in toc_page.text.splitlines():
             parsed = _parse_toc_line(line)
@@ -1315,49 +1410,114 @@ def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedCha
             if key in seen:
                 continue
             seen.add(key)
-            title_offset = -1
-            matched_page: PageText | None = None
-            for page in body_pages:
-                local_offset = _find_title_offset(page.text, title)
-                if local_offset >= 0:
-                    title_offset = page.start_offset + local_offset
-                    matched_page = page
-                    break
-            number = _number_from_title(title)
-            level = max(1, len(number.split("."))) if number else (2 if has_root else 1)
-            if level == 1:
-                has_root = True
-            chapters.append(
-                DetectedChapter(
-                    title=title,
-                    number=number,
-                    level=level,
-                    source_locator=f"pdf:toc-page:{toc_page.page_no}:printed:{printed_page}",
-                    start_offset=title_offset if title_offset >= 0 else None,
-                    page_start=matched_page.page_no if matched_page else None,
-                    confidence=0.82 if title_offset >= 0 else 0.62,
-                    verified=title_offset >= 0,
-                    metadata={
-                        "source": "pdf_toc",
-                        "printed_page": printed_page,
-                        "verification": "body_title_match" if title_offset >= 0 else "toc_candidate",
-                    },
-                )
+            candidates.append((title, printed_page, toc_page))
+
+    direct_matches: dict[tuple[str, int], tuple[PageText, int]] = {}
+    offset_votes: Counter[int] = Counter()
+    for title, printed_page, _toc_page in candidates:
+        for page in body_pages:
+            local_offset = _find_title_offset(page.text, title)
+            if local_offset < 0:
+                continue
+            direct_matches[(_normalize_for_match(title), printed_page)] = (page, local_offset)
+            offset_votes[page.page_no - printed_page] += 1
+            break
+
+    printed_page_offset: int | None = None
+    mapping_support = 0
+    if offset_votes:
+        printed_page_offset, mapping_support = offset_votes.most_common(1)[0]
+        if mapping_support < 2:
+            printed_page_offset = None
+
+    pages_by_number = {page.page_no: page for page in body_pages}
+    chapters: list[DetectedChapter] = []
+    for title, printed_page, toc_page in candidates:
+        direct_match = direct_matches.get((_normalize_for_match(title), printed_page))
+        mapped_page = (
+            pages_by_number.get(printed_page + printed_page_offset)
+            if printed_page_offset is not None
+            else None
+        )
+        matched_page = mapped_page or (direct_match[0] if direct_match else None)
+        local_offset = _find_title_offset(matched_page.text, title) if matched_page else -1
+        if local_offset < 0 and direct_match and matched_page is direct_match[0]:
+            local_offset = direct_match[1]
+        title_offset = (
+            matched_page.start_offset + local_offset
+            if matched_page and local_offset >= 0
+            else matched_page.start_offset if matched_page else None
+        )
+        verified_by_mapping = mapped_page is not None and printed_page_offset is not None
+        verified = verified_by_mapping or direct_match is not None
+        chapters.append(
+            DetectedChapter(
+                title=title,
+                number=_number_from_title(title),
+                level=_toc_title_level(title),
+                source_locator=f"pdf:toc-page:{toc_page.page_no}:printed:{printed_page}",
+                start_offset=title_offset,
+                page_start=matched_page.page_no if matched_page else None,
+                confidence=0.9 if verified_by_mapping else 0.82 if verified else 0.62,
+                verified=verified,
+                metadata={
+                    "source": "pdf_toc",
+                    "printed_page": printed_page,
+                    "verification": (
+                        "verified_printed_page_mapping"
+                        if verified_by_mapping
+                        else "body_title_match" if direct_match else "toc_candidate"
+                    ),
+                    "printed_page_offset": printed_page_offset,
+                    "printed_page_mapping_support": mapping_support,
+                },
             )
+        )
     return chapters
 
 
 def _parse_toc_line(line: str) -> tuple[str, int] | None:
-    cleaned = _clean_label(line)
-    if len(cleaned) < 6 or len(cleaned) > 180:
+    raw = html.unescape(line or "").strip()
+    if len(raw) < 4 or len(raw) > 240:
         return None
-    match = re.match(r"^(.+?)(?:\.{2,}\s*|\s{2,})(\d{1,4})$", cleaned)
-    if not match:
+    page_match = re.search(
+        r"[（(\[]?\s*(\d{1,4}|[IVXLCDM]{1,8})\s*[）)\]]?\s*[.．·•]?\s*$",
+        raw,
+        flags=re.I,
+    )
+    if not page_match:
         return None
-    title = _clean_label(match.group(1))
+    prefix = raw[: page_match.start()]
+    leader_match = re.search(r"(?:[.．。·•⋯…]|\s){2,}$", prefix)
+    if not leader_match or not re.search(r"[.．。·•⋯…]", leader_match.group(0)):
+        return None
+    title = _clean_label(prefix[: leader_match.start()])
     if not title or re.fullmatch(r"\d+(?:\.\d+)*", title):
         return None
-    return title, int(match.group(2))
+    page_token = page_match.group(1)
+    printed_page = int(page_token) if page_token.isdigit() else _roman_numeral_value(page_token)
+    return (title, printed_page) if printed_page > 0 else None
+
+
+def _toc_title_level(title: str) -> int:
+    cleaned = _clean_label(title)
+    number = _number_from_title(cleaned)
+    if number and "." in number:
+        return min(6, len(number.split(".")))
+    if re.match(r"^第\s*[0-9一二三四五六七八九十百千零〇两]+\s*节", cleaned):
+        return 2
+    return 1
+
+
+def _roman_numeral_value(value: str) -> int:
+    values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    total = 0
+    previous = 0
+    for character in reversed(value.upper()):
+        current = values.get(character, 0)
+        total += -current if current < previous else current
+        previous = max(previous, current)
+    return total
 
 
 def _looks_like_toc_page(text: str) -> bool:

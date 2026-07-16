@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.models import SourceIngestionJob, SourceIngestionRecord, SourceStructureView, UserView
 from app.routers.auth import current_user
@@ -53,7 +54,8 @@ async def import_package_source(
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-            return source_ingestion_service.add_file_source(
+            return await run_in_threadpool(
+                source_ingestion_service.add_file_source,
                 owner_user_id=user.id,
                 package=package,
                 file_name=file.filename or "source",

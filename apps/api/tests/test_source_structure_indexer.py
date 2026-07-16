@@ -24,6 +24,8 @@ from app.services.source_structure_indexer import (
     SourceStructureIndexer,
     _chapter_for_chunk,
     _pdf_outline_chapters,
+    _pdf_toc_chapters,
+    _verify_pdf_toc_nodes,
 )
 from app.services.source_structure_store import SourceStructureStore
 from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
@@ -89,6 +91,83 @@ def test_plain_text_without_headings_uses_linear_chunks_without_fake_toc(tmp_pat
     assert structure.has_verified_toc is False
     assert view.chapters == []
     assert view.chunks
+
+
+def test_bookmarkless_pdf_toc_uses_verified_printed_page_mapping() -> None:
+    raw_pages = [
+        "封面",
+        "目录\n第一章 总论…………1\n第一节 基础概念…………3\n第二章 后续主题…………8",
+        "前言",
+        "第一章 总论\n本章正文。",
+        "正文续页",
+        "第一节 基础概念\n本节正文。",
+        "正文续页",
+        "正文续页",
+        "正文续页",
+        "正文续页",
+        "第二章 后续主题\n后续正文。",
+    ]
+    pages: list[PageText] = []
+    offset = 0
+    for page_no, text in enumerate(raw_pages, start=1):
+        pages.append(PageText(page_no=page_no, text=text, start_offset=offset, end_offset=offset + len(text)))
+        offset += len(text)
+
+    chapters = _pdf_toc_chapters(pages, "".join(raw_pages))
+
+    assert [chapter.title for chapter in chapters] == ["第一章 总论", "第一节 基础概念", "第二章 后续主题"]
+    assert [chapter.page_start for chapter in chapters] == [4, 6, 11]
+    assert [chapter.level for chapter in chapters] == [1, 2, 1]
+    assert all(chapter.verified for chapter in chapters)
+    assert all(chapter.metadata["printed_page_offset"] == 3 for chapter in chapters)
+
+
+def test_layout_toc_keeps_chapters_and_sections_at_distinct_levels() -> None:
+    rows = [
+        pdf_toc_parser._RawTocRow("第一章 总论", 1, 3, 0.10, 0.02),
+        pdf_toc_parser._RawTocRow("第一节 基础概念", 1, 3, 0.15, 0.02),
+    ]
+
+    pdf_toc_parser._assign_levels(rows)
+
+    assert [row.level for row in rows] == [1, 2]
+    assert pdf_toc_parser._printed_page_number("⋯（12）") == 12
+
+
+def test_layout_toc_nodes_are_verified_by_printed_page_offset() -> None:
+    nodes = [
+        pdf_toc_parser.PdfTocNode(title="第一章 总论", printed_page=1, toc_page=2, level=1),
+        pdf_toc_parser.PdfTocNode(title="第一节 基础概念", printed_page=1, toc_page=2, level=2),
+    ]
+    pages = [
+        PageText(page_no=1, text="封面", start_offset=0),
+        PageText(page_no=2, text="目录", start_offset=2),
+        PageText(page_no=3, text="第一章 总论\n第一节 基础概念", start_offset=4),
+    ]
+
+    offset, support = _verify_pdf_toc_nodes(nodes, pages)
+
+    assert (offset, support) == (2, 2)
+    assert [node.physical_page for node in nodes] == [3, 3]
+    assert all(node.verified for node in nodes)
+
+
+def test_layout_toc_infers_a_missing_printed_page_from_body_anchor() -> None:
+    nodes = [
+        pdf_toc_parser.PdfTocNode(title="第一章 总论", printed_page=1, toc_page=2, level=1),
+        pdf_toc_parser.PdfTocNode(title="第一节 基础概念", printed_page=0, toc_page=2, level=2),
+        pdf_toc_parser.PdfTocNode(title="第二章 后续主题", printed_page=8, toc_page=2, level=1),
+    ]
+    pages = [PageText(page_no=page_no, text="", start_offset=page_no) for page_no in range(1, 12)]
+    pages[3 - 1].text = "第一章 总论"
+    pages[10 - 1].text = "第二章 后续主题"
+
+    offset, support = _verify_pdf_toc_nodes(nodes, pages)
+
+    assert (offset, support) == (2, 2)
+    assert nodes[1].printed_page == 1
+    assert nodes[1].physical_page == 3
+    assert nodes[1].metadata["printed_page_inferred"] is True
 
 
 def test_failed_rebuild_keeps_last_usable_structure(tmp_path: Path, monkeypatch) -> None:

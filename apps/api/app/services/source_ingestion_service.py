@@ -408,7 +408,7 @@ class SourceIngestionService:
         *,
         rebuild: bool = False,
     ) -> SourceIngestionRecord:
-        saved = self.store.save_source(record)
+        saved = self.store.save_source(record.model_copy(update={"status": "indexing", "error": ""}))
         indexing_job = self.job_store.save(
             job.model_copy(update={"status": "indexing", "progress": 55, "phase_history": [*job.phase_history, "indexing"]}),
             owner_user_id=record.owner_user_id,

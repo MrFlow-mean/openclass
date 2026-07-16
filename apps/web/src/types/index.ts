@@ -279,6 +279,7 @@ export type SourceStructureStrategy =
   | "pdf_outline"
   | "pdf_toc"
   | "pdf_merged_toc"
+  | "pdf_layout_toc"
   | "docx_heading"
   | "markdown_heading"
   | "linear_text";

@@ -158,6 +158,53 @@ def extract_pdf_toc(
     )
 
 
+def extract_pdf_toc_from_range(
+    path: Path,
+    *,
+    page_start: int,
+    page_end: int,
+) -> PdfTocExtraction:
+    """Read a printed TOC when the PDF has no native outline anchors."""
+    layouts = extract_pdf_pages_layout(
+        path,
+        page_start=page_start,
+        page_end=page_end,
+        max_pages=MAX_OCR_TOC_PAGES,
+    )
+    if not layouts:
+        return PdfTocExtraction(
+            toc_page_start=page_start,
+            toc_page_end=page_end,
+            warnings=["目录页版面 OCR 未返回可用结果，已回退到 PDF 文字层。"],
+        )
+    rows = _toc_rows(layouts)
+    _assign_levels(rows)
+    nodes = [
+        PdfTocNode(
+            title=row.title,
+            number=row.number,
+            level=row.level,
+            printed_page=row.printed_page or 0,
+            toc_page=row.toc_page,
+            confidence=0.72,
+            metadata={
+                "source": "pdf_toc_layout_ocr",
+                "printed_page": row.printed_page,
+                "toc_page": row.toc_page,
+                "verification": "toc_candidate",
+                "ocr_x": round(row.x, 4),
+            },
+        )
+        for row in rows
+        if _explicit_level(row.title, row.number) is not None
+    ]
+    return PdfTocExtraction(
+        nodes=nodes,
+        toc_page_start=page_start,
+        toc_page_end=page_end,
+    )
+
+
 def _toc_page_range(outline: list[PdfOutlineAnchor], *, page_count: int) -> tuple[int, int] | None:
     ordered = sorted((anchor for anchor in outline if anchor.page_no > 0), key=lambda anchor: anchor.page_no)
     for index, anchor in enumerate(ordered):
@@ -316,8 +363,10 @@ def _fill_missing_printed_pages(rows: list[_RawTocRow], outline: list[PdfOutline
 
 
 def _explicit_level(title: str, number: str) -> int | None:
-    if re.match(r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*[章节篇部]", title):
+    if re.match(r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*[章篇部]", title):
         return 1
+    if re.match(r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*节", title):
+        return 2
     if re.match(r"^[A-Z](?:\s+|(?=[\u4e00-\u9fff]))", title):
         return 2
     if number:
@@ -339,7 +388,10 @@ def _chapter_number(title: str) -> str:
 
 def _printed_page_number(value: str) -> int | None:
     cleaned = value.strip()
-    match = re.fullmatch(r"[.．·•⋯…\s]*([0-9]{1,4})", cleaned)
+    match = re.fullmatch(
+        r"[.．·•⋯…:：\s]*[（(\[]?\s*([0-9]{1,4})\s*[）)\]]?[.．·•⋯…\s]*",
+        cleaned,
+    )
     if not match:
         return None
     return int(match.group(1))
@@ -350,7 +402,8 @@ def _clean_title_part(value: str) -> str:
 
 
 def _clean_title(value: str) -> str:
-    cleaned = re.sub(r"[.．。·•⋯…]+$", "", value or "")
+    cleaned = re.sub(r"\s*[=+•\-]*\s*[（(][A-Z0-9]{1,6}[）)]\s*$", "", value or "", flags=re.I)
+    cleaned = re.sub(r"[.．。·•⋯…！!+=\-\s]+$", "", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 

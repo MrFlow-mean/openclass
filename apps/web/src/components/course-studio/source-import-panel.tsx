@@ -769,7 +769,9 @@ function SourceRow({
                   <RefreshCw className={clsx("h-3.5 w-3.5", isRebuildingStructure && "animate-spin")} />
                 </button>
               </div>
-              {chapterTree.length ? (
+              {isLoadingStructure ? (
+                <p className="text-xs leading-5 text-gray-600">正在读取目录…</p>
+              ) : chapterTree.length ? (
                 <SourceChapterTree
                   source={source}
                   nodes={chapterTree}
