@@ -329,7 +329,7 @@ export function CourseChatMessage({
             {isAssistant && teachingProgress && !isPending && !isError ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
                 <span>
-                  第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
+                  第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 项
                   {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
                 </span>
                 {teachingProgress.has_next_section && onContinueTeaching ? (
@@ -339,7 +339,7 @@ export function CourseChatMessage({
                     className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
                   >
                     <ArrowRight className="h-3.5 w-3.5" />
-                    继续下一节
+                    继续下一项
                   </button>
                 ) : null}
               </div>

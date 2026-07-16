@@ -182,6 +182,12 @@ function teachingProgressFromMetadata(value: unknown): SectionTeachingProgress |
     current_section_title: typeof raw.current_section_title === "string" ? raw.current_section_title : "",
     has_next_section: raw.has_next_section === true,
     waiting_for_continue: raw.waiting_for_continue === true,
+    target_heading_path: Array.isArray(raw.target_heading_path)
+      ? raw.target_heading_path.filter((item): item is string => typeof item === "string")
+      : [],
+    current_heading_path: Array.isArray(raw.current_heading_path)
+      ? raw.current_heading_path.filter((item): item is string => typeof item === "string")
+      : [],
   };
 }
 

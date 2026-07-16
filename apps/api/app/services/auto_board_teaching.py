@@ -5,7 +5,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Literal
 
-from markdown_it import MarkdownIt
 from pydantic import BaseModel, Field
 
 from app.models import (
@@ -21,12 +20,16 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.ai_execution_adapter import AIExecutionAdapter, CodexAIExecutionAdapter
+from app.services.board_heading_outline import (
+    build_board_heading_teaching_units,
+)
 from app.services.history import commit_operations, current_head_commit
+from app.services.rich_document import document_to_markdown
 
 
 BOARD_DIRECTIVE_INSTRUCTIONS = """
 You are the Board AI in OpenClass. You do not talk to the learner and you do not edit the board.
-Authorize a bounded explanation only when the supplied target excerpt supports it. The directive
+Authorize a bounded explanation only when the supplied title-scoped target excerpt supports it. The directive
 must keep the Chatbot inside that excerpt, identify a useful teaching order, and forbid inventing
 facts that are absent from the target. Return needs_clarification or blocked when the excerpt is not
 usable. Do not output learner-facing prose.
@@ -34,12 +37,12 @@ usable. Do not output learner-facing prose.
 
 CHATBOT_EXPLANATION_INSTRUCTIONS = """
 You are the learner-facing Chatbot in OpenClass. The Board AI has already selected and authorized
-one board section. Explain only from the supplied directive. Do not claim that you read the whole
+one title-scoped teaching unit. Explain only from the supplied directive. Do not claim that you read the whole
 board, do not add unsupported facts, do not write or edit the board, and do not ask whether to begin.
-Teach the current section naturally and stop after this section so the learner can continue later.
+Teach the current title scope naturally and stop before the next title so the learner can continue later.
 Also return 2 to 4 concise, context-specific `follow_up_suggestions` that the learner could send as
 their next turn. They are proposals, not executed actions, and must stay within the authorized
-section or ask to continue through the normal workflow. Do not use a fixed generic menu.
+title scope or ask to continue through the normal workflow. Do not use a fixed generic menu.
 """
 
 
@@ -74,6 +77,28 @@ def start_auto_board_teaching(
         requested_index=0,
         rebuild_guide=True,
         trigger="post_generation_auto_teach",
+        target_heading="",
+        user_message="",
+    )
+
+
+def start_board_teaching(
+    *,
+    owner_user_id: str,
+    lesson_id: str,
+    model: str,
+    target_heading: str,
+    user_message: str,
+) -> AutoTeachingResult:
+    return _teach_section(
+        owner_user_id=owner_user_id,
+        lesson_id=lesson_id,
+        model=model,
+        requested_index=0,
+        rebuild_guide=True,
+        trigger="board_teaching_start",
+        target_heading=target_heading,
+        user_message=user_message,
     )
 
 
@@ -83,10 +108,12 @@ def continue_board_teaching(
     lesson_id: str,
     model: str,
     restart: bool,
+    user_message: str = "",
 ) -> AutoTeachingResult:
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     current_index = lesson.board_teaching_progress.current_section_index if lesson.board_teaching_progress else -1
+    target_heading = lesson.board_teaching_guide.target_heading if lesson.board_teaching_guide else ""
     return _teach_section(
         owner_user_id=owner_user_id,
         lesson_id=lesson_id,
@@ -94,6 +121,8 @@ def continue_board_teaching(
         requested_index=0 if restart else current_index + 1,
         rebuild_guide=restart or lesson.board_teaching_guide is None,
         trigger="board_teaching_restart" if restart else "board_teaching_continue",
+        target_heading=target_heading,
+        user_message=user_message,
     )
 
 
@@ -105,6 +134,8 @@ def _teach_section(
     requested_index: int,
     rebuild_guide: bool,
     trigger: str,
+    target_heading: str,
+    user_message: str,
 ) -> AutoTeachingResult:
     adapter: AIExecutionAdapter = CodexAIExecutionAdapter(
         owner_user_id=owner_user_id,
@@ -114,7 +145,7 @@ def _teach_section(
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     branch_name = lesson.history_graph.current_branch
     base_commit_id = current_head_commit(lesson).id
-    board_text = lesson.board_document.content_text
+    board_text = document_to_markdown(lesson.board_document)
     board_hash = _text_hash(board_text)
     guide = lesson.board_teaching_guide
     if rebuild_guide or guide is None or guide.board_snapshot_hash != board_hash:
@@ -122,6 +153,7 @@ def _teach_section(
             document_id=lesson.board_document.id,
             board_title=lesson.board_document.title,
             board_text=board_text,
+            target_heading=target_heading,
         )
     if requested_index < 0 or requested_index >= len(guide.section_plans):
         return AutoTeachingResult(status="failed", failure_reason="no_teachable_section")
@@ -155,16 +187,18 @@ def _teach_section(
             range(requested_index)
         ),
         waiting_for_continue=False,
+        target_heading_path=guide.target_heading_path,
+        current_heading_path=section.heading_path,
     )
     decision_trace = {
         "intent_signals": [trigger],
-        "matched_rules": ["structured_post_generation_teaching"],
+        "matched_rules": ["heading_tree_ordered_teaching"],
         "selected_action": "explain",
-        "target_resolver": "markdown_section_resolver",
-        "sequence_mode": "section_order",
+        "target_resolver": "board_heading_outline",
+        "sequence_mode": guide.sequence_mode,
         "role_executed": "board_ai",
         "document_changed": False,
-        "reason": "A generated board has a deterministic first or next teachable section.",
+        "reason": "The current board has a deterministic first or next title-scoped teaching unit.",
     }
     commit_operations(
         lesson,
@@ -174,6 +208,7 @@ def _teach_section(
         new_document=lesson.board_document,
         metadata={
             "kind": "board_task_requirement_ready",
+            "user_message": user_message,
             "document_changed": False,
             "board_task_run_id": run_id,
             "board_task_version_id": version_id,
@@ -266,18 +301,20 @@ def _teach_section(
         board_snapshot_hash=board_hash,
         current_section_index=requested_index,
         completed_section_indexes=list(range(requested_index + 1)),
-        waiting_for_continue=True,
+        waiting_for_continue=requested_index + 1 < len(guide.section_plans),
+        target_heading_path=guide.target_heading_path,
+        current_heading_path=section.heading_path,
     )
     progress = _progress_view(guide, requested_index)
     commit_operations(
         lesson,
         operations=[],
         label="Board-directed explanation",
-        message="Chatbot explained the Board AI-authorized section.",
+        message="Chatbot explained the Board AI-authorized title-scoped unit.",
         new_document=lesson.board_document,
         metadata={
             "kind": "board_directed_explanation",
-            "user_message": "",
+            "user_message": user_message,
             "assistant_message": chatbot_message,
             "assistant_message_source": "chatbot_board_directed",
             "follow_up_suggestions": follow_up_suggestions,
@@ -319,47 +356,36 @@ def _build_teaching_guide(
     document_id: str,
     board_title: str,
     board_text: str,
+    target_heading: str = "",
 ) -> BoardTeachingGuide:
-    lines = board_text.splitlines()
-    headings: list[tuple[int, int, str]] = []
-    tokens = MarkdownIt().parse(board_text)
-    for index, token in enumerate(tokens):
-        if token.type != "heading_open" or token.map is None:
-            continue
-        level = int(token.tag[1]) if token.tag.startswith("h") else 1
-        title = tokens[index + 1].content.strip() if index + 1 < len(tokens) else ""
-        headings.append((token.map[0], level, title))
-    selected_headings = headings[1:] if len(headings) > 1 and headings[0][1] == 1 else headings
-    sections: list[BoardSectionTeachingPlan] = []
-    for order_index, (start, level, title) in enumerate(selected_headings):
-        next_start = len(lines)
-        for candidate_start, candidate_level, _candidate_title in selected_headings[order_index + 1 :]:
-            if candidate_level <= level:
-                next_start = candidate_start
-                break
-        excerpt = "\n".join(lines[start:next_start]).strip()
-        if excerpt:
-            sections.append(
-                BoardSectionTeachingPlan(
-                    order_index=order_index,
-                    heading=title or f"Section {order_index + 1}",
-                    board_excerpt=excerpt[:6000],
-                )
-            )
-    if not sections and board_text.strip():
-        sections.append(
-            BoardSectionTeachingPlan(
-                order_index=0,
-                heading=board_title or "Board",
-                board_excerpt=board_text.strip()[:6000],
-            )
+    units, target_path = build_board_heading_teaching_units(
+        board_text,
+        target_heading=target_heading,
+    )
+    sections = [
+        BoardSectionTeachingPlan(
+            order_index=order_index,
+            heading=unit.heading,
+            heading_level=unit.heading_level,
+            heading_path=unit.heading_path,
+            parent_heading=unit.parent_heading,
+            heading_order_index=unit.heading_order_index,
+            line_start=unit.line_start,
+            line_end=unit.line_end,
+            has_child_headings=unit.has_child_headings,
+            board_excerpt=unit.board_excerpt[:12000],
         )
+        for order_index, unit in enumerate(units)
+    ]
     return BoardTeachingGuide(
         board_document_id=document_id,
         board_snapshot_hash=_text_hash(board_text),
         board_title=board_title,
         section_plans=sections,
-        generation_rationale="deterministic_markdown_sections",
+        generation_rationale="deterministic_heading_tree_scales",
+        target_heading=target_heading.strip(),
+        target_heading_path=target_path,
+        sequence_mode="heading_tree_preorder",
     )
 
 
@@ -375,25 +401,28 @@ def _focus_for_section(
         lesson_id=lesson_id,
         document_id=document_id,
         kind="heading",
-        heading_path=[section.heading],
+        heading_path=section.heading_path or [section.heading],
         excerpt=excerpt,
         text_hash=_text_hash(excerpt),
         excerpt_hash=_text_hash(excerpt),
         confidence=1.0,
-        reason="Resolved from deterministic Markdown section order.",
+        reason="Resolved from the deterministic board heading tree.",
         display_label=section.heading,
-        order_start=section.order_index,
-        order_end=section.order_index,
+        order_start=section.heading_order_index,
+        order_end=section.heading_order_index,
     )
 
 
 def _progress_view(guide: BoardTeachingGuide, index: int) -> SectionTeachingProgressView:
+    has_next = index + 1 < len(guide.section_plans)
     return SectionTeachingProgressView(
         section_index=index,
         section_count=len(guide.section_plans),
         current_section_title=guide.section_plans[index].heading,
-        has_next_section=index + 1 < len(guide.section_plans),
-        waiting_for_continue=True,
+        has_next_section=has_next,
+        waiting_for_continue=has_next,
+        target_heading_path=guide.target_heading_path,
+        current_heading_path=guide.section_plans[index].heading_path,
     )
 
 

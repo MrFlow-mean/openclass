@@ -139,6 +139,11 @@ code. Write every display formula as `$$` on its own lines with LaTeX inside, an
 as normal Markdown text or `**bold**`, never inside a code fence. Do not inspect any other path,
 source code, environment variable, network resource, plugin, or external tool.
 
+Preserve a true semantic heading hierarchy in Markdown. When a titled subsection belongs to the
+preceding titled section, use exactly one deeper heading level instead of flattening parent and child
+titles to the same level. Keep sibling titles at the same level and preserve their source order. This
+heading tree is also the durable teaching scale used for later ordered explanations.
+
 The frozen payload may include a `visual_manifest`. Every manifest item is verified evidence from
 the learner-selected source scope. Preserve manifest order and handle every item exactly once.
 
@@ -1268,16 +1273,52 @@ def process_codex_chat_on_lesson(
                 ),
             )
 
-        if request.teaching_action is not None:
-            from app.services.auto_board_teaching import continue_board_teaching
+        from app.services.auto_board_teaching import (
+            continue_board_teaching,
+            start_board_teaching,
+        )
+        from app.services.board_teaching_turn_decision import (
+            BoardTeachingDecisionResult,
+            decide_board_teaching_turn,
+        )
 
-            teaching_result = continue_board_teaching(
+        teaching_decision = BoardTeachingDecisionResult()
+        if request.teaching_action is None:
+            teaching_decision = decide_board_teaching_turn(
                 owner_user_id=user_id,
                 lesson_id=lesson_id,
                 model=codex_model,
-                restart=request.teaching_action == "restart",
+                user_message=request.message,
+                has_selection=request.selection is not None,
             )
-            for event in teaching_result.activity:
+        natural_teaching_action = teaching_decision.decision.action
+        if request.teaching_action is not None or natural_teaching_action != "none":
+            if request.teaching_action is None and natural_teaching_action == "start":
+                teaching_result = start_board_teaching(
+                    owner_user_id=user_id,
+                    lesson_id=lesson_id,
+                    model=codex_model,
+                    target_heading=teaching_decision.decision.target_heading,
+                    user_message=request.message,
+                )
+            else:
+                restart = (
+                    request.teaching_action == "restart"
+                    if request.teaching_action is not None
+                    else natural_teaching_action == "restart"
+                )
+                teaching_result = continue_board_teaching(
+                    owner_user_id=user_id,
+                    lesson_id=lesson_id,
+                    model=codex_model,
+                    restart=restart,
+                    user_message=request.message,
+                )
+            teaching_activity = [
+                *teaching_decision.activity,
+                *teaching_result.activity,
+            ]
+            for event in teaching_activity:
                 if on_agent_activity is not None:
                     on_agent_activity(event)
             if teaching_result.chatbot_message and on_delta is not None:
@@ -1287,7 +1328,7 @@ def process_codex_chat_on_lesson(
             return ChatResponse(
                 chatbot_message=teaching_result.chatbot_message,
                 follow_up_suggestions=teaching_result.follow_up_suggestions,
-                agent_activity=teaching_result.activity,
+                agent_activity=teaching_activity,
                 learning_requirement_sheet=build_requirements(lesson.title),
                 active_requirement_sheet=None,
                 learning_clarification=_neutral_clarification(),

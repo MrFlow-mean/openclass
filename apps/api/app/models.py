@@ -1112,6 +1112,13 @@ class BoardNeedMapping(BaseModel):
 class BoardSectionTeachingPlan(BaseModel):
     order_index: int = 0
     heading: str
+    heading_level: int = Field(default=0, ge=0, le=12)
+    heading_path: list[str] = Field(default_factory=list)
+    parent_heading: str = ""
+    heading_order_index: int = Field(default=0, ge=0)
+    line_start: int = Field(default=0, ge=0)
+    line_end: int = Field(default=0, ge=0)
+    has_child_headings: bool = False
     board_excerpt: str = ""
     core_points: list[str] = Field(default_factory=list)
     teaching_steps: list[str] = Field(default_factory=list)
@@ -1133,6 +1140,9 @@ class BoardTeachingGuide(BaseModel):
     chatbot_brief: str = ""
     lecture_handout: str = ""
     section_plans: list[BoardSectionTeachingPlan] = Field(default_factory=list)
+    target_heading: str = ""
+    target_heading_path: list[str] = Field(default_factory=list)
+    sequence_mode: str = "heading_tree_preorder"
 
 
 class BoardTeachingProgress(BaseModel):
@@ -1141,6 +1151,8 @@ class BoardTeachingProgress(BaseModel):
     current_section_index: int = 0
     completed_section_indexes: list[int] = Field(default_factory=list)
     waiting_for_continue: bool = False
+    target_heading_path: list[str] = Field(default_factory=list)
+    current_heading_path: list[str] = Field(default_factory=list)
 
 
 class SectionTeachingProgressView(BaseModel):
@@ -1149,6 +1161,8 @@ class SectionTeachingProgressView(BaseModel):
     current_section_title: str = ""
     has_next_section: bool = False
     waiting_for_continue: bool = False
+    target_heading_path: list[str] = Field(default_factory=list)
+    current_heading_path: list[str] = Field(default_factory=list)
 
 
 class ChatRequest(BaseModel):

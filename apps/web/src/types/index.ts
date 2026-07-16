@@ -800,6 +800,8 @@ export interface SectionTeachingProgress {
   current_section_title: string;
   has_next_section: boolean;
   waiting_for_continue: boolean;
+  target_heading_path?: string[];
+  current_heading_path?: string[];
 }
 
 export type AgentActivityStage =

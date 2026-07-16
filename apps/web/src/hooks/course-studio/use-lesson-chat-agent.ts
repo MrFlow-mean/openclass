@@ -190,10 +190,10 @@ export function useLessonChatAgent({
       return "开始生成板书";
     }
     if (payload.teaching_action === "continue") {
-      return "继续讲下一节";
+      return "继续讲下一个标题";
     }
     if (payload.teaching_action === "restart") {
-      return "从第一节重新讲";
+      return "从第一个标题重新讲";
     }
     const content = payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
     if (!payload.attachments?.length) {
@@ -452,7 +452,7 @@ export function useLessonChatAgent({
               agentActivity: streamedAgentActivity,
               statusLabel:
                 submittedSelection?.kind === "source" && payloadWithConversation.post_generation_action === "auto_explain"
-                  ? "正在从第一节开始讲解"
+                  ? "正在从第一个标题开始讲解"
                   : "正在回复",
             });
           },
@@ -533,7 +533,7 @@ export function useLessonChatAgent({
         );
       }
       if (response.auto_teaching_operation_status === "failed") {
-        setError("板书已生成，但自动讲解未完成；可以发送“从第一节重新讲”重试。\n" +
+        setError("板书已生成，但自动讲解未完成；可以发送“从第一个标题重新讲”重试。\n" +
           (response.auto_teaching_operation_failure_reason ?? ""));
       }
       setLatestBoardDecision(response.board_decision);
@@ -813,7 +813,7 @@ export function useLessonChatAgent({
       return;
     }
     await handleSubmitChat({
-      message: "继续下一节",
+      message: "继续下一项",
       interaction_mode: "ask",
       teaching_action: "continue",
     });
