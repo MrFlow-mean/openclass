@@ -61,12 +61,11 @@ _DOCX_NO_STORE_HEADERS = {
 _BOARD_ASSET_CACHE_CONTROL = "private, max-age=86400, immutable"
 
 
-def _clear_legacy_ai_runtime(lesson) -> None:
+def _clear_transient_ai_state(lesson) -> None:
     lesson.board_teaching_guide = None
     lesson.board_teaching_progress = None
     lesson.learning_requirements = None
     lesson.board_task_requirements = None
-    lesson.active_interaction_session = None
 
 
 @router.get("/api/documents/search", response_model=DocumentSegmentSearchResponse)
@@ -194,10 +193,9 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 flatten_guard_evaluated=is_autosave,
             )
         )
-        _clear_legacy_ai_runtime(lesson)
+        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user_id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
-
 
 def _visible_document_text(document: BoardDocument) -> str:
     return " ".join((document.content_text or "").split())
@@ -282,7 +280,7 @@ def manual_commit(
             message=request.message,
             metadata={"kind": "manual_document_edit"},
         )
-        _clear_legacy_ai_runtime(lesson)
+        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -351,7 +349,7 @@ def import_document_docx(
             message=f"Imported {safe_name} into the rich document editor",
             metadata={"kind": "import_docx", "filename": safe_name},
         )
-        _clear_legacy_ai_runtime(lesson)
+        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -432,7 +430,7 @@ def create_lesson_branch(
         from_commit_id=request.from_commit_id,
     ):
         create_branch(lesson, request.name, request.from_commit_id)
-        _clear_legacy_ai_runtime(lesson)
+        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -453,7 +451,7 @@ def checkout_lesson_branch(
         branch_name=request.name,
     ):
         switch_branch(lesson, request.name)
-        _clear_legacy_ai_runtime(lesson)
+        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -475,34 +473,6 @@ def restore_lesson_commit(
         restore_label=request.label,
     ):
         restore_commit(lesson, request.commit_id, request.label)
-        _clear_legacy_ai_runtime(lesson)
+        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
-    return package_view_for_lesson(workspace, package, lesson.id)
-
-
-@router.post("/api/lessons/{lesson_id}/apply-proposal", response_model=CoursePackageView)
-def apply_patch_proposal(
-    lesson_id: str,
-    proposal: ManualCommitRequest,
-    user: UserView = Depends(current_user),
-) -> CoursePackageView:
-    workspace, revision = load_workspace_for_user_with_revision(user.id)
-    package, lesson = find_lesson_package(workspace, lesson_id)
-    package.active_lesson_id = lesson.id
-    with bind_ai_request_context(
-        "/api/lessons/{lesson_id}/apply-proposal",
-        lesson=lesson,
-        trace_prefix="apply_proposal",
-        proposal_label=proposal.label,
-    ):
-        if proposal.document is not None:
-            lesson.board_document = proposal.document
-            commit_document_snapshot(
-                lesson,
-                label=proposal.label,
-                message=proposal.message,
-                metadata={"kind": "apply_proposal"},
-            )
-            _clear_legacy_ai_runtime(lesson)
-            save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)

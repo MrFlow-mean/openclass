@@ -30,17 +30,6 @@ class SourceContentUpdateRequest(BaseModel):
     content: str
 
 
-@router.get("/api/lessons/{lesson_id}/evidence/pending", response_model=None)
-def pending_evidence_compatibility(
-    lesson_id: str,
-    user: UserView = Depends(current_user),
-) -> None:
-    """Keep the unchanged Studio client quiet after the evidence workflow was removed."""
-    workspace = workspace_state.load_workspace_for_user(user.id)
-    workspace_state.find_lesson_package(workspace, lesson_id)
-    return None
-
-
 @router.get("/api/packages/{package_id}/sources", response_model=list[SourceIngestionRecord])
 def list_package_sources(package_id: str, user: UserView = Depends(current_user)) -> list[SourceIngestionRecord]:
     workspace = workspace_state.load_workspace_for_user(user.id)
