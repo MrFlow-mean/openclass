@@ -21,6 +21,10 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.native_source_index import NativeSearchMode, NativeSourceIndex, source_chunk_text_hash
+from app.services.source_ingestion_jobs import (
+    SourceIngestionCoordinator,
+    source_ingestion_coordinator,
+)
 from app.services.source_visual_storage import (
     MAX_SOURCE_VISUAL_BYTES,
     SourceVisualStorageError,
@@ -62,11 +66,13 @@ class SourceStructureStore:
         path: Path | None = None,
         *,
         native_index: NativeSourceIndex | None = None,
+        coordinator: SourceIngestionCoordinator = source_ingestion_coordinator,
     ) -> None:
         self._path = path
         self._lock = threading.RLock()
         self._initialized_paths: set[str] = set()
         self.native_index = native_index or NativeSourceIndex()
+        self.coordinator = coordinator
 
     @property
     def path(self) -> Path:
@@ -271,8 +277,10 @@ class SourceStructureStore:
     def delete_for_source(self, *, owner_user_id: str, package_id: str, source_id: str) -> None:
         asset_paths: list[str] = []
         storage_keys: list[str] = []
-        with self._lock:
-            with self._connect() as conn:
+
+        def delete_structure() -> None:
+            nonlocal asset_paths, storage_keys
+            with self._lock, self._connect() as conn:
                 visual_rows = conn.execute(
                     """
                     SELECT asset_path, storage_key FROM source_visual_assets
@@ -310,10 +318,30 @@ class SourceStructureStore:
                             """,
                             (owner_user_id, package_id, source_id),
                         )
+
+        self.coordinator.run_write(self.path, delete_structure)
         _remove_asset_files(asset_paths)
         self.cleanup_unreferenced_visual_assets(storage_keys)
 
     def save_structure_bundle(
+        self,
+        *,
+        structure: SourceStructure,
+        chapters: list[SourceChapter],
+        chunks: list[SourceChunk],
+        visuals: list[SourceVisualAsset] | None = None,
+    ) -> SourceStructure:
+        return self.coordinator.run_write(
+            self.path,
+            lambda: self._save_structure_bundle(
+                structure=structure,
+                chapters=chapters,
+                chunks=chunks,
+                visuals=visuals,
+            ),
+        )
+
+    def _save_structure_bundle(
         self,
         *,
         structure: SourceStructure,
@@ -550,6 +578,12 @@ class SourceStructureStore:
 
     def record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
         """Expose a failed reparse without replacing the last usable index."""
+        return self.coordinator.run_write(
+            self.path,
+            lambda: self._record_rebuild_failure(structure=structure, error=error),
+        )
+
+    def _record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
         warning = "资料重新解析失败，已保留上一次可用的目录和正文索引。"
         warnings = list(dict.fromkeys([*structure.warnings, warning]))
         with self._lock:

@@ -29,6 +29,7 @@ from app.services.pdf_toc_parser import (
 from app.services.native_source_index import source_chunk_text_hash
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_archive import SafeSourceArchive
+from app.services.source_ingestion_jobs import SourceIngestionCoordinator
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 from app.services.source_visual_extraction import (
     CURRENT_SOURCE_VISUAL_INDEX_VERSION,
@@ -94,9 +95,11 @@ class SourceStructureIndexer:
         *,
         store: SourceStructureStore = source_structure_store,
         visual_extractor: SourceVisualExtractor = source_visual_extractor,
+        coordinator: SourceIngestionCoordinator | None = None,
     ) -> None:
         self.store = store
         self.visual_extractor = visual_extractor
+        self.coordinator = coordinator or store.coordinator
 
     def ensure_structure(
         self,
@@ -142,6 +145,25 @@ class SourceStructureIndexer:
         return self.rebuild_structure(record, progress_callback=progress_callback)
 
     def rebuild_structure(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        preserve_existing_visuals: bool = False,
+        progress_callback: SourceIndexProgressCallback | None = None,
+    ) -> SourceStructure:
+        _report_progress(progress_callback, "waiting_for_worker", 24)
+        weight = self.coordinator.processing_weight(
+            size_bytes=record.size_bytes,
+            source_type=record.source_type,
+        )
+        with self.coordinator.processing_slot(weight=weight):
+            return self._rebuild_structure(
+                record,
+                preserve_existing_visuals=preserve_existing_visuals,
+                progress_callback=progress_callback,
+            )
+
+    def _rebuild_structure(
         self,
         record: SourceIngestionRecord,
         *,

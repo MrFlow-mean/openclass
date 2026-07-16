@@ -8,6 +8,10 @@ from typing import Any
 
 from app.models import EvidenceBundle, SourceIngestionRecord, now_iso
 from app.services import workspace_state
+from app.services.source_ingestion_jobs import (
+    SourceIngestionCoordinator,
+    source_ingestion_coordinator,
+)
 
 
 def _dumps(value: Any) -> str:
@@ -24,8 +28,14 @@ def _loads(raw: str | None, fallback: Any) -> Any:
 
 
 class SourceEvidenceStore:
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        coordinator: SourceIngestionCoordinator = source_ingestion_coordinator,
+    ) -> None:
         self._path = path
+        self.coordinator = coordinator
         self._lock = threading.RLock()
         self._initialized_paths: set[str] = set()
 
@@ -142,69 +152,73 @@ class SourceEvidenceStore:
         title: str,
     ) -> None:
         stamp = now_iso()
-        with self._lock:
-            with self._connect() as conn:
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO source_notebooks(
-                            owner_user_id, package_id, open_notebook_notebook_id, title, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(owner_user_id, package_id) DO UPDATE SET
-                            open_notebook_notebook_id = excluded.open_notebook_notebook_id,
-                            title = excluded.title,
-                            updated_at = excluded.updated_at
-                        """,
-                        (owner_user_id, package_id, notebook_id, title, stamp, stamp),
-                    )
+
+        def save_notebook() -> None:
+            with self._lock, self._connect() as conn, conn:
+                conn.execute(
+                    """
+                    INSERT INTO source_notebooks(
+                        owner_user_id, package_id, open_notebook_notebook_id, title, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(owner_user_id, package_id) DO UPDATE SET
+                        open_notebook_notebook_id = excluded.open_notebook_notebook_id,
+                        title = excluded.title,
+                        updated_at = excluded.updated_at
+                    """,
+                    (owner_user_id, package_id, notebook_id, title, stamp, stamp),
+                )
+
+        self.coordinator.run_write(self.path, save_notebook)
 
     def save_source(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
         record = record.model_copy(update={"updated_at": now_iso()})
-        with self._lock:
-            with self._connect() as conn:
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO source_ingestions(
-                            id, owner_user_id, package_id, title, source_type, source_uri, file_name, mime_type,
-                            size_bytes, status, error, open_notebook_notebook_id, open_notebook_source_id,
-                            open_notebook_command_id, created_at, updated_at, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            title = excluded.title,
-                            source_type = excluded.source_type,
-                            source_uri = excluded.source_uri,
-                            file_name = excluded.file_name,
-                            mime_type = excluded.mime_type,
-                            size_bytes = excluded.size_bytes,
-                            status = excluded.status,
-                            error = excluded.error,
-                            open_notebook_source_id = excluded.open_notebook_source_id,
-                            open_notebook_command_id = excluded.open_notebook_command_id,
-                            updated_at = excluded.updated_at,
-                            metadata_json = excluded.metadata_json
-                        """,
-                        (
-                            record.id,
-                            record.owner_user_id,
-                            record.package_id,
-                            record.title,
-                            record.source_type,
-                            record.source_uri,
-                            record.file_name,
-                            record.mime_type,
-                            record.size_bytes,
-                            record.status,
-                            record.error,
-                            record.open_notebook_notebook_id,
-                            record.open_notebook_source_id,
-                            record.open_notebook_command_id,
-                            record.created_at,
-                            record.updated_at,
-                            _dumps(record.metadata),
-                        ),
-                    )
-        return record
+
+        def save_record() -> SourceIngestionRecord:
+            with self._lock, self._connect() as conn, conn:
+                conn.execute(
+                    """
+                    INSERT INTO source_ingestions(
+                        id, owner_user_id, package_id, title, source_type, source_uri, file_name, mime_type,
+                        size_bytes, status, error, open_notebook_notebook_id, open_notebook_source_id,
+                        open_notebook_command_id, created_at, updated_at, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        source_type = excluded.source_type,
+                        source_uri = excluded.source_uri,
+                        file_name = excluded.file_name,
+                        mime_type = excluded.mime_type,
+                        size_bytes = excluded.size_bytes,
+                        status = excluded.status,
+                        error = excluded.error,
+                        open_notebook_source_id = excluded.open_notebook_source_id,
+                        open_notebook_command_id = excluded.open_notebook_command_id,
+                        updated_at = excluded.updated_at,
+                        metadata_json = excluded.metadata_json
+                    """,
+                    (
+                        record.id,
+                        record.owner_user_id,
+                        record.package_id,
+                        record.title,
+                        record.source_type,
+                        record.source_uri,
+                        record.file_name,
+                        record.mime_type,
+                        record.size_bytes,
+                        record.status,
+                        record.error,
+                        record.open_notebook_notebook_id,
+                        record.open_notebook_source_id,
+                        record.open_notebook_command_id,
+                        record.created_at,
+                        record.updated_at,
+                        _dumps(record.metadata),
+                    ),
+                )
+            return record
+
+        return self.coordinator.run_write(self.path, save_record)
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         with self._lock:
@@ -275,63 +289,67 @@ class SourceEvidenceStore:
         record = self.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
-        with self._lock:
-            with self._connect() as conn:
-                with conn:
-                    conn.execute(
-                        """
-                        DELETE FROM source_ingestions
-                        WHERE owner_user_id = ? AND package_id = ? AND id = ?
-                        """,
-                        (owner_user_id, package_id, source_id),
-                    )
+
+        def delete_record() -> None:
+            with self._lock, self._connect() as conn, conn:
+                conn.execute(
+                    """
+                    DELETE FROM source_ingestions
+                    WHERE owner_user_id = ? AND package_id = ? AND id = ?
+                    """,
+                    (owner_user_id, package_id, source_id),
+                )
+
+        self.coordinator.run_write(self.path, delete_record)
         return record
 
     def save_bundle(self, bundle: EvidenceBundle) -> EvidenceBundle:
         bundle = bundle.model_copy(update={"updated_at": now_iso()})
-        with self._lock:
-            with self._connect() as conn:
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO evidence_bundles(
-                            id, owner_user_id, package_id, lesson_id, requirement_run_id, board_task_run_id,
-                            purpose, status, query, evidence_items_json, visual_items_json, context_text, token_count,
-                            confirmed_by_user, created_at, updated_at, confirmed_at, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            status = excluded.status,
-                            evidence_items_json = excluded.evidence_items_json,
-                            visual_items_json = excluded.visual_items_json,
-                            context_text = excluded.context_text,
-                            token_count = excluded.token_count,
-                            confirmed_by_user = excluded.confirmed_by_user,
-                            updated_at = excluded.updated_at,
-                            confirmed_at = excluded.confirmed_at,
-                            metadata_json = excluded.metadata_json
-                        """,
-                        (
-                            bundle.id,
-                            bundle.owner_user_id,
-                            bundle.package_id,
-                            bundle.lesson_id,
-                            bundle.requirement_run_id,
-                            bundle.board_task_run_id,
-                            bundle.purpose,
-                            bundle.status,
-                            bundle.query,
-                            _dumps([item.model_dump(mode="json") for item in bundle.evidence_items]),
-                            _dumps([item.model_dump(mode="json") for item in bundle.visual_items]),
-                            bundle.context_text,
-                            bundle.token_count,
-                            int(bundle.confirmed_by_user),
-                            bundle.created_at,
-                            bundle.updated_at,
-                            bundle.confirmed_at,
-                            _dumps(bundle.metadata),
-                        ),
-                    )
-        return bundle
+
+        def save_evidence_bundle() -> EvidenceBundle:
+            with self._lock, self._connect() as conn, conn:
+                conn.execute(
+                    """
+                    INSERT INTO evidence_bundles(
+                        id, owner_user_id, package_id, lesson_id, requirement_run_id, board_task_run_id,
+                        purpose, status, query, evidence_items_json, visual_items_json, context_text, token_count,
+                        confirmed_by_user, created_at, updated_at, confirmed_at, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        status = excluded.status,
+                        evidence_items_json = excluded.evidence_items_json,
+                        visual_items_json = excluded.visual_items_json,
+                        context_text = excluded.context_text,
+                        token_count = excluded.token_count,
+                        confirmed_by_user = excluded.confirmed_by_user,
+                        updated_at = excluded.updated_at,
+                        confirmed_at = excluded.confirmed_at,
+                        metadata_json = excluded.metadata_json
+                    """,
+                    (
+                        bundle.id,
+                        bundle.owner_user_id,
+                        bundle.package_id,
+                        bundle.lesson_id,
+                        bundle.requirement_run_id,
+                        bundle.board_task_run_id,
+                        bundle.purpose,
+                        bundle.status,
+                        bundle.query,
+                        _dumps([item.model_dump(mode="json") for item in bundle.evidence_items]),
+                        _dumps([item.model_dump(mode="json") for item in bundle.visual_items]),
+                        bundle.context_text,
+                        bundle.token_count,
+                        int(bundle.confirmed_by_user),
+                        bundle.created_at,
+                        bundle.updated_at,
+                        bundle.confirmed_at,
+                        _dumps(bundle.metadata),
+                    ),
+                )
+            return bundle
+
+        return self.coordinator.run_write(self.path, save_evidence_bundle)
 
     def get_bundle(self, *, owner_user_id: str, bundle_id: str) -> EvidenceBundle | None:
         with self._lock:

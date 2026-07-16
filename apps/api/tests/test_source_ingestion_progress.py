@@ -1,13 +1,148 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 
 from app.models import CoursePackage, SourceStructure
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
-from app.services.source_ingestion_jobs import SourceIngestionJobStore
+from app.services.source_ingestion_jobs import SourceIngestionCoordinator, SourceIngestionJobStore
 from app.services.source_ingestion_service import SourceIngestionService
+from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
+
+
+def test_source_ingestion_coordinator_allows_bounded_parallel_work() -> None:
+    coordinator = SourceIngestionCoordinator(processing_capacity=2)
+    release_workers = threading.Event()
+    two_workers_entered = threading.Event()
+    state_lock = threading.Lock()
+    active_workers = 0
+    max_active_workers = 0
+
+    def run_worker() -> None:
+        nonlocal active_workers, max_active_workers
+        with coordinator.processing_slot():
+            with state_lock:
+                active_workers += 1
+                max_active_workers = max(max_active_workers, active_workers)
+                if active_workers == 2:
+                    two_workers_entered.set()
+            assert release_workers.wait(timeout=5)
+            with state_lock:
+                active_workers -= 1
+
+    workers = [threading.Thread(target=run_worker) for _ in range(3)]
+    for worker in workers:
+        worker.start()
+
+    assert two_workers_entered.wait(timeout=5)
+    with state_lock:
+        assert active_workers == 2
+    assert coordinator.processing_weight(size_bytes=1, source_type="local_file") == 1
+    assert coordinator.processing_weight(
+        size_bytes=64 * 1024 * 1024,
+        source_type="local_file",
+    ) == 2
+
+    release_workers.set()
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    assert max_active_workers == 2
+
+
+def test_source_structure_write_retries_transient_database_lock(tmp_path, monkeypatch) -> None:
+    coordinator = SourceIngestionCoordinator(lock_retry_delays=(0.0,))
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3", coordinator=coordinator)
+    structure = SourceStructure(
+        owner_user_id="user_retry",
+        package_id="course_retry",
+        source_ingestion_id="source_retry",
+        status="linear_only",
+        strategy="linear_text",
+    )
+    original_save = structure_store._save_structure_bundle
+    attempts = 0
+
+    def flaky_save(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original_save(**kwargs)
+
+    monkeypatch.setattr(structure_store, "_save_structure_bundle", flaky_save)
+
+    saved = structure_store.save_structure_bundle(
+        structure=structure,
+        chapters=[],
+        chunks=[],
+    )
+
+    assert attempts == 2
+    assert saved.status == "linear_only"
+    assert structure_store.get_structure(
+        owner_user_id="user_retry",
+        package_id="course_retry",
+        source_id="source_retry",
+    ) is not None
+
+
+def test_concurrent_file_ingestion_finishes_without_locked_database(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    coordinator = SourceIngestionCoordinator(processing_capacity=2, lock_retry_delays=(0.0, 0.0))
+    source_store = SourceEvidenceStore(database, coordinator=coordinator)
+    structure_store = SourceStructureStore(database, coordinator=coordinator)
+    job_store = SourceIngestionJobStore(database, coordinator=coordinator)
+    service = SourceIngestionService(
+        store=source_store,
+        job_store=job_store,
+        structure_store=structure_store,
+        structure_indexer=SourceStructureIndexer(
+            store=structure_store,
+            coordinator=coordinator,
+        ),
+    )
+    package = CoursePackage(id="course_concurrent", title="Concurrent", summary="", lessons=[])
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    queued_sources = [
+        service.queue_file_source(
+            owner_user_id="user_concurrent",
+            package=package,
+            file_name=f"source-{index}.md",
+            content=f"# Source {index}\n\nConcurrent body {index}".encode(),
+            mime_type="text/markdown",
+        )
+        for index in range(4)
+    ]
+    start_together = threading.Barrier(len(queued_sources) + 1)
+    errors: list[Exception] = []
+
+    def process(source_id: str) -> None:
+        try:
+            start_together.wait(timeout=5)
+            service.process_file_source(
+                owner_user_id="user_concurrent",
+                package_id=package.id,
+                source_id=source_id,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=process, args=(source.id,)) for source in queued_sources]
+    for worker in workers:
+        worker.start()
+    start_together.wait(timeout=5)
+    for worker in workers:
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+    assert errors == []
+    completed = service.list_sources(owner_user_id="user_concurrent", package_id=package.id)
+    assert len(completed) == len(queued_sources)
+    assert all(source.status == "ready" for source in completed)
+    assert all(source.error == "" for source in completed)
 
 
 def test_file_ingestion_exposes_durable_progress_while_indexing(tmp_path, monkeypatch) -> None:
