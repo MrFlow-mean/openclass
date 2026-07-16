@@ -37,6 +37,10 @@ function stringArrayValue(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function nullableNumberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function boardFocusFromMetadata(value: unknown): BoardFocusRef | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -66,6 +70,8 @@ function boardFocusFromMetadata(value: unknown): BoardFocusRef | null {
     confidence: typeof raw.confidence === "number" ? raw.confidence : 0,
     reason: stringValue(raw.reason),
     display_label: displayLabel,
+    order_start: nullableNumberValue(raw.order_start),
+    order_end: nullableNumberValue(raw.order_end),
   };
 }
 
@@ -80,13 +86,9 @@ function commitTeachingFocus(commit: CommitRecord | null) {
     return null;
   }
   const metadata = commit.metadata;
-  const kind = stringValue(metadata.kind);
   const assistantMessage = stringValue(metadata.assistant_message).trim();
-  const boardTaskRoute = stringValue(metadata.board_task_route);
   const hasDirective = Boolean(metadata.board_explanation_directive && typeof metadata.board_explanation_directive === "object");
-  const isTeachingCommit =
-    assistantMessage &&
-    kind === "chat_flow" && (boardTaskRoute === "explain" || hasDirective);
+  const isTeachingCommit = assistantMessage && hasDirective;
   return isTeachingCommit ? boardFocusFromMetadata(metadata.resolved_focus) : null;
 }
 

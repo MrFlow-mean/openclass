@@ -335,6 +335,128 @@ test("normalizes raw bold vector notation and math delimiters in the board edito
   await expect(editor).not.toContainText("$$");
 });
 
+test("scrolls to and highlights the Board AI-authorized section being explained", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `讲解定位回归页面 ${unique}`;
+  const targetHeading = `当前讲解的小节 ${unique}`;
+  const targetSentence = `需要被荧光标记的讲解内容 ${unique}`;
+  const nextHeading = `下一个小节 ${unique}`;
+  const nextSentence = `不属于当前讲解范围的内容 ${unique}`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `讲解定位回归课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, lessonTitle);
+
+  let injectedPackage: Record<string, unknown> | null = null;
+  await page.route("**/api/course-package", async (route) => {
+    if (!injectedPackage) {
+      const authHeader = route.request().headers().authorization;
+      const upstream = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      });
+      const nextPackage = (await upstream.json()) as Record<string, unknown>;
+      const lesson = (nextPackage.lessons as Array<Record<string, unknown>>)[0];
+      const document = lesson.board_document as Record<string, unknown>;
+      const historyGraph = lesson.history_graph as {
+        commits: Array<Record<string, unknown>>;
+        current_branch: string;
+        branches: Record<string, { head_commit_id: string | null }>;
+      };
+      const branch = historyGraph.branches[historyGraph.current_branch];
+      const fillerParagraphs = Array.from({ length: 48 }, (_, index) => `前置内容第 ${index + 1} 段 ${unique}`);
+      const targetExcerpt = `## ${targetHeading}\n${targetSentence}`;
+      const contentText = [
+        `# ${lessonTitle}`,
+        ...fillerParagraphs,
+        targetExcerpt,
+        `## ${nextHeading}\n${nextSentence}`,
+      ].join("\n\n");
+      const contentJson = {
+        type: "doc",
+        content: [
+          {
+            type: "heading",
+            attrs: { level: 1 },
+            content: [{ type: "text", text: lessonTitle }],
+          },
+          ...fillerParagraphs.map((text) => ({
+            type: "paragraph",
+            content: [{ type: "text", text }],
+          })),
+          {
+            type: "heading",
+            attrs: { level: 2 },
+            content: [{ type: "text", text: targetHeading }],
+          },
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: targetSentence }],
+          },
+          {
+            type: "heading",
+            attrs: { level: 2 },
+            content: [{ type: "text", text: nextHeading }],
+          },
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: nextSentence }],
+          },
+        ],
+      };
+      lesson.board_document = {
+        ...document,
+        content_text: contentText,
+        content_html: "",
+        content_json: contentJson,
+      };
+      const commitId = `commit_board_directed_explanation_${unique}`;
+      historyGraph.commits.push({
+        id: commitId,
+        label: "Board-directed explanation",
+        message: "Chatbot explained the Board AI-authorized section.",
+        branch_name: historyGraph.current_branch,
+        created_at: new Date().toISOString(),
+        parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+        operations: [],
+        snapshot: lesson.board_document,
+        metadata: {
+          kind: "board_directed_explanation",
+          assistant_message: `正在讲解 ${targetHeading}`,
+          board_task_route: "explain",
+          resolved_focus: {
+            source: "board",
+            lesson_id: lesson.id,
+            document_id: document.id,
+            kind: "heading",
+            heading_path: [targetHeading],
+            excerpt: targetExcerpt,
+            confidence: 1,
+            display_label: targetHeading,
+          },
+          board_explanation_directive: {
+            status: "approved",
+            target_excerpt: targetExcerpt,
+          },
+        },
+      });
+      branch.head_commit_id = commitId;
+      injectedPackage = nextPackage;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(injectedPackage) });
+  });
+
+  await page.reload();
+
+  const teachingFocus = page.locator('[data-teaching-focus="true"]');
+  const highlightedHeading = teachingFocus.filter({ hasText: targetHeading });
+  const highlightedSentence = teachingFocus.filter({ hasText: targetSentence });
+  await expect(highlightedHeading).toBeVisible();
+  await expect(highlightedSentence).toBeVisible();
+  await expect(highlightedHeading).toBeInViewport();
+  await expect(highlightedSentence).toBeInViewport();
+  await expect(teachingFocus.filter({ hasText: nextSentence })).toHaveCount(0);
+});
+
 test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {
   const unique = Date.now();
   const userMessage = `继续整理我的学习需求 ${unique}`;

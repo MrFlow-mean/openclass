@@ -501,6 +501,10 @@ function rangeFromNormalizedMatch(
 }
 
 function findTeachingFocusRange(editor: TiptapEditor, focus: BoardFocusRef): { from: number; to: number } | null {
+  const headingRange = findTeachingHeadingSectionRange(editor, focus);
+  if (headingRange) {
+    return headingRange;
+  }
   const chars = flattenEditorText(editor);
   const normalized = normalizedEditorText(chars);
   const lastHeading = focus.heading_path[focus.heading_path.length - 1];
@@ -520,6 +524,55 @@ function findTeachingFocusRange(editor: TiptapEditor, focus: BoardFocusRef): { f
     }
   }
   return null;
+}
+
+function findTeachingHeadingSectionRange(
+  editor: TiptapEditor,
+  focus: BoardFocusRef
+): { from: number; to: number } | null {
+  if (focus.kind !== "heading") {
+    return null;
+  }
+  const targetHeading = normalizeLookupText(
+    focus.display_label || focus.heading_path[focus.heading_path.length - 1] || ""
+  );
+  if (!targetHeading) {
+    return null;
+  }
+  const headings: Array<{ pos: number; level: number; text: string }> = [];
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === "heading") {
+      headings.push({
+        pos,
+        level: typeof node.attrs.level === "number" ? node.attrs.level : 1,
+        text: normalizeLookupText(node.textContent),
+      });
+    }
+  });
+  const teachableHeadings = headings[0]?.level === 1 ? headings.slice(1) : headings;
+  const orderedHeading =
+    typeof focus.order_start === "number" ? teachableHeadings[focus.order_start] : null;
+  const heading =
+    orderedHeading?.text === targetHeading
+      ? orderedHeading
+      : headings.find((candidate) => candidate.text === targetHeading);
+  if (!heading) {
+    return null;
+  }
+  const nextBoundary =
+    headings.find(
+      (candidate) => candidate.pos > heading.pos && candidate.level <= heading.level
+    )?.pos ?? editor.state.doc.content.size;
+  let from: number | null = null;
+  let to: number | null = null;
+  editor.state.doc.nodesBetween(heading.pos, nextBoundary, (node, pos) => {
+    if (!node.isText || !node.text) {
+      return;
+    }
+    from ??= pos;
+    to = pos + node.nodeSize;
+  });
+  return from !== null && to !== null && from < to ? { from, to } : null;
 }
 
 function scrollTeachingFocusIntoView(
@@ -555,6 +608,29 @@ function teachingFocusKey(focus: BoardFocusRef | null | undefined) {
     focus.display_label ?? "",
     focus.excerpt,
   ].join("\u001f");
+}
+
+function applyTeachingFocus(
+  editor: TiptapEditor,
+  documentId: string,
+  focus: BoardFocusRef | null | undefined,
+  pageScroll: HTMLDivElement | null
+) {
+  if (
+    !focus ||
+    focus.source !== "board" ||
+    (focus.document_id && focus.document_id !== documentId)
+  ) {
+    editor.commands.clearTeachingFocusHighlight();
+    return;
+  }
+  const range = findTeachingFocusRange(editor, focus);
+  if (!range) {
+    editor.commands.clearTeachingFocusHighlight();
+    return;
+  }
+  editor.commands.setTeachingFocusHighlight(range);
+  scrollTeachingFocusIntoView(editor, pageScroll, range);
 }
 
 function compactAnchorContext(value: string, maxLength = 90) {
@@ -677,6 +753,7 @@ export function WordBoardEditor({
   const latestReadOnlyRef = useRef(readOnly);
   const latestOnDocumentChangeRef = useRef(onDocumentChange);
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
+  const latestTeachingFocusRef = useRef(teachingFocus);
   const pageSettings = normalizePageSettings(document.page_settings);
   const pageMetrics = pagePreviewMetrics(pageSettings);
   const pageZoomScale = pageZoom / 100;
@@ -709,7 +786,8 @@ export function WordBoardEditor({
     latestReadOnlyRef.current = readOnly;
     latestOnDocumentChangeRef.current = onDocumentChange;
     latestOnSelectionChangeRef.current = onSelectionChange;
-  }, [document, onDocumentChange, onSelectionChange, readOnly]);
+    latestTeachingFocusRef.current = teachingFocus;
+  }, [document, onDocumentChange, onSelectionChange, readOnly, teachingFocus]);
 
   const handleEditorUpdate = useCallback(({ editor: currentEditor }: { editor: TiptapEditor }) => {
     if (latestReadOnlyRef.current) {
@@ -818,12 +896,18 @@ export function WordBoardEditor({
         }
         editor.commands.setContent(content, { emitUpdate: false });
         normalizeEditorMath(editor);
+        applyTeachingFocus(
+          editor,
+          docId,
+          latestTeachingFocusRef.current,
+          pageScrollRef.current
+        );
       });
       return () => {
         cancelled = true;
       };
     }
-  }, [document.id, document.content_html, documentJson, editor, editorContent, readOnly]);
+  }, [document.id, document.content_html, document.content_text, documentJson, editor, editorContent, readOnly]);
 
   const currentTeachingFocusKey = teachingFocusKey(teachingFocus);
 
@@ -831,21 +915,7 @@ export function WordBoardEditor({
     if (!editor) {
       return;
     }
-    if (
-      !teachingFocus ||
-      teachingFocus.source !== "board" ||
-      (teachingFocus.document_id && teachingFocus.document_id !== document.id)
-    ) {
-      editor.commands.clearTeachingFocusHighlight();
-      return;
-    }
-    const range = findTeachingFocusRange(editor, teachingFocus);
-    if (!range) {
-      editor.commands.clearTeachingFocusHighlight();
-      return;
-    }
-    editor.commands.setTeachingFocusHighlight(range);
-    scrollTeachingFocusIntoView(editor, pageScrollRef.current, range);
+    applyTeachingFocus(editor, document.id, teachingFocus, pageScrollRef.current);
   }, [currentTeachingFocusKey, document.content_text, document.id, editor, teachingFocus]);
 
   const currentFontSize =
