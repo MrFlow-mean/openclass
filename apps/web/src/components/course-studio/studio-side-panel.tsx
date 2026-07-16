@@ -166,14 +166,14 @@ export function CourseStudioSidePanel({
                 aria-label="AI 回复自动播报"
                 onClick={onSpeechAutoToggle}
                 className={clsx(
-                  "relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2",
-                  speechAutoEnabled ? "bg-black" : "bg-gray-300"
+                  "relative mt-0.5 h-7 w-12 shrink-0 rounded-full border transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
+                  speechAutoEnabled ? "border-black bg-black" : "border-gray-300 bg-gray-200"
                 )}
               >
                 <span
                   className={clsx(
-                    "absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
-                    speechAutoEnabled ? "translate-x-5" : "translate-x-1"
+                    "pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200",
+                    speechAutoEnabled ? "translate-x-5" : "translate-x-0"
                   )}
                 />
               </button>
