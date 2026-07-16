@@ -16,7 +16,6 @@ import {
 import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefObject, type SetStateAction } from "react";
 
 import { CourseChatMessage } from "@/components/chatbot";
-import { BoardGenerationConfirmationCard } from "@/components/course-studio/board-generation-confirmation-card";
 import { CodexModelSettingsPicker } from "@/components/course-studio/codex-model-settings-picker";
 import {
   modelButtonLabel,
@@ -38,7 +37,6 @@ import type {
   ChatInteractionMode,
   ChatRequestPayload,
   CommitRecord,
-  EvidenceBundle,
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
@@ -312,11 +310,8 @@ type CourseStudioChatSidebarProps = {
   displayedMessages: ChatMessage[];
   isPreviewMode: boolean;
   isChatBusy: boolean;
-  showReadyForBoardCard: boolean;
-  isPendingEvidenceLoading: boolean;
   scopeOptions: ScopeOption[];
   boardEditPrompt: BoardEditPrompt | null;
-  candidateEvidenceBundle: EvidenceBundle | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
   activeRequirementSheet: LearningRequirementSheet | null;
@@ -345,7 +340,6 @@ type CourseStudioChatSidebarProps = {
   onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
-  onEvidenceAction: (bundleId: string, action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (selection: AIModelSelection) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
@@ -366,11 +360,8 @@ export function CourseStudioChatSidebar({
   displayedMessages,
   isPreviewMode,
   isChatBusy,
-  showReadyForBoardCard,
-  isPendingEvidenceLoading,
   scopeOptions,
   boardEditPrompt,
-  candidateEvidenceBundle,
   clarificationQuestions,
   activeBoardTask,
   activeRequirementSheet,
@@ -399,7 +390,6 @@ export function CourseStudioChatSidebar({
   onEditMessage,
   onScopeAction,
   onBoardEditAction,
-  onEvidenceAction,
   onSelectTextModel,
   onSelectRealtimeModel,
   onVoiceToggle,
@@ -549,21 +539,6 @@ export function CourseStudioChatSidebar({
                 />
               </div>
             ))}
-            {showReadyForBoardCard || (activeBoardTask?.requested_action && ["write", "edit"].includes(activeBoardTask.requested_action) && activeBoardTask.progress >= 100 && activeBoardTask.missing_items.length === 0 && !activeBoardTask.clarification_question.trim() && candidateEvidenceBundle?.purpose === "board_edit") ? (
-              <BoardGenerationConfirmationCard
-                clarityStatus={clarityStatus}
-                boardTask={candidateEvidenceBundle?.purpose === "board_edit" ? activeBoardTask : null}
-                isChatBusy={isChatBusy}
-                isPendingEvidenceLoading={isPendingEvidenceLoading}
-                candidateEvidenceBundle={
-                  candidateEvidenceBundle?.purpose === "board_generation" || candidateEvidenceBundle?.purpose === "board_edit"
-                    ? candidateEvidenceBundle
-                    : null
-                }
-                onSubmitChat={onSubmitChat}
-                onEvidenceAction={onEvidenceAction}
-              />
-            ) : null}
             <div ref={chatScrollEndRef} aria-hidden="true" />
           </div>
 

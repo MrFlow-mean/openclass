@@ -358,7 +358,7 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   await expect(chatSidebar).not.toContainText("BLOCKMATH");
 });
 
-test("allows board generation when a ready learning turn has no relevant evidence", async ({ page }) => {
+test("does not show a second board-generation confirmation after learning requirements are ready", async ({ page }) => {
   const unique = Date.now();
   const userMessage = `直接开始生成板书 ${unique}`;
   const assistantMessage = `学习需求已准备好 ${unique}`;
@@ -483,7 +483,7 @@ test("allows board generation when a ready learning turn has no relevant evidenc
   await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
   await page.getByRole("button", { name: "发送消息" }).click();
 
-  const startBoardButton = page.getByRole("button", { name: "开始生成板书" });
-  await expect(startBoardButton).toBeEnabled();
+  await expect(page.getByText("学习需求已清晰")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "开始生成板书" })).toHaveCount(0);
   await expect(page.getByText("正在核对本轮资料证据。")).toHaveCount(0);
 });

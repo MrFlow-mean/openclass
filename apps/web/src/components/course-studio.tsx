@@ -11,7 +11,6 @@ import { CourseStudioPageShell } from "@/components/course-studio/course-studio-
 import type { FormulaInkEditorSubmitPayload } from "@/components/course-studio/word-board-editor";
 import {
   buildLessonMessagesFromHistory,
-  isBoardDocumentEmpty,
   learningClarityFromCommit,
 } from "@/components/course-studio/history-utils";
 import {
@@ -217,14 +216,11 @@ export function CourseStudio() {
     currentNeedPending,
     latestBoardDecision,
     boardEditPrompt,
-    candidateEvidenceBundle,
-    isPendingEvidenceLoading,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
     handleScopeAction,
     handleBoardEditAction,
-    handleEvidenceAction,
     handleContinueTeaching,
   } = chatAgent;
   const activeRequirements = streamedRequirementSheet ?? persistedRequirements;
@@ -272,8 +268,6 @@ export function CourseStudio() {
       next_question: "",
       ready_for_board: false,
     };
-  const showReadyForBoardCard =
-    !isPreviewMode && isBoardDocumentEmpty(displayedDocument) && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
   const clarityBarTone =
     clarityStatus.progress >= 90
       ? "bg-emerald-500"
@@ -581,11 +575,8 @@ export function CourseStudio() {
           displayedMessages={displayedMessages}
           isPreviewMode={isPreviewMode}
           isChatBusy={isChatBusy}
-          showReadyForBoardCard={showReadyForBoardCard}
-          isPendingEvidenceLoading={isPendingEvidenceLoading}
           scopeOptions={scopeOptions}
           boardEditPrompt={boardEditPrompt}
-          candidateEvidenceBundle={candidateEvidenceBundle}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
           activeRequirementSheet={activeRequirements}
@@ -614,7 +605,6 @@ export function CourseStudio() {
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
           onScopeAction={(option) => handleScopeAction(option)}
           onBoardEditAction={(action) => handleBoardEditAction(action)}
-          onEvidenceAction={(bundleId, action) => handleEvidenceAction(bundleId, action)}
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}
