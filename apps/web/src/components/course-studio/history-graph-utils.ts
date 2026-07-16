@@ -44,8 +44,6 @@ const CHAT_COMMIT_KINDS = new Set([
   "learning_requirement_refinement",
   "board_task_requirement_refinement",
   "chat_flow",
-  "interaction_session_start",
-  "interaction_session_turn",
   "board_section_teaching",
 ]);
 
@@ -56,7 +54,6 @@ const DOCUMENT_COMMIT_KINDS = new Set([
   "board_document_generation",
   "board_document_edit",
   "import_docx",
-  "apply_proposal",
 ]);
 
 function commitKind(commit: CommitRecord) {
