@@ -201,7 +201,6 @@ export function CourseStudio() {
     setError,
     setBusyAction,
     busyAction,
-    onSpeakResponse: speakChatbotResponse,
   });
   const {
     chatInput,
@@ -233,13 +232,10 @@ export function CourseStudio() {
     flushAutoSave,
     chatRequestInFlightRef,
     onSubmitTranscript: (message) => {
-      void handleSubmitChat(
-        {
-          message,
-          interaction_mode: "ask",
-        },
-        { speakResponse: true }
-      );
+      void handleSubmitChat({
+        message,
+        interaction_mode: "ask",
+      });
     },
   });
   const { remoteAudioRef, voiceActive, voiceStatusText, handleVoiceToggle, stopRealtimeSession } = voice;
@@ -374,14 +370,6 @@ export function CourseStudio() {
       },
     });
     return true;
-  }
-
-  function speakChatbotResponse(content: string) {
-    if (chatSpeech.autoSpeakEnabled) {
-      return;
-    }
-    voice.speakControlledChatbotMessage(content);
-    voice.setVoiceStatusText("Chatbot 回复已通过受控工作流播出，可以继续提问");
   }
 
   function adjustComposerHeight() {
@@ -621,11 +609,6 @@ export function CourseStudio() {
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}
-          speechAutoEnabled={chatSpeech.autoSpeakEnabled}
-          speechIsActive={chatSpeech.isSpeechActive}
-          speechStatusText={chatSpeech.speechStatusText}
-          onSpeechAutoToggle={chatSpeech.toggleAutoSpeak}
-          onSpeechStop={chatSpeech.stopSpeech}
           onSpeakMessage={chatSpeech.speakMessage}
           onExitPreviewMode={exitAnyPreviewMode}
           onClearSelection={clearSelection}
@@ -675,6 +658,11 @@ export function CourseStudio() {
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onError={setError}
           onSourceReference={applySourceReference}
+          speechAutoEnabled={chatSpeech.autoSpeakEnabled}
+          speechIsActive={chatSpeech.isSpeechActive}
+          speechStatusText={chatSpeech.speechStatusText}
+          onSpeechAutoToggle={chatSpeech.toggleAutoSpeak}
+          onSpeechStop={chatSpeech.stopSpeech}
         />
       </div>
     </CourseStudioPageShell>

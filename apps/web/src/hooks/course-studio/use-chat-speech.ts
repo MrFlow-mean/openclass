@@ -27,9 +27,10 @@ function subscribeToAutoSpeechPreference(callback: () => void) {
 
 function readAutoSpeechPreference() {
   try {
-    return window.localStorage.getItem(AUTO_SPEECH_STORAGE_KEY) === "true";
+    const storedValue = window.localStorage.getItem(AUTO_SPEECH_STORAGE_KEY);
+    return storedValue === null ? true : storedValue === "true";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -43,10 +44,10 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
   const autoSpeakEnabled = useSyncExternalStore(
     subscribeToAutoSpeechPreference,
     readAutoSpeechPreference,
-    () => false
+    () => true
   );
   const [status, setStatus] = useState<SpeechPlaybackStatus>("idle");
-  const [statusMessage, setStatusMessage] = useState("自动播报已关闭");
+  const [statusMessage, setStatusMessage] = useState("等待新的 AI 回复");
 
   const latestAssistantMessage = useMemo(
     () =>
@@ -79,7 +80,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     requestRef.current = null;
     releaseAudio();
     setStatus("idle");
-    setStatusMessage(autoSpeakEnabled ? "新回复会自动用 TTS 模型播报" : "自动播报已关闭");
+    setStatusMessage(autoSpeakEnabled ? "等待新的 AI 回复" : "自动播报已关闭");
   }, [autoSpeakEnabled, releaseAudio]);
 
   const speakMessage = useCallback(
@@ -96,7 +97,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       const controller = new AbortController();
       requestRef.current = controller;
       setStatus("loading");
-      setStatusMessage("TTS 模型正在生成音频…");
+      setStatusMessage("豆包 TTS 2.0 正在生成音频…");
 
       try {
         const response = await synthesizeSpeech(speechText, controller.signal);
@@ -147,7 +148,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     window.dispatchEvent(new Event(AUTO_SPEECH_CHANGE_EVENT));
     if (nextEnabled) {
       setStatus("idle");
-      setStatusMessage("新回复会自动用 TTS 模型播报");
+      setStatusMessage("等待新的 AI 回复");
       return;
     }
     requestSequenceRef.current += 1;
@@ -168,7 +169,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       trackedLessonIdRef.current = lessonId;
       latestSeenAssistantIdRef.current = latestId;
       setStatus("idle");
-      setStatusMessage(autoSpeakEnabled ? "新回复会自动用 TTS 模型播报" : "自动播报已关闭");
+      setStatusMessage(autoSpeakEnabled ? "等待新的 AI 回复" : "自动播报已关闭");
       return;
     }
     if (!latestAssistantMessage || latestSeenAssistantIdRef.current === latestId) {
@@ -194,10 +195,7 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
   return {
     autoSpeakEnabled,
     isSpeechActive: status === "loading" || status === "playing",
-    speechStatusText:
-      status === "idle" && autoSpeakEnabled && statusMessage === "自动播报已关闭"
-        ? "新回复会自动用 TTS 模型播报"
-        : statusMessage,
+    speechStatusText: statusMessage,
     speakMessage,
     stopSpeech,
     toggleAutoSpeak,

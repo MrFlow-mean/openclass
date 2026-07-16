@@ -30,19 +30,20 @@ def create_speech(
     except SpeechNotConfiguredError as exc:
         raise HTTPException(
             status_code=503,
-            detail="语音播报尚未配置 OPENAI_API_KEY",
+            detail="语音播报尚未配置 VOLCENGINE_TTS_API_KEY",
         ) from exc
     except SpeechGenerationError as exc:
         raise HTTPException(
             status_code=502,
-            detail="语音模型没有成功生成音频",
+            detail="豆包语音模型没有成功生成音频",
         ) from exc
 
     return Response(
         content=audio.content,
-        media_type="audio/mpeg",
+        media_type=audio.media_type,
         headers={
             "Cache-Control": "no-store",
+            "X-Speech-Provider": audio.provider,
             "X-Speech-Model": audio.model,
             "X-Speech-Voice": audio.voice,
         },

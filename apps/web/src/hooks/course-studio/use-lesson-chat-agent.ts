@@ -52,7 +52,6 @@ type UseLessonChatAgentOptions = {
   setError: Dispatch<SetStateAction<string | null>>;
   setBusyAction: Dispatch<SetStateAction<string | null>>;
   busyAction: string | null;
-  onSpeakResponse: (content: string) => void;
 };
 
 const DEFAULT_LEARNING_REQUIREMENT_FAILURE_REASON = "本轮学习需求没有成功更新，请重试刚才的输入。";
@@ -102,7 +101,6 @@ export function useLessonChatAgent({
   setError,
   setBusyAction,
   busyAction,
-  onSpeakResponse,
 }: UseLessonChatAgentOptions) {
   const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
@@ -143,7 +141,6 @@ export function useLessonChatAgent({
     clearComposerInput?: boolean;
     restoreComposerInput?: string;
     rollbackMessages?: ChatMessage[];
-    speakResponse?: boolean;
     beforeRequest?: (context: ChatTurnBeforeRequestContext) => Promise<ChatTurnBeforeRequestResult | void>;
     messageListUpdater?: (current: ChatMessage[], userMessage: ChatMessage, pendingAssistant: ChatMessage) => ChatMessage[];
   };
@@ -265,7 +262,6 @@ export function useLessonChatAgent({
     clearComposerInput = false,
     restoreComposerInput,
     rollbackMessages,
-    speakResponse = false,
     beforeRequest,
     messageListUpdater,
   }: RunChatTurnOptions) {
@@ -585,9 +581,6 @@ export function useLessonChatAgent({
           .filter((message) => message.id !== pendingAssistantMessage.id),
         ...assistantMessages,
       ]);
-      if (speakResponse && chatbotMessage) {
-        onSpeakResponse(chatbotMessage);
-      }
       clearSelection();
     } catch (chatError) {
       if (abortController.signal.aborted && chatAbortRequestedRef.current) {
@@ -686,7 +679,7 @@ export function useLessonChatAgent({
     chatAbortControllerRef.current.abort();
   }
 
-  async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
+  async function handleSubmitChat(payloadOverride?: ChatRequestPayload) {
     if (!textModelReady || !activeLesson || chatRequestInFlightRef.current || isChatBusy) {
       return;
     }
@@ -719,7 +712,6 @@ export function useLessonChatAgent({
       flushReason: "chat",
       clearComposerInput: !payloadOverride || isBoardGenerationControl,
       restoreComposerInput: payloadOverride || isBoardGenerationControl ? undefined : submittedInput,
-      speakResponse: options?.speakResponse ?? false,
     });
   }
 

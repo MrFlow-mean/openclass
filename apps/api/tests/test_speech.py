@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -8,6 +11,7 @@ from app.models import UserView
 from app.routers import auth as auth_router
 from app.routers import speech as speech_router
 from app.services.speech_service import SpeechAudio, SpeechNotConfiguredError
+from app.services.volcengine_speech import _decode_audio_frames, synthesize_volcengine_speech
 
 
 TEST_USER = UserView(
@@ -34,7 +38,13 @@ def test_speech_endpoint_returns_generated_audio(
     monkeypatch.setattr(
         speech_router,
         "synthesize_speech",
-        lambda text: SpeechAudio(content=f"audio:{text}".encode(), model="tts-1", voice="marin"),
+        lambda text: SpeechAudio(
+            content=f"audio:{text}".encode(),
+            media_type="audio/mpeg",
+            provider="volcengine",
+            model="seed-tts-2.0",
+            voice="zh_female_vv_uranus_bigtts",
+        ),
     )
 
     response = api_client.post("/api/speech", json={"input": "新的聊天回复"})
@@ -42,8 +52,9 @@ def test_speech_endpoint_returns_generated_audio(
     assert response.status_code == 200
     assert response.content == "audio:新的聊天回复".encode()
     assert response.headers["content-type"] == "audio/mpeg"
-    assert response.headers["x-speech-model"] == "tts-1"
-    assert response.headers["x-speech-voice"] == "marin"
+    assert response.headers["x-speech-provider"] == "volcengine"
+    assert response.headers["x-speech-model"] == "seed-tts-2.0"
+    assert response.headers["x-speech-voice"] == "zh_female_vv_uranus_bigtts"
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -64,4 +75,64 @@ def test_speech_endpoint_reports_missing_provider_configuration(
     response = api_client.post("/api/speech", json={"input": "需要播报的内容"})
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "语音播报尚未配置 OPENAI_API_KEY"
+    assert response.json()["detail"] == "语音播报尚未配置 VOLCENGINE_TTS_API_KEY"
+
+
+def test_volcengine_chunked_frames_are_joined_in_order() -> None:
+    frames = [
+        json.dumps({"code": 0, "data": base64.b64encode(b"first").decode()}),
+        json.dumps({"code": 0, "data": base64.b64encode(b"second").decode()}),
+        json.dumps({"code": 20_000_000, "message": "OK"}),
+    ]
+
+    assert _decode_audio_frames(frames) == b"firstsecond"
+
+
+def test_volcengine_provider_uses_v3_headers_and_doubao_voice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        headers = {"X-Tt-Logid": "test-log"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self):
+            yield json.dumps({"code": 0, "data": base64.b64encode(b"mp3-data").decode()})
+            yield json.dumps({"code": 20_000_000, "message": "OK"})
+
+    def fake_stream(method: str, endpoint: str, **kwargs: object) -> FakeResponse:
+        captured.update({"method": method, "endpoint": endpoint, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setenv("VOLCENGINE_TTS_API_KEY", "test-api-key")
+    monkeypatch.setattr("app.services.volcengine_speech.httpx.stream", fake_stream)
+
+    audio = synthesize_volcengine_speech("需要播报的内容")
+
+    headers = captured["headers"]
+    payload = captured["json"]
+    assert isinstance(headers, dict)
+    assert isinstance(payload, dict)
+    assert captured["method"] == "POST"
+    assert captured["endpoint"] == "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    assert headers["X-Api-Key"] == "test-api-key"
+    assert headers["X-Api-Resource-Id"] == "seed-tts-2.0"
+    assert headers["X-Api-Request-Id"]
+    assert payload["req_params"]["speaker"] == "zh_female_vv_uranus_bigtts"
+    assert payload["req_params"]["audio_params"] == {
+        "format": "mp3",
+        "sample_rate": 24000,
+        "speech_rate": 0,
+    }
+    assert audio.content == b"mp3-data"
+    assert audio.provider == "volcengine"
+    assert audio.model == "seed-tts-2.0"
