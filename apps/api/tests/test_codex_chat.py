@@ -21,6 +21,7 @@ from app.models import (
     LearningSourceReference,
     RetrievalEvidence,
     SelectionRef,
+    SourceChapter,
     SourceChunk,
     SourceIngestionRecord,
     SourceStructure,
@@ -32,6 +33,7 @@ from app.services import (
     board_visual_insertion,
     codex_app_server,
     codex_chat,
+    source_scope_ocr,
     workspace_state,
 )
 from app.services.board_asset_store import BoardAssetStore
@@ -57,6 +59,7 @@ from app.services.source_structure_indexer import (
     SourceStructureIndexer,
 )
 from app.services.source_structure_store import source_structure_store
+from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 
 
 TEST_USER_ID = "user_codex_chat"
@@ -1397,6 +1400,170 @@ def test_source_page_range_selection_generates_from_only_that_range(
 
     assert response.requirement_phase == "consumed"
     assert response.course_package.lessons[0].board_document.content_text.startswith("# Page range board")
+
+
+def test_empty_scanned_pdf_chapter_uses_on_demand_ocr_before_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    package_id = codex_store.load_for_user(TEST_USER_ID).packages[0].id
+    source_path = tmp_path / "scanned.pdf"
+    source_path.write_bytes(b"scanned-pdf-placeholder")
+    source = SourceIngestionRecord(
+        id="source_scanned_pdf",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        title="Scanned reference",
+        source_type="local_file",
+        file_name=source_path.name,
+        mime_type="application/pdf",
+        size_bytes=source_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(source_path)},
+    )
+    chapter = SourceChapter(
+        id="sourcechapter_scanned",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        source_ingestion_id=source.id,
+        number="3.1",
+        normalized_number="3.1",
+        title="3.1 Selected section",
+        path=["Chapter 3", "3.1 Selected section"],
+        source_locator="pdf:toc-page:11:printed:53",
+        body_start_offset=807,
+        body_end_offset=807,
+        page_start=69,
+        page_end=70,
+        anchor_status="verified",
+        confidence=0.87,
+    )
+    following_chapter = SourceChapter(
+        id="sourcechapter_scanned_next",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        source_ingestion_id=source.id,
+        number="3.2",
+        normalized_number="3.2",
+        title="3.2 Following section",
+        path=["Chapter 3", "3.2 Following section"],
+        order_index=1,
+        source_locator="pdf:toc-page:11:printed:54",
+        body_start_offset=807,
+        body_end_offset=900,
+        page_start=69,
+        page_end=72,
+        anchor_status="verified",
+        confidence=0.87,
+    )
+    source_evidence_store.save_source(source)
+    source_structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id=TEST_USER_ID,
+            package_id=package_id,
+            source_ingestion_id=source.id,
+            status="ready",
+            strategy="pdf_merged_toc",
+            metadata={
+                "structure_index_version": CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
+                "visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+            },
+        ),
+        chapters=[chapter, following_chapter],
+        chunks=[
+            SourceChunk(
+                owner_user_id=TEST_USER_ID,
+                package_id=package_id,
+                source_ingestion_id=source.id,
+                chapter_id=chapter.id,
+                text="[Page 69]",
+                start_offset=797,
+                end_offset=807,
+                page_start=69,
+                page_end=70,
+                token_count=3,
+            )
+        ],
+    )
+    ocr_calls: list[dict[str, object]] = []
+
+    def fake_ocr(_path: Path, **kwargs) -> str:
+        ocr_calls.append(kwargs)
+        return (
+            "Chapter 3\n"
+            "3.1 Selected section\n"
+            "Recovered chapter body with concepts, relationships, and supporting evidence.\n"
+            "supporting evidence.\n"
+            "3.2 Following section\n"
+            "This next section must not enter the selected evidence."
+        )
+
+    monkeypatch.setattr(source_scope_ocr, "source_local_path", lambda _source: source_path)
+    monkeypatch.setattr(source_scope_ocr, "extract_pdf_pages_text", fake_ocr)
+    monkeypatch.setattr(
+        source_structure_store,
+        "visual_evidence_for_scope",
+        lambda **_kwargs: [],
+    )
+
+    def fail_if_intake_runs(**_kwargs):
+        raise AssertionError("recovered source evidence must bypass requirement questions")
+
+    def fake_board_turn(**kwargs) -> CodexTurnResult:
+        assert "Recovered chapter body" in kwargs["user_prompt"]
+        assert "This next section must not enter" not in kwargs["user_prompt"]
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# OCR-grounded board\n\nRecovered content.", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_scanned_pdf",
+            turn_id="turn_scanned_pdf",
+            final_response="Generated.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fail_if_intake_runs)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Generate from this selected chapter.",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="Scanned reference · 3.1",
+                source_ingestion_id=source.id,
+                source_title=source.title,
+                source_chapter_id=chapter.id,
+                source_chapter_number=chapter.number,
+                source_chapter_title=chapter.title,
+                source_locator=chapter.source_locator,
+                source_page_start=chapter.page_start,
+                source_page_end=chapter.page_end,
+                heading_path=chapter.path,
+            ),
+            post_generation_action="stop_after_generation",
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.requirement_phase == "consumed"
+    assert ocr_calls == [{"page_start": 69, "page_end": 69, "max_pages": 1}]
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    frozen_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "learning_requirement_frozen"
+    )
+    frozen_evidence = frozen_commit.metadata["frozen_requirement_payload"]["source_grounding"][
+        "frozen_evidence"
+    ]
+    assert frozen_evidence[0]["metadata"]["retrieval_mode"] == "on_demand_pdf_ocr"
+
+
+def test_source_text_quality_rejects_page_markers_without_rejecting_real_text() -> None:
+    assert source_scope_ocr.has_usable_source_text("[Page 69]\n[Page 70]") is False
+    assert source_scope_ocr.has_usable_source_text("page four evidence") is True
 
 
 def test_legacy_pdf_source_rebuilds_visual_index_on_first_reference(

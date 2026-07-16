@@ -24,6 +24,11 @@ from app.services.source_structure_indexer import (
     SourceStructureIndexer,
     source_structure_needs_upgrade,
 )
+from app.services.source_scope_ocr import (
+    SourceScopeOcrError,
+    has_usable_source_text,
+    recover_pdf_scope_evidence,
+)
 from app.services.source_structure_store import source_structure_store
 from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 
@@ -116,6 +121,17 @@ def resolve_source_grounded_board_plan(
         chapter = rebound.chapter
     if chapter is None and not is_page_range:
         raise SourceGroundedBoardError("找不到这份引用对应的已验证正文范围，请重新从资料目录中选择章节。")
+    following_chapter = None
+    if chapter is not None:
+        following_chapter = next(
+            (
+                candidate
+                for candidate in sorted(view.chapters, key=lambda item: item.order_index)
+                if candidate.order_index > chapter.order_index
+                and candidate.anchor_status == "verified"
+            ),
+            None,
+        )
 
     if is_page_range:
         assert selection.source_page_start is not None
@@ -137,7 +153,26 @@ def resolve_source_grounded_board_plan(
             limit=SOURCE_BOARD_EVIDENCE_LIMIT,
             token_budget=SOURCE_FREEZE_TOKEN_BUDGET,
         )
-    if not evidence or not any(item.expanded_text.strip() for item in evidence):
+    if not any(has_usable_source_text(item.expanded_text) for item in evidence):
+        try:
+            evidence = recover_pdf_scope_evidence(
+                source=source,
+                chapter=chapter,
+                following_chapter=following_chapter,
+                page_start=(
+                    selection.source_page_start
+                    if is_page_range
+                    else chapter.page_start if chapter else None
+                ),
+                page_end_exclusive=(
+                    selection.source_page_end
+                    if is_page_range
+                    else chapter.page_end if chapter else None
+                ),
+            )
+        except SourceScopeOcrError as exc:
+            raise SourceGroundedBoardError(str(exc)) from exc
+    if not any(has_usable_source_text(item.expanded_text) for item in evidence):
         raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")
 
     visual_evidence = source_structure_store.visual_evidence_for_scope(
