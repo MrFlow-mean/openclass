@@ -145,6 +145,27 @@ test("restores each lesson's attached composer reference after switching tabs", 
   await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
 });
 
+test("orders lesson tabs from newest to oldest", async ({ page }) => {
+  const unique = Date.now();
+  const firstTitle = `较早课程 ${unique}`;
+  const secondTitle = `最近课程 ${unique}`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `课程顺序测试包 ${unique}`);
+  await createLessonFromEmptyStudio(page, firstTitle);
+
+  await page.getByLabel("新建页面").click();
+  await page.getByLabel("新页面名称").fill(secondTitle);
+  await page.getByLabel("确认").click();
+
+  const lessonTabList = page
+    .getByRole("navigation")
+    .filter({ has: page.getByRole("button", { name: `${secondTitle} main` }) });
+  const lessonTabs = lessonTabList.locator(":scope > button");
+  await expect(lessonTabs.nth(0)).toHaveAccessibleName(`${secondTitle} main`);
+  await expect(lessonTabs.nth(1)).toHaveAccessibleName(`${firstTitle} main`);
+});
+
 test("uses the top-right profile avatar as the only account menu on the home page", async ({ page }) => {
   await enterAsGuest(page);
 

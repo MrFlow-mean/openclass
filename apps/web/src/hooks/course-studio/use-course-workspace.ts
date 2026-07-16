@@ -55,6 +55,12 @@ function createComposerStateMap(nextPackage: CoursePackage, current: LessonCompo
   return next;
 }
 
+function newestLessonsFirst(lessons: Lesson[]): Lesson[] {
+  return [...lessons].sort(
+    (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+  );
+}
+
 export function useCourseWorkspace() {
   const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -96,9 +102,11 @@ export function useCourseWorkspace() {
 
   const openLessons = useMemo(
     () =>
-      (coursePackage?.workspace_tab_order
-        .map((lessonId) => lessonMap.get(lessonId))
-        .filter(Boolean) as Lesson[]) ?? [],
+      newestLessonsFirst(
+        (coursePackage?.workspace_tab_order
+          .map((lessonId) => lessonMap.get(lessonId))
+          .filter(Boolean) as Lesson[]) ?? []
+      ),
     [coursePackage?.workspace_tab_order, lessonMap]
   );
 
