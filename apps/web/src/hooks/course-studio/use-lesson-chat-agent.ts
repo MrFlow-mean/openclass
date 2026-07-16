@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api, isMissingChatStreamFinalError } from "@/lib/api";
+import { publicAgentActivityLabel } from "@/lib/agent-activity";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
   createChatMessage,
@@ -421,7 +422,7 @@ export function useLessonChatAgent({
             streamedAgentActivity = upsertAgentActivity(streamedAgentActivity, event);
             updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
               agentActivity: streamedAgentActivity,
-              statusLabel: event.label,
+              statusLabel: publicAgentActivityLabel(event.label),
             });
           },
           onChatDelta(delta) {

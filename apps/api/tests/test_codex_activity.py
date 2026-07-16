@@ -1,7 +1,7 @@
 from app.services.codex_activity import CodexActivityRecorder
 
 
-def test_public_activity_uses_openai_brand_for_reasoning() -> None:
+def test_public_activity_uses_openclass_brand_for_reasoning() -> None:
     recorder = CodexActivityRecorder()
 
     recorder.start_item(
@@ -11,8 +11,8 @@ def test_public_activity_uses_openai_brand_for_reasoning() -> None:
         }
     )
 
-    assert recorder.events[0].label == "OpenAI 正在思考"
-    assert recorder.events[0].role == "OpenAI"
+    assert recorder.events[0].label == "OpenClass 正在思考"
+    assert recorder.events[0].role == "OpenClass"
 
     recorder.complete_item(
         {
@@ -25,11 +25,11 @@ def test_public_activity_uses_openai_brand_for_reasoning() -> None:
         }
     )
 
-    assert recorder.events[0].label == "OpenAI 已完成思考"
-    assert recorder.events[0].role == "OpenAI"
+    assert recorder.events[0].label == "OpenClass 已完成思考"
+    assert recorder.events[0].role == "OpenClass"
 
 
-def test_public_activity_uses_openai_brand_for_commentary_and_tools() -> None:
+def test_public_activity_uses_openclass_brand_for_commentary_and_tools() -> None:
     recorder = CodexActivityRecorder()
 
     recorder.start_item(
@@ -54,7 +54,7 @@ def test_public_activity_uses_openai_brand_for_commentary_and_tools() -> None:
         }
     )
 
-    assert recorder.events[0].label == "OpenAI 工作进展"
-    assert recorder.events[0].role == "OpenAI"
+    assert recorder.events[0].label == "OpenClass 工作进展"
+    assert recorder.events[0].role == "OpenClass"
     assert recorder.events[1].label == "运行命令"
-    assert recorder.events[1].role == "OpenAI tool"
+    assert recorder.events[1].role == "OpenClass tool"

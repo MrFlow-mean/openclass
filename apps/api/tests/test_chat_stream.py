@@ -206,7 +206,7 @@ def test_chat_stream_emits_live_activity_updates_and_avoids_duplicate_final_even
         stage="execute_role",
         label="运行命令",
         status="running",
-        role="Codex tool",
+        role="OpenClass tool",
         metadata={"kind": "commandExecution", "detail": "partial"},
     )
     completed = running.model_copy(

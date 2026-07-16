@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 
+import { publicAgentActivityLabel } from "@/lib/agent-activity";
 import { writeTextToClipboard } from "@/lib/clipboard";
 import { markdownToChatHtml } from "@/lib/markdown";
 import type {
@@ -87,10 +88,6 @@ function activityDetail(event: AgentActivityEvent): string {
   return "";
 }
 
-function publicActivityLabel(label: string): string {
-  return label.replace(/^Codex\b/i, "OpenAI");
-}
-
 function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEvent[]; isPending: boolean }) {
   const [isExpanded, setIsExpanded] = useState(false);
   if (!events.length) {
@@ -100,7 +97,7 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
   const hasActiveEvent = events.some((event) => event.status === "pending" || event.status === "running");
   const problemCount = events.filter((event) => event.status === "blocked" || event.status === "failed").length;
   const summary = isPending || hasActiveEvent
-    ? publicActivityLabel(latestEvent.label)
+    ? publicAgentActivityLabel(latestEvent.label)
     : problemCount
       ? `${events.length} 项工作，${problemCount} 项未完成`
       : `${events.length} 项工作已完成`;
@@ -152,7 +149,7 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
                 )}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-gray-700">{publicActivityLabel(event.label)}</p>
+                <p className="font-medium text-gray-700">{publicAgentActivityLabel(event.label)}</p>
                 {command && detail !== command ? (
                   <pre className="custom-scrollbar mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white px-2 py-1.5 font-mono text-[10px] leading-4 text-gray-700">
                     {command}

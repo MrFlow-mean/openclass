@@ -2216,8 +2216,8 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
             id=f"activity_{len(calls)}",
             turn_id=f"turn_{len(calls)}",
             stage="build_context",
-            label="Codex 已完成思考",
-            role="Codex",
+            label="OpenClass 已完成思考",
+            role="OpenClass",
             metadata={"kind": "reasoning", "detail": "Inspected the current board."},
         )
         return CodexTurnResult(
