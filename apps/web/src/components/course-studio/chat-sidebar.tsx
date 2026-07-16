@@ -498,6 +498,20 @@ export function CourseStudioChatSidebar({
       </div>
 
       <div className="shrink-0 border-t border-gray-100 bg-white px-3 py-3">
+        <div className="mb-2 flex items-center px-1">
+          <ChatAttachmentMenu
+            packageId={packageId}
+            attachments={composerAttachments}
+            disabled={isChatBusy || isPreviewMode}
+            onChange={(attachments) =>
+              onUpdateComposerState((current) => ({
+                ...current,
+                composerAttachments: attachments,
+              }))
+            }
+            onError={onError}
+          />
+        </div>
         <div className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2">
           <CodexModelSettingsPicker
             open={openModelMenu === "text"}
@@ -629,18 +643,6 @@ export function CourseStudioChatSidebar({
           />
           <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <ChatAttachmentMenu
-                packageId={packageId}
-                attachments={composerAttachments}
-                disabled={isChatBusy || isPreviewMode}
-                onChange={(attachments) =>
-                  onUpdateComposerState((current) => ({
-                    ...current,
-                    composerAttachments: attachments,
-                  }))
-                }
-                onError={onError}
-              />
               <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
                 <button
                   type="button"

@@ -198,6 +198,13 @@ test("adds images and files from the chat plus menu and includes them in the tur
   });
 
   await page.getByRole("button", { name: "添加附件" }).click();
+  const attachmentButtonBox = await page.getByRole("button", { name: "添加附件" }).boundingBox();
+  const textModelPickerBox = await page.getByTestId("codex-model-settings-button").boundingBox();
+  expect(attachmentButtonBox).not.toBeNull();
+  expect(textModelPickerBox).not.toBeNull();
+  expect((attachmentButtonBox?.y ?? 0) + (attachmentButtonBox?.height ?? 0)).toBeLessThanOrEqual(
+    textModelPickerBox?.y ?? 0
+  );
   await expect(page.getByRole("menuitem", { name: "添加图片" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "添加文件" })).toBeVisible();
   await page.getByTestId("chat-image-input").setInputFiles({
