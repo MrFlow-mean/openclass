@@ -11,7 +11,6 @@ from typing import Any, Callable, Sequence
 from app.models import BoardDocument
 from app.services.ai_logging import ai_usage_logger
 from app.services.board_asset_store import BoardAssetStore, get_board_asset_store
-from app.services.document_ops import attach_asset_after_block, read_board_snapshot
 from app.services.rich_document import rebuild_document_from_content_json
 
 
@@ -147,13 +146,7 @@ def derive_board_visual_placements(
     *,
     plan: BoardInsertionPlan,
 ) -> list[dict[str, str]]:
-    """Derive the strict placement claims from Codex's standalone markers.
-
-    Codex writes only Markdown, so there is no second model-authored JSON result
-    to trust.  The backend binds each confirmed marker to the immediately
-    preceding ordinary paragraph, then ``apply_board_insertion_plan`` verifies
-    uniqueness, adjacency, source anchors, and source ordering before writing.
-    """
+    """Describe where Codex wrote each confirmed visual marker."""
 
     nodes = _canonical_content_json(document).get("content")
     if not isinstance(nodes, list):
@@ -165,28 +158,15 @@ def derive_board_visual_placements(
         if item.recreation_marker:
             marker_choices.append((item.recreation_marker, "editable_recreation"))
         selected = [
-            (marker, placement_kind, locations.get(marker, []))
+            (location, marker, placement_kind)
             for marker, placement_kind in marker_choices
-            if locations.get(marker)
+            for location in locations.get(marker, [])
         ]
-        if len(selected) != 1 or len(selected[0][2]) != 1:
+        if not selected:
             continue
-        marker, placement_kind, marker_locations = selected[0]
-        marker_index = marker_locations[0]
-        if marker_index <= 0:
-            continue
-        anchor_node = nodes[marker_index - 1]
-        if not isinstance(anchor_node, dict):
-            continue
-        if placement_kind == "original_asset" and anchor_node.get("type") != "paragraph":
-            continue
-        if placement_kind == "editable_recreation" and not _valid_recreation_predecessor(
-            anchor_node
-        ):
-            continue
+        marker_index, marker, placement_kind = min(selected, key=lambda value: value[0])
+        anchor_node = nodes[marker_index - 1] if marker_index > 0 else None
         target_text_anchor = _node_plain_text(anchor_node).strip()
-        if not target_text_anchor:
-            continue
         placements.append(
             {
                 "visual_id": item.visual_id,
@@ -222,7 +202,6 @@ def apply_board_insertion_plan(
     if not isinstance(root_nodes, list):
         return BoardVisualInsertionResult(document=document)
 
-    plan_by_visual = {item.visual_id: item for item in plan.items}
     plan_by_marker = {
         marker: item
         for item in plan.items
@@ -233,76 +212,31 @@ def apply_board_insertion_plan(
         preserved_document,
         current_markers=set(plan_by_marker),
     )
-    placement_by_visual: dict[str, Any] = {}
-    duplicate_placements: set[str] = set()
-    for placement in placements:
-        visual_id = _string_value(placement, "visual_id", "id")
-        if visual_id in placement_by_visual:
-            duplicate_placements.add(visual_id)
-        elif visual_id:
-            placement_by_visual[visual_id] = placement
-
     marker_locations = _standalone_marker_locations(root_nodes)
-    all_text = "\n".join(_node_plain_text(node) for node in root_nodes if isinstance(node, dict))
-    existing_visual_ids = _existing_visual_ids(root_nodes)
     result = BoardVisualInsertionResult(document=document)
-    for visual_id, placement in placement_by_visual.items():
-        if visual_id not in plan_by_visual:
-            _record_skip(
-                result,
-                visual_id,
-                _string_value(placement, "marker"),
-                "visual_not_confirmed",
-                lesson_id=lesson_id,
-            )
+    _ = placements
     candidates: list[tuple[PlannedBoardVisual, Any, int]] = []
 
     for item in plan.items:
-        placement = placement_by_visual.get(item.visual_id)
-        reason = ""
-        selected_marker = _string_value(placement, "marker") if placement is not None else ""
-        allowed_markers = {item.marker}
+        marker_choices = [item.marker]
         if item.recreation_marker:
-            allowed_markers.add(item.recreation_marker)
-        locations = marker_locations.get(selected_marker, [])
-        marker_count = all_text.count(selected_marker) if selected_marker else 0
-        is_recreation = bool(
-            item.recreation_marker and selected_marker == item.recreation_marker
-        )
-        if item.visual_id in duplicate_placements:
-            reason = "duplicate_placement"
-        elif placement is None:
-            reason = "placement_missing"
-        elif item.visual_id in existing_visual_ids:
-            reason = "visual_already_present"
-        elif selected_marker not in allowed_markers:
-            reason = "marker_mismatch"
-        elif marker_count != 1 or len(locations) != 1:
-            reason = "marker_not_unique_and_standalone"
-        elif not _placement_source_anchors_match(item, placement):
-            reason = "source_anchor_mismatch"
-        elif is_recreation and not _recreation_target_matches(root_nodes, locations[0]):
-            reason = "recreation_not_adjacent_to_editable_content"
-        elif not is_recreation and not _target_anchor_matches(
-            root_nodes,
-            locations[0],
-            _string_value(placement, "target_text_anchor"),
-        ):
-            reason = "target_anchor_not_unique_or_adjacent"
-        if reason:
+            marker_choices.append(item.recreation_marker)
+        located = [
+            (location, marker)
+            for marker in marker_choices
+            for location in marker_locations.get(marker, [])
+        ]
+        if not located:
             _record_skip(
                 result,
                 item.visual_id,
-                selected_marker or item.marker,
-                reason,
+                item.marker,
+                "placement_missing",
                 lesson_id=lesson_id,
             )
             continue
-        candidates.append((item, placement, locations[0]))
-
-    candidates, order_conflicts = _filter_candidates_by_source_order(candidates)
-    for item, _placement, _marker_index in order_conflicts:
-        _record_skip(result, item.visual_id, item.marker, "visual_order_mismatch", lesson_id=lesson_id)
+        marker_index, selected_marker = min(located, key=lambda value: value[0])
+        candidates.append((item, {"marker": selected_marker}, marker_index))
 
     replacements: dict[str, dict[str, Any]] = {}
     for item, placement, _marker_index in candidates:
@@ -364,9 +298,46 @@ def apply_board_insertion_plan(
             continue
         replacements[item.marker] = _resource_visual_node(item, asset.id)
 
+    candidates_by_index = {
+        marker_index: (item, placement)
+        for item, placement, marker_index in candidates
+    }
     next_nodes: list[dict[str, Any]] = []
-    for node in root_nodes:
+    for node_index, node in enumerate(root_nodes):
         if not isinstance(node, dict):
+            continue
+        candidate = candidates_by_index.get(node_index)
+        if candidate is not None:
+            item, placement = candidate
+            selected_marker = _string_value(placement, "marker")
+            if item.recreation_marker and selected_marker == item.recreation_marker:
+                result.applied_visual_ids.append(item.visual_id)
+                result.recreated_visual_ids.append(item.visual_id)
+                ai_usage_logger.log_event(
+                    "board_visual_placed",
+                    lesson_id=lesson_id,
+                    visual_id=item.visual_id,
+                    asset_id="",
+                    placement_kind="editable_recreation",
+                )
+                continue
+            replacement = replacements.get(item.marker)
+            if replacement is not None:
+                next_nodes.append(replacement)
+                result.applied_visual_ids.append(item.visual_id)
+                asset_id = _string_value(replacement.get("attrs", {}), "assetId")
+                if asset_id:
+                    result.asset_ids.append(asset_id)
+                    result.original_visual_ids.append(item.visual_id)
+                ai_usage_logger.log_event(
+                    "board_visual_placed",
+                    lesson_id=lesson_id,
+                    visual_id=item.visual_id,
+                    asset_id=asset_id,
+                    placement_kind=(
+                        "editable_table" if _is_table_visual(item) else "original_asset"
+                    ),
+                )
             continue
         marker = _standalone_marker(node)
         preserve_unknown_markers = _consume_preserved_marker_node(
@@ -391,72 +362,8 @@ def apply_board_insertion_plan(
             next_nodes.append(cleaned)
 
     normalized_nodes = next_nodes or [{"type": "paragraph"}]
-    cleaned_document = document
-    if normalized_nodes != root_nodes:
-        next_json = {**content_json, "type": "doc", "content": normalized_nodes}
-        cleaned_document = rebuild_document_from_content_json(document, next_json)
-
-    for item, placement, marker_index in sorted(candidates, key=lambda candidate: candidate[2]):
-        selected_marker = _string_value(placement, "marker")
-        if item.recreation_marker and selected_marker == item.recreation_marker:
-            result.applied_visual_ids.append(item.visual_id)
-            result.recreated_visual_ids.append(item.visual_id)
-            ai_usage_logger.log_event(
-                "board_visual_placed",
-                lesson_id=lesson_id,
-                visual_id=item.visual_id,
-                asset_id="",
-                placement_kind="editable_recreation",
-            )
-            continue
-        replacement = replacements.get(item.marker)
-        if replacement is None:
-            continue
-        target_anchor = _string_value(placement, "target_text_anchor")
-        snapshot = read_board_snapshot(cleaned_document)
-        matching_blocks = [
-            block
-            for block in snapshot.get("blocks", [])
-            if _normalize_text(str(block.get("text") or "")) == _normalize_text(target_anchor)
-        ]
-        if len(matching_blocks) != 1:
-            _record_skip(
-                result,
-                item.visual_id,
-                item.marker,
-                "stable_target_not_unique",
-                lesson_id=lesson_id,
-            )
-            continue
-        inserted = attach_asset_after_block(
-            cleaned_document,
-            after_block_id=str(matching_blocks[0]["block_id"]),
-            node=replacement,
-        )
-        if inserted.content_json == cleaned_document.content_json:
-            _record_skip(
-                result,
-                item.visual_id,
-                item.marker,
-                "stable_target_attachment_failed",
-                lesson_id=lesson_id,
-            )
-            continue
-        cleaned_document = inserted
-        result.applied_visual_ids.append(item.visual_id)
-        asset_id = _string_value(replacement.get("attrs", {}), "assetId")
-        if asset_id:
-            result.asset_ids.append(asset_id)
-            result.original_visual_ids.append(item.visual_id)
-        ai_usage_logger.log_event(
-            "board_visual_placed",
-            lesson_id=lesson_id,
-            visual_id=item.visual_id,
-            asset_id=asset_id,
-            placement_kind="editable_table" if _is_table_visual(item) else "original_asset",
-        )
-
-    result.document = cleaned_document
+    next_json = {**content_json, "type": "doc", "content": normalized_nodes}
+    result.document = rebuild_document_from_content_json(document, next_json)
     return result
 
 
@@ -573,14 +480,6 @@ def _consume_preserved_marker_node(
     return True
 
 
-def _placement_source_anchors_match(item: PlannedBoardVisual, placement: Any) -> bool:
-    before = _string_value(placement, "source_before_chunk_id", "before_chunk_id")
-    after = _string_value(placement, "source_after_chunk_id", "after_chunk_id")
-    return (not item.before_chunk_id or before == item.before_chunk_id) and (
-        not item.after_chunk_id or after == item.after_chunk_id
-    )
-
-
 def _resolved_visual_matches_plan(item: PlannedBoardVisual, visual: Any) -> bool:
     resolved_id = _string_value(visual, "visual_id", "id")
     source_id = _string_value(visual, "source_ingestion_id", "source_id")
@@ -593,78 +492,6 @@ def _resolved_visual_matches_plan(item: PlannedBoardVisual, visual: Any) -> bool
         and (not item.before_chunk_id or before == item.before_chunk_id)
         and (not item.after_chunk_id or after == item.after_chunk_id)
         and (not item.position_hash or position_hash == item.position_hash)
-    )
-
-
-def _filter_candidates_by_source_order(
-    candidates: list[tuple[PlannedBoardVisual, Any, int]],
-) -> tuple[
-    list[tuple[PlannedBoardVisual, Any, int]],
-    list[tuple[PlannedBoardVisual, Any, int]],
-]:
-    """Keep a strictly increasing placement sequence for each source.
-
-    Candidates are considered in their confirmed source order. Once a placement
-    is accepted, a later source visual must target a later document marker; only
-    the candidate that breaks that invariant fails closed. Separate sources are
-    isolated, while chapter boundaries within one source retain reading order.
-    """
-
-    by_source: dict[str, list[int]] = {}
-    for candidate_index, (item, _placement, _marker_index) in enumerate(candidates):
-        by_source.setdefault(item.source_ingestion_id, []).append(candidate_index)
-
-    conflicting_indexes: set[int] = set()
-    for source_indexes in by_source.values():
-        source_order = sorted(
-            source_indexes,
-            key=lambda index: (
-                candidates[index][0].order_index,
-                index,
-            ),
-        )
-        last_accepted_marker: int | None = None
-        for source_index in source_order:
-            marker_index = candidates[source_index][2]
-            if last_accepted_marker is not None and marker_index <= last_accepted_marker:
-                conflicting_indexes.add(source_index)
-                continue
-            last_accepted_marker = marker_index
-
-    accepted = [
-        candidate
-        for index, candidate in enumerate(candidates)
-        if index not in conflicting_indexes
-    ]
-    rejected = [
-        candidate
-        for index, candidate in enumerate(candidates)
-        if index in conflicting_indexes
-    ]
-    return accepted, rejected
-
-
-def _target_anchor_matches(nodes: list[Any], marker_index: int, target_anchor: str) -> bool:
-    normalized_anchor = _normalize_text(target_anchor)
-    if not normalized_anchor:
-        return False
-    matches = [
-        index
-        for index, node in enumerate(nodes)
-        if normalized_anchor == _normalize_text(_node_plain_text(node))
-    ]
-    return len(matches) == 1 and matches[0] == marker_index - 1
-
-
-def _recreation_target_matches(nodes: list[Any], marker_index: int) -> bool:
-    return marker_index > 0 and _valid_recreation_predecessor(nodes[marker_index - 1])
-
-
-def _valid_recreation_predecessor(node: Any) -> bool:
-    return bool(
-        isinstance(node, dict)
-        and node.get("type") in {"paragraph", "table", "bulletList", "orderedList"}
-        and _node_plain_text(node).strip()
     )
 
 
@@ -681,32 +508,6 @@ def _node_plain_text(value: Any) -> str:
     if isinstance(value, list):
         return "".join(_node_plain_text(child) for child in value)
     return ""
-
-
-def _existing_visual_ids(value: Any) -> set[str]:
-    visual_ids: set[str] = set()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("type") in {"resourceVisualBlock", "table"}:
-                visual_id = _string_value(
-                    node.get("attrs", {}),
-                    "visualId",
-                    "sourceVisualId",
-                    "visual_id",
-                )
-                if visual_id:
-                    visual_ids.add(visual_id)
-            content = node.get("content")
-            if isinstance(content, list):
-                for child in content:
-                    walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(value)
-    return visual_ids
 
 
 def _resource_visual_node(item: PlannedBoardVisual, asset_id: str) -> dict[str, Any]:
@@ -858,7 +659,3 @@ def _source_locator(visual: Any) -> str:
     if sheet:
         return f"sheet:{sheet}"
     return ""
-
-
-def _normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value or "").strip().casefold()

@@ -826,6 +826,7 @@ def test_visual_scope_uses_exclusive_page_end(tmp_path: Path) -> None:
     )
 
     assert [item.visual_id for item in selected] == ["visual_page_4"]
+    assert [item.order_index for item in selected] == [4]
 
 
 def test_visual_cleanup_does_not_delete_an_inflight_staged_blob(

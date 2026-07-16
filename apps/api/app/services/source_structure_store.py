@@ -684,6 +684,7 @@ class SourceStructureStore:
                 surrounding_text=asset.surrounding_text,
                 anchor_status=asset.anchor_status,
                 mime_type=asset.mime_type,
+                order_index=asset.order_index,
                 content_hash=asset.content_hash,
                 position_hash=asset.position_hash,
                 width=asset.width,

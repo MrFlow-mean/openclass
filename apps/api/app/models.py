@@ -1089,6 +1089,7 @@ class SourceVisualEvidence(BaseModel):
     surrounding_text: str = ""
     anchor_status: SourceVisualAnchorStatus = "unverified"
     mime_type: str = ""
+    order_index: int = 0
     content_hash: str = ""
     position_hash: str = ""
     width: int | None = None

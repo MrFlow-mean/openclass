@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.services import board_asset_store as board_asset_store_module
-from app.models import BoardPatchRequest, PatchOperation, SourceIngestionRecord, UserView
+from app.models import (
+    BoardPatchRequest,
+    PatchOperation,
+    SourceIngestionRecord,
+    SourceVisualEvidence,
+    UserView,
+)
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.services.board_asset_store import BoardAssetError, BoardAssetRecord, BoardAssetStore
@@ -78,6 +84,28 @@ def _visual(
     }
 
 
+def test_plan_orders_frozen_visual_evidence_by_source_order_index() -> None:
+    later = SourceVisualEvidence(
+        visual_id="visual_a",
+        source_ingestion_id="source_1",
+        source_chapter_id="chapter_1",
+        anchor_status="verified",
+        order_index=2,
+    )
+    earlier = SourceVisualEvidence(
+        visual_id="visual_z",
+        source_ingestion_id="source_1",
+        source_chapter_id="chapter_1",
+        anchor_status="verified",
+        order_index=1,
+    )
+
+    plan = build_board_insertion_plan([later, earlier], nonce="fixed")
+
+    assert [item.visual_id for item in plan.items] == ["visual_z", "visual_a"]
+    assert [item.order_index for item in plan.items] == [1, 2]
+
+
 def _placement(item, target: str) -> dict[str, str]:
     return {
         "visual_id": item.visual_id,
@@ -111,14 +139,15 @@ def test_codex_markdown_derives_backend_owned_visual_placements() -> None:
     assert placements[0]["source_before_chunk_id"] == first.before_chunk_id
 
 
-def test_codex_marker_without_immediately_preceding_paragraph_has_no_placement() -> None:
+def test_codex_marker_after_heading_is_still_materialized() -> None:
     plan = build_board_insertion_plan([_visual()], nonce="fixed")
     document = build_document(
         title="Board",
         content_text=f"# Heading\n\n{plan.items[0].marker}",
     )
 
-    assert derive_board_visual_placements(document, plan=plan) == []
+    placements = derive_board_visual_placements(document, plan=plan)
+    assert placements[0]["target_text_anchor"] == "Heading"
 
 
 def test_codex_recreation_marker_keeps_editable_markdown_without_loading_original(
@@ -164,7 +193,7 @@ def test_codex_recreation_marker_keeps_editable_markdown_without_loading_origina
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
 
 
-def test_codex_cannot_choose_original_and_recreation_for_same_visual() -> None:
+def test_codex_first_marker_wins_when_both_visual_forms_are_present() -> None:
     plan = build_board_insertion_plan([_visual(kind="diagram")], nonce="fixed")
     item = plan.items[0]
     document = build_document(
@@ -175,7 +204,9 @@ def test_codex_cannot_choose_original_and_recreation_for_same_visual() -> None:
         ),
     )
 
-    assert derive_board_visual_placements(document, plan=plan) == []
+    placements = derive_board_visual_placements(document, plan=plan)
+    assert placements[0]["marker"] == item.recreation_marker
+    assert placements[0]["placement_kind"] == "editable_recreation"
 
 
 def test_board_asset_store_deduplicates_and_authorizes_by_owner(tmp_path) -> None:
@@ -413,12 +444,12 @@ def test_invalid_inline_marker_is_removed_without_appending_visual(tmp_path) -> 
     )
 
     assert outcome.applied_visual_ids == []
-    assert outcome.skipped[0]["reason"] == "marker_not_unique_and_standalone"
+    assert outcome.skipped[0]["reason"] == "placement_missing"
     assert item.marker not in outcome.document.content_text
     assert "Unique explanation" in outcome.document.content_text
 
 
-def test_existing_nested_visual_id_prevents_duplicate_insertion(tmp_path) -> None:
+def test_existing_nested_visual_does_not_block_explicit_marker_insertion(tmp_path) -> None:
     visual = _visual()
     plan = build_board_insertion_plan([visual], nonce="fixed")
     item = plan.items[0]
@@ -467,13 +498,26 @@ def test_existing_nested_visual_id_prevents_duplicate_insertion(tmp_path) -> Non
         asset_store=_store(tmp_path),
     )
 
-    assert outcome.applied_visual_ids == []
-    assert outcome.skipped[0]["reason"] == "visual_already_present"
-    assert str(outcome.document.content_json).count("visual_1") == 1
+    assert outcome.applied_visual_ids == ["visual_1"]
+    assert outcome.skipped == []
+    visual_nodes = []
+
+    def collect_visuals(value) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "resourceVisualBlock":
+                visual_nodes.append(value)
+            for child in value.get("content", []):
+                collect_visuals(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_visuals(child)
+
+    collect_visuals(outcome.document.content_json)
+    assert [node["attrs"]["visualId"] for node in visual_nodes] == ["visual_1", "visual_1"]
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
 
 
-def test_same_source_reversed_marker_skips_only_later_plan_visual(tmp_path) -> None:
+def test_same_source_reversed_markers_are_all_materialized(tmp_path) -> None:
     store = _store(tmp_path)
     visuals = [_visual("visual_1", order_index=1), _visual("visual_2", order_index=2)]
     plan = build_board_insertion_plan(visuals, nonce="fixed")
@@ -495,38 +539,27 @@ def test_same_source_reversed_marker_skips_only_later_plan_visual(tmp_path) -> N
         asset_store=store,
     )
 
-    assert outcome.applied_visual_ids == ["visual_1"]
-    assert {item["reason"] for item in outcome.skipped} == {"visual_order_mismatch"}
-    assert {item["visual_id"] for item in outcome.skipped} == {"visual_2"}
+    assert outcome.applied_visual_ids == ["visual_2", "visual_1"]
+    assert outcome.skipped == []
     visual_nodes = [
         node
         for node in outcome.document.content_json["content"]
         if node["type"] == "resourceVisualBlock"
     ]
-    assert [node["attrs"]["visualId"] for node in visual_nodes] == ["visual_1"]
+    assert [node["attrs"]["visualId"] for node in visual_nodes] == ["visual_2", "visual_1"]
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
 
 
 @pytest.mark.parametrize(
-    ("document_visual_order", "expected_applied", "expected_skipped"),
+    "document_visual_order",
     [
-        (
-            ["visual_1", "visual_3", "visual_2", "visual_4"],
-            ["visual_1", "visual_2", "visual_4"],
-            {"visual_3"},
-        ),
-        (
-            ["visual_1", "visual_2", "visual_4", "visual_3"],
-            ["visual_1", "visual_2", "visual_3"],
-            {"visual_4"},
-        ),
+        ["visual_1", "visual_3", "visual_2", "visual_4"],
+        ["visual_1", "visual_2", "visual_4", "visual_3"],
     ],
 )
-def test_same_chapter_order_conflict_skips_only_later_violating_visual(
+def test_same_chapter_marker_order_is_materialized_as_written(
     tmp_path,
     document_visual_order: list[str],
-    expected_applied: list[str],
-    expected_skipped: set[str],
 ) -> None:
     store = _store(tmp_path)
     visuals = [_visual(f"visual_{index}", order_index=index) for index in range(1, 5)]
@@ -557,23 +590,18 @@ def test_same_chapter_order_conflict_skips_only_later_violating_visual(
         asset_store=store,
     )
 
-    assert outcome.applied_visual_ids == expected_applied
-    assert {
-        item["visual_id"]
-        for item in outcome.skipped
-        if item["reason"] == "visual_order_mismatch"
-    } == expected_skipped
-    assert {item["reason"] for item in outcome.skipped} == {"visual_order_mismatch"}
+    assert outcome.applied_visual_ids == document_visual_order
+    assert outcome.skipped == []
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
     visual_nodes = [
         node
         for node in outcome.document.content_json["content"]
         if node["type"] == "resourceVisualBlock"
     ]
-    assert [node["attrs"]["visualId"] for node in visual_nodes] == expected_applied
+    assert [node["attrs"]["visualId"] for node in visual_nodes] == document_visual_order
 
 
-def test_visuals_from_different_chapters_keep_source_reading_order(tmp_path) -> None:
+def test_visuals_from_different_chapters_follow_written_marker_order(tmp_path) -> None:
     store = _store(tmp_path)
     visuals = [
         _visual("visual_1", chapter_id="chapter_1", order_index=1),
@@ -604,17 +632,14 @@ def test_visuals_from_different_chapters_keep_source_reading_order(tmp_path) -> 
         asset_store=store,
     )
 
-    assert outcome.applied_visual_ids == ["visual_1"]
+    assert outcome.applied_visual_ids == ["visual_2", "visual_1"]
     visual_nodes = [
         node
         for node in outcome.document.content_json["content"]
         if node["type"] == "resourceVisualBlock"
     ]
-    assert [node["attrs"]["visualId"] for node in visual_nodes] == ["visual_1"]
-    assert any(
-        skipped["visual_id"] == "visual_2" and skipped["reason"] == "visual_order_mismatch"
-        for skipped in outcome.skipped
-    )
+    assert [node["attrs"]["visualId"] for node in visual_nodes] == ["visual_2", "visual_1"]
+    assert outcome.skipped == []
 
 
 @pytest.mark.parametrize(
@@ -632,7 +657,7 @@ def test_visuals_from_different_chapters_keep_source_reading_order(tmp_path) -> 
         ),
     ],
 )
-def test_ambiguous_marker_or_target_fails_closed(
+def test_repeated_marker_or_target_does_not_block_materialization(
     tmp_path,
     content_text: str,
     target_anchor: str,
@@ -652,8 +677,8 @@ def test_ambiguous_marker_or_target_fails_closed(
         asset_store=_store(tmp_path),
     )
 
-    assert outcome.applied_visual_ids == []
-    assert outcome.skipped[0]["reason"] == expected_reason
+    assert outcome.applied_visual_ids == ["visual_1"]
+    assert outcome.skipped == []
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
 
 
@@ -676,7 +701,7 @@ def test_forged_marker_is_stripped_and_never_appended(tmp_path) -> None:
     )
 
     assert outcome.applied_visual_ids == []
-    assert {item["reason"] for item in outcome.skipped} == {"marker_mismatch", "unknown_marker"}
+    assert {item["reason"] for item in outcome.skipped} == {"placement_missing", "unknown_marker"}
     assert "OPENCLASS_VISUAL" not in outcome.document.content_text
 
 
