@@ -145,6 +145,89 @@ test("restores each lesson's attached composer reference after switching tabs", 
   await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
 });
 
+test("adds images and files from the chat plus menu and includes them in the turn", async ({ page }) => {
+  const unique = Date.now();
+  const sourceId = `source_chat_attachment_${unique}`;
+  const fileName = `diagram-${unique}.png`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `聊天附件测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `聊天附件测试页面 ${unique}`);
+
+  await page.route("**/api/packages/*/sources", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: sourceId,
+        owner_user_id: "guest-test",
+        package_id: "package-test",
+        title: fileName,
+        source_type: "local_file",
+        source_uri: null,
+        file_name: fileName,
+        mime_type: "image/png",
+        size_bytes: 68,
+        status: "queued",
+        error: "",
+        open_notebook_notebook_id: "",
+        open_notebook_source_id: "",
+        open_notebook_command_id: "",
+        structure_status: "pending",
+        structure_strategy: null,
+        structure_has_verified_toc: false,
+        structure_error: "",
+        structure_updated_at: null,
+        ingestion_job: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        metadata: {},
+      }),
+    });
+  });
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "test stops after inspecting the request" }),
+    });
+  });
+
+  await page.getByRole("button", { name: "添加附件" }).click();
+  await expect(page.getByRole("menuitem", { name: "添加图片" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "添加文件" })).toBeVisible();
+  await page.getByTestId("chat-image-input").setInputFiles({
+    name: fileName,
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    ),
+  });
+
+  await expect(page.getByLabel("已添加附件")).toContainText(fileName);
+  await expect(page.getByRole("button", { name: `移除附件 ${fileName}` })).toBeVisible();
+  await page.getByPlaceholder("给 OpenClass 发消息...").fill("请结合这张图回答");
+  const chatRequestPromise = page.waitForRequest(
+    (request) => request.url().includes("/chat/stream") && request.method() === "POST"
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const chatRequest = await chatRequestPromise;
+  const payload = chatRequest.postDataJSON() as { attachments?: Array<Record<string, unknown>> };
+  expect(payload.attachments).toHaveLength(1);
+  expect(payload.attachments?.[0]).toMatchObject({
+    source_ingestion_id: sourceId,
+    name: fileName,
+    mime_type: "image/png",
+    size_bytes: 68,
+    kind: "image",
+  });
+});
+
 test("orders lesson tabs from newest to oldest", async ({ page }) => {
   const unique = Date.now();
   const firstTitle = `较早课程 ${unique}`;

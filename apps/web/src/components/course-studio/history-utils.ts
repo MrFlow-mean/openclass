@@ -3,6 +3,7 @@ import { normalizePageSettings } from "@/components/course-studio/page-settings"
 import type {
   AgentActivityEvent,
   BoardDocument,
+  ChatAttachmentRef,
   ChatInteractionMode,
   CommitRecord,
   GuidedRequirementDiscovery,
@@ -21,6 +22,7 @@ export type LessonComposerState = {
   composerMode: ChatInteractionMode;
   includeSelectionInPrompt: boolean;
   composerSelection: SelectionRef | null;
+  composerAttachments: ChatAttachmentRef[];
 };
 export type LessonComposerStateMap = Record<string, LessonComposerState>;
 
@@ -29,6 +31,7 @@ export const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   composerMode: "ask",
   includeSelectionInPrompt: true,
   composerSelection: null,
+  composerAttachments: [],
 };
 
 export const AUTO_SAVE_DELAY_MS = 1600;
@@ -65,7 +68,7 @@ export function createChatMessage(
 }
 
 export function createLessonComposerState(): LessonComposerState {
-  return { ...DEFAULT_LESSON_COMPOSER_STATE };
+  return { ...DEFAULT_LESSON_COMPOSER_STATE, composerAttachments: [] };
 }
 
 export function formatDate(value: string) {

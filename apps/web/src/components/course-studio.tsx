@@ -174,6 +174,7 @@ export function CourseStudio() {
     !isPreviewMode && !persistedRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
   const composerSelection = activeComposerState.composerSelection;
+  const composerAttachments = activeComposerState.composerAttachments;
   function exitAnyPreviewMode() {
     if (isDraftPreviewMode) {
       boardDraft.resetToLesson(activeLesson);
@@ -570,6 +571,7 @@ export function CourseStudio() {
         )}
       >
         <CourseStudioChatSidebar
+          packageId={coursePackage.id}
           resizeHandleProps={chatPanelResizeHandleProps}
           isResizing={isChatPanelResizing}
           clarityBarTone={clarityBarTone}
@@ -598,6 +600,7 @@ export function CourseStudio() {
           voiceActive={voiceActive}
           voiceStatusText={voiceStatusText}
           chatInput={chatInput}
+          composerAttachments={composerAttachments}
           composerMode={composerMode}
           composerSelection={composerSelection}
           includeSelectionInPrompt={includeSelectionInPrompt}
@@ -614,6 +617,7 @@ export function CourseStudio() {
           onClearSelection={clearSelection}
           onUpdateComposerState={updateActiveLessonComposerState}
           onAdjustComposerHeight={adjustComposerHeight}
+          onError={setError}
         />
 
         <BoardEditorPanel

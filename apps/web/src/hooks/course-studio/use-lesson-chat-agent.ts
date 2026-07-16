@@ -21,6 +21,7 @@ import type {
   BoardDocument,
   BoardDecision,
   BoardTaskRequirementSheet,
+  ChatAttachmentRef,
   ChatRequestPayload,
   CommitRecord,
   CoursePackage,
@@ -120,6 +121,7 @@ export function useLessonChatAgent({
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
+  const composerAttachments = activeComposerState.composerAttachments;
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit" || busyAction === "chat-edit";
 
   type ChatTurnBusyAction = "chat" | "agent-edit" | "chat-edit";
@@ -141,6 +143,7 @@ export function useLessonChatAgent({
     flushReason: AutoSaveReason;
     clearComposerInput?: boolean;
     restoreComposerInput?: string;
+    restoreComposerAttachments?: ChatAttachmentRef[];
     rollbackMessages?: ChatMessage[];
     beforeRequest?: (context: ChatTurnBeforeRequestContext) => Promise<ChatTurnBeforeRequestResult | void>;
     messageListUpdater?: (current: ChatMessage[], userMessage: ChatMessage, pendingAssistant: ChatMessage) => ChatMessage[];
@@ -167,6 +170,17 @@ export function useLessonChatAgent({
     );
   }
 
+  function restoreComposerAttachmentsIfUntouched(lessonId: string, value: ChatAttachmentRef[]) {
+    updateLessonComposerState(lessonId, (current) =>
+      current.composerAttachments.length
+        ? current
+        : {
+            ...current,
+            composerAttachments: value,
+          }
+    );
+  }
+
   function conversationFromMessages(messages: ChatMessage[]) {
     return messages.slice(-8).map(({ role, content }) => ({ role, content }));
   }
@@ -181,7 +195,11 @@ export function useLessonChatAgent({
     if (payload.teaching_action === "restart") {
       return "从第一节重新讲";
     }
-    return payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
+    const content = payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
+    if (!payload.attachments?.length) {
+      return content;
+    }
+    return `${content}\n\n附件：${payload.attachments.map((attachment) => attachment.name).join("、")}`;
   }
 
   function latestCommitFromPackage(coursePackage: CoursePackage, lessonId: string): CommitRecord | null {
@@ -262,6 +280,7 @@ export function useLessonChatAgent({
     flushReason,
     clearComposerInput = false,
     restoreComposerInput,
+    restoreComposerAttachments,
     rollbackMessages,
     beforeRequest,
     messageListUpdater,
@@ -368,6 +387,7 @@ export function useLessonChatAgent({
       updateLessonComposerState(lessonId, (current) => ({
         ...current,
         chatInput: "",
+        composerAttachments: [],
       }));
     }
     updateLessonMessages(lessonId, (current) =>
@@ -649,6 +669,9 @@ export function useLessonChatAgent({
       if (restoreComposerInput !== undefined && !sawReadyForBoardRequirementUpdate) {
         restoreComposerInputIfUntouched(lessonId, restoreComposerInput);
       }
+      if (restoreComposerAttachments?.length && !sawReadyForBoardRequirementUpdate) {
+        restoreComposerAttachmentsIfUntouched(lessonId, restoreComposerAttachments);
+      }
       if (!requestStarted && rollbackMessages) {
         updateLessonMessages(lessonId, () => rollbackMessages);
       } else {
@@ -688,11 +711,13 @@ export function useLessonChatAgent({
       exitPreviewMode();
     }
     const submittedInput = chatInput;
+    const submittedAttachments = composerAttachments;
     const payload =
       payloadOverride ??
       ({
-        message: chatInput.trim(),
+        message: chatInput.trim() || (composerAttachments.length ? "请查看我添加的附件。" : ""),
         selection: includeSelectionInPrompt && composerSelection ? composerSelection : null,
+        attachments: composerAttachments,
         interaction_mode: composerMode,
       } satisfies ChatRequestPayload);
     const submittedSelection = payload.selection ?? null;
@@ -713,6 +738,7 @@ export function useLessonChatAgent({
       flushReason: "chat",
       clearComposerInput: !payloadOverride || isBoardGenerationControl,
       restoreComposerInput: payloadOverride || isBoardGenerationControl ? undefined : submittedInput,
+      restoreComposerAttachments: payloadOverride || isBoardGenerationControl ? undefined : submittedAttachments,
     });
   }
 

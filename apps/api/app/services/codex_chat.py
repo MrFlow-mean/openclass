@@ -43,6 +43,7 @@ from app.services.board_visual_insertion import (
     build_board_insertion_plan,
     derive_board_visual_placements,
 )
+from app.services.chat_attachments import prepare_chat_attachments, verify_chat_attachments
 from app.services.codex_app_server import (
     CodexAppServerError,
     CodexTurnCancelledError,
@@ -60,12 +61,12 @@ from app.services.rich_document import (
     would_flatten_rich_document,
 )
 from app.services.source_grounded_board import (
+    SOURCE_BOARD_TOKEN_BUDGET,
     SourceGroundedBoardError,
     resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
 from app.services.source_visual_region_resolution import resolve_visual_clues_for_requirement
-from app.services.source_grounded_board import SOURCE_BOARD_TOKEN_BUDGET
 
 
 BOARD_FILE_NAME = "board.md"
@@ -1235,13 +1236,26 @@ def process_codex_chat_on_lesson(
         base_commit_id = current_head_commit(initial_lesson).id
         board_state_before = _board_state(initial_lesson.board_document.content_text)
         codex_model = _codex_model(request, user_id=user_id)
+        verified_attachments = verify_chat_attachments(
+            owner_user_id=user_id,
+            package_id=initial_package.id,
+            attachments=request.attachments,
+        )
+        prepared_attachments = prepare_chat_attachments(attachments=verified_attachments)
         if board_state_before == "empty":
             return process_blank_board_turn(
                 lesson=initial_lesson,
                 request=request,
                 user_id=user_id,
                 model=codex_model,
-                conversation_text=_conversation_context(request.conversation),
+                conversation_text="\n\n".join(
+                    item
+                    for item in (
+                        _conversation_context(request.conversation),
+                        prepared_attachments.prompt_context,
+                    )
+                    if item
+                ),
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
                 on_agent_activity=on_agent_activity,
@@ -1333,13 +1347,19 @@ def process_codex_chat_on_lesson(
                 initial_lesson.board_document
             )
             board_path = _prepare_workspace(workspace_path, codex_board_text)
+            verified_context = "\n\n".join(
+                item
+                for item in (
+                    source_context.prompt_context if source_context is not None else "",
+                    prepared_attachments.prompt_context,
+                )
+                if item
+            )
             user_prompt = _turn_prompt(
                 request,
                 is_new_thread=prior_thread_id is None,
                 board_state=board_state_before,
-                verified_source_context=(
-                    source_context.prompt_context if source_context is not None else ""
-                ),
+                verified_source_context=verified_context,
             )
             codex_reasoning_effort = _codex_reasoning_effort(request)
             codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
@@ -1374,11 +1394,7 @@ def process_codex_chat_on_lesson(
                             request,
                             is_new_thread=True,
                             board_state=board_state_before,
-                            verified_source_context=(
-                                source_context.prompt_context
-                                if source_context is not None
-                                else ""
-                            ),
+                            verified_source_context=verified_context,
                         )
                         if prior_thread_id is not None
                         else user_prompt
@@ -1388,6 +1404,7 @@ def process_codex_chat_on_lesson(
                     last_turn_id=prior_turn_id,
                     image_urls=(
                         (source_context.image_inputs if source_context is not None else [])
+                        + prepared_attachments.image_inputs
                         + _formula_image_urls(request)
                     ),
                     on_delta=on_delta,
@@ -1482,6 +1499,7 @@ def process_codex_chat_on_lesson(
                         if request.selection is not None
                         else None
                     ),
+                    "chat_attachments": prepared_attachments.metadata,
                     "verified_source_reference_used": source_context is not None,
                     "verified_source_bundle_ids": (
                         [

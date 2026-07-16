@@ -1000,6 +1000,15 @@ class FormulaInkPayload(BaseModel):
     action: FormulaInkAction
 
 
+class ChatAttachmentRef(BaseModel):
+    source_ingestion_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=512)
+    mime_type: str = Field(default="application/octet-stream", max_length=255)
+    size_bytes: int = Field(default=0, ge=0)
+    kind: Literal["image", "file"] = "file"
+    status: SourceIngestionStatus = "queued"
+
+
 class ConversationTurn(BaseModel):
     role: ConversationRole
     content: str
@@ -1147,6 +1156,7 @@ class ChatRequest(BaseModel):
     text_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
     formula_ink: FormulaInkPayload | None = None
+    attachments: list[ChatAttachmentRef] = Field(default_factory=list, max_length=10)
     interaction_mode: ChatInteractionMode = "ask"
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
@@ -1250,6 +1260,7 @@ class AdminOverview(BaseModel):
 
 class ChatResponse(BaseModel):
     chatbot_message: str
+    follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
     agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
     learning_requirement_sheet: LearningRequirementSheet
     active_requirement_sheet: LearningRequirementSheet | None = None

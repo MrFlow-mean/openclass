@@ -16,6 +16,7 @@ import {
 import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefObject, type SetStateAction } from "react";
 
 import { CourseChatMessage } from "@/components/chatbot";
+import { ChatAttachmentChips, ChatAttachmentMenu } from "@/components/course-studio/chat-attachment-menu";
 import { CodexModelSettingsPicker } from "@/components/course-studio/codex-model-settings-picker";
 import {
   modelButtonLabel,
@@ -33,6 +34,7 @@ import type {
   AIModelSelection,
   BoardDecision,
   BoardTaskRequirementSheet,
+  ChatAttachmentRef,
   ChatInteractionMode,
   ChatRequestPayload,
   CommitRecord,
@@ -248,6 +250,7 @@ function CurrentNeedCard({
 }
 
 type CourseStudioChatSidebarProps = {
+  packageId: string;
   resizeHandleProps: HTMLAttributes<HTMLDivElement>;
   isResizing: boolean;
   clarityBarTone: string;
@@ -276,6 +279,7 @@ type CourseStudioChatSidebarProps = {
   voiceActive: boolean;
   voiceStatusText: string;
   chatInput: string;
+  composerAttachments: ChatAttachmentRef[];
   composerMode: ChatInteractionMode;
   composerSelection: SelectionRef | null;
   includeSelectionInPrompt: boolean;
@@ -292,9 +296,11 @@ type CourseStudioChatSidebarProps = {
   onClearSelection: () => void;
   onUpdateComposerState: (updater: (current: LessonComposerState) => LessonComposerState) => void;
   onAdjustComposerHeight: () => void;
+  onError: (message: string) => void;
 };
 
 export function CourseStudioChatSidebar({
+  packageId,
   resizeHandleProps,
   isResizing,
   clarityBarTone,
@@ -323,6 +329,7 @@ export function CourseStudioChatSidebar({
   voiceActive,
   voiceStatusText,
   chatInput,
+  composerAttachments,
   composerMode,
   composerSelection,
   includeSelectionInPrompt,
@@ -339,10 +346,14 @@ export function CourseStudioChatSidebar({
   onClearSelection,
   onUpdateComposerState,
   onAdjustComposerHeight,
+  onError,
 }: CourseStudioChatSidebarProps) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageContent, setEditingMessageContent] = useState("");
   const textModelReady = Boolean(selectedTextOption?.enabled);
+  const attachmentsReady = composerAttachments.every(
+    (attachment) => attachment.kind === "image" || attachment.status === "ready"
+  );
 
   function startEditingMessage(message: ChatMessage) {
     setEditingMessageId(message.id);
@@ -548,6 +559,19 @@ export function CourseStudioChatSidebar({
             </div>
           ) : null}
 
+          <ChatAttachmentChips
+            attachments={composerAttachments}
+            disabled={isChatBusy}
+            onRemove={(sourceId) =>
+              onUpdateComposerState((current) => ({
+                ...current,
+                composerAttachments: current.composerAttachments.filter(
+                  (attachment) => attachment.source_ingestion_id !== sourceId
+                ),
+              }))
+            }
+          />
+
           <textarea
             ref={chatInputRef}
             value={chatInput}
@@ -566,7 +590,12 @@ export function CourseStudioChatSidebar({
             onInput={() => onAdjustComposerHeight()}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                if (isChatBusy || !textModelReady) {
+                if (
+                  isChatBusy ||
+                  !textModelReady ||
+                  !attachmentsReady ||
+                  (!chatInput.trim() && !composerAttachments.length)
+                ) {
                   return;
                 }
                 event.preventDefault();
@@ -588,6 +617,18 @@ export function CourseStudioChatSidebar({
           />
           <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <ChatAttachmentMenu
+                packageId={packageId}
+                attachments={composerAttachments}
+                disabled={isChatBusy || isPreviewMode}
+                onChange={(attachments) =>
+                  onUpdateComposerState((current) => ({
+                    ...current,
+                    composerAttachments: attachments,
+                  }))
+                }
+                onError={onError}
+              />
               <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
                 <button
                   type="button"
@@ -657,7 +698,10 @@ export function CourseStudioChatSidebar({
               }}
               aria-label={isChatBusy ? "停止回复" : "发送消息"}
               title={isChatBusy ? "停止回复" : "发送消息"}
-              disabled={!isChatBusy && (!chatInput.trim() || !textModelReady)}
+              disabled={
+                !isChatBusy &&
+                ((!chatInput.trim() && !composerAttachments.length) || !textModelReady || !attachmentsReady)
+              }
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isChatBusy ? (

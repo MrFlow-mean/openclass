@@ -737,6 +737,15 @@ export interface FormulaInkPayload {
   action: FormulaInkAction;
 }
 
+export interface ChatAttachmentRef {
+  source_ingestion_id: string;
+  name: string;
+  mime_type: string;
+  size_bytes: number;
+  kind: "image" | "file";
+  status: SourceIngestionStatus;
+}
+
 export interface BoardFocusRef {
   source: "board" | "chat";
   lesson_id?: string | null;
@@ -774,6 +783,7 @@ export interface ChatRequestPayload {
   text_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
   formula_ink?: FormulaInkPayload | null;
+  attachments?: ChatAttachmentRef[];
   interaction_mode?: ChatInteractionMode;
   board_generation_action?: "start" | null;
   teaching_action?: "continue" | "restart" | null;

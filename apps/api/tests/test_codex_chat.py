@@ -14,6 +14,7 @@ import pytest
 from app.models import (
     AgentActivityEvent,
     BoardExplanationDirective,
+    ChatAttachmentRef,
     ChatRequest,
     GuidedRequirementDiscovery,
     GuidedRequirementEntryPoint,
@@ -31,6 +32,7 @@ from app.models import (
 from app.services import (
     blank_board_intake,
     board_visual_insertion,
+    chat_attachments,
     codex_app_server,
     codex_chat,
     source_scope_ocr,
@@ -63,6 +65,152 @@ from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VE
 
 
 TEST_USER_ID = "user_codex_chat"
+
+
+def test_chat_attachments_are_verified_materialized_and_sent_as_images(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    codex_store.save_for_user(TEST_USER_ID, workspace)
+    upload_root = tmp_path / "uploads"
+    source_dir = upload_root / "sources"
+    source_dir.mkdir(parents=True)
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", upload_root)
+    image_path = source_dir / "source_attachment.png"
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    image_path.write_bytes(image_bytes)
+    source = SourceIngestionRecord(
+        id="source_chat_attachment",
+        owner_user_id=TEST_USER_ID,
+        package_id=package.id,
+        title="Attachment image",
+        file_name="diagram.png",
+        mime_type="image/png",
+        size_bytes=len(image_bytes),
+        status="queued",
+        metadata={"local_source_path": str(image_path)},
+    )
+    source_evidence_store.save_source(source)
+    attachment = ChatAttachmentRef(
+        source_ingestion_id=source.id,
+        name="client-name-is-not-trusted.png",
+        mime_type="text/plain",
+        size_bytes=1,
+        kind="file",
+        status="queued",
+    )
+
+    verified = chat_attachments.verify_chat_attachments(
+        owner_user_id=TEST_USER_ID,
+        package_id=package.id,
+        attachments=[attachment, attachment],
+    )
+    prepared = chat_attachments.prepare_chat_attachments(
+        attachments=verified,
+    )
+
+    assert len(verified) == 1
+    assert prepared.image_inputs == [f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}"]
+    assert prepared.metadata == [
+        {
+            "source_ingestion_id": source.id,
+            "name": "diagram.png",
+            "mime_type": "image/png",
+            "size_bytes": len(image_bytes),
+            "kind": "image",
+        }
+    ]
+    assert "diagram.png" in prepared.prompt_context
+
+
+def test_chat_attachment_verification_rejects_a_source_outside_the_current_package(
+    codex_store: SqliteCourseStore,
+) -> None:
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    codex_store.save_for_user(TEST_USER_ID, workspace)
+
+    with pytest.raises(CodexAppServerError, match="不属于当前课程"):
+        chat_attachments.verify_chat_attachments(
+            owner_user_id=TEST_USER_ID,
+            package_id=package.id,
+            attachments=[
+                ChatAttachmentRef(
+                    source_ingestion_id="source_from_another_package",
+                    name="outside.pdf",
+                    status="ready",
+                )
+            ],
+        )
+
+
+def test_ready_file_attachment_uses_indexed_text_as_verified_context(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    codex_store.save_for_user(TEST_USER_ID, workspace)
+    upload_root = tmp_path / "uploads"
+    source_dir = upload_root / "sources"
+    source_dir.mkdir(parents=True)
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", upload_root)
+    file_path = source_dir / "source_attachment.txt"
+    file_path.write_text("Raw attachment copy", encoding="utf-8")
+    source = SourceIngestionRecord(
+        id="source_chat_file_attachment",
+        owner_user_id=TEST_USER_ID,
+        package_id=package.id,
+        title="Attachment notes",
+        file_name="notes.txt",
+        mime_type="text/plain",
+        size_bytes=file_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(file_path)},
+    )
+    source_evidence_store.save_source(source)
+    source_structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id=TEST_USER_ID,
+            package_id=package.id,
+            source_ingestion_id=source.id,
+            status="linear_only",
+        ),
+        chapters=[],
+        chunks=[
+            SourceChunk(
+                owner_user_id=TEST_USER_ID,
+                package_id=package.id,
+                source_ingestion_id=source.id,
+                order_index=0,
+                text="Backend-indexed attachment evidence.",
+            )
+        ],
+    )
+
+    verified = chat_attachments.verify_chat_attachments(
+        owner_user_id=TEST_USER_ID,
+        package_id=package.id,
+        attachments=[
+            ChatAttachmentRef(
+                source_ingestion_id=source.id,
+                name="spoofed.txt",
+                status="ready",
+            )
+        ],
+    )
+    prepared = chat_attachments.prepare_chat_attachments(attachments=verified)
+
+    assert prepared.image_inputs == []
+    assert "Backend-indexed attachment evidence." in prepared.prompt_context
+    assert "Raw attachment copy" not in prepared.prompt_context
+    assert "spoofed.txt" not in prepared.prompt_context
 
 
 def _thread_result(thread_id: str, cwd: Path) -> dict:
