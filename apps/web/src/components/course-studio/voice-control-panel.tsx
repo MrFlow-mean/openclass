@@ -31,6 +31,11 @@ type VoiceControlPanelProps = {
   onSpeechRateChange: (rate: number) => void;
 };
 
+const SPEECH_RATE_STEP = 5;
+const SPEECH_RATE_SLIDER_MIN = 0;
+const SPEECH_RATE_SLIDER_MIDPOINT = 50;
+const SPEECH_RATE_SLIDER_MAX = 100;
+
 function formatPlaybackTime(value: number) {
   if (!Number.isFinite(value) || value <= 0) {
     return "0:00";
@@ -46,11 +51,54 @@ function formatSpeechRate(value: number) {
   return `${multiplier.toFixed(2).replace(/\.?0+$/, "")}×`;
 }
 
-function getRangeProgress(value: number, minimum: number, maximum: number) {
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function getSpeechRateSliderPosition(value: number, minimum: number, maximum: number) {
   if (maximum <= minimum) {
-    return 0;
+    return SPEECH_RATE_SLIDER_MIN;
   }
-  return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
+
+  const boundedValue = clamp(value, minimum, maximum);
+  if (minimum < 0 && maximum > 0) {
+    if (boundedValue <= 0) {
+      return ((boundedValue - minimum) / -minimum) * SPEECH_RATE_SLIDER_MIDPOINT;
+    }
+    return (
+      SPEECH_RATE_SLIDER_MIDPOINT +
+      (boundedValue / maximum) * (SPEECH_RATE_SLIDER_MAX - SPEECH_RATE_SLIDER_MIDPOINT)
+    );
+  }
+
+  return ((boundedValue - minimum) / (maximum - minimum)) * SPEECH_RATE_SLIDER_MAX;
+}
+
+function getSpeechRateFromSliderPosition(position: number, minimum: number, maximum: number) {
+  if (maximum <= minimum) {
+    return minimum;
+  }
+
+  const boundedPosition = clamp(
+    position,
+    SPEECH_RATE_SLIDER_MIN,
+    SPEECH_RATE_SLIDER_MAX
+  );
+  let speechRate: number;
+  if (minimum < 0 && maximum > 0) {
+    speechRate =
+      boundedPosition <= SPEECH_RATE_SLIDER_MIDPOINT
+        ? minimum + (boundedPosition / SPEECH_RATE_SLIDER_MIDPOINT) * -minimum
+        : ((boundedPosition - SPEECH_RATE_SLIDER_MIDPOINT) /
+            (SPEECH_RATE_SLIDER_MAX - SPEECH_RATE_SLIDER_MIDPOINT)) *
+          maximum;
+  } else {
+    speechRate = minimum + (boundedPosition / SPEECH_RATE_SLIDER_MAX) * (maximum - minimum);
+  }
+
+  const snappedRate =
+    Math.sign(speechRate) * Math.round(Math.abs(speechRate) / SPEECH_RATE_STEP) * SPEECH_RATE_STEP;
+  return clamp(snappedRate, minimum, maximum);
 }
 
 export function VoiceControlPanel({
@@ -77,7 +125,7 @@ export function VoiceControlPanel({
   onVoiceChange,
   onSpeechRateChange,
 }: VoiceControlPanelProps) {
-  const speechRateProgress = getRangeProgress(
+  const speechRateSliderPosition = getSpeechRateSliderPosition(
     speechRate,
     options.minimum_speech_rate,
     options.maximum_speech_rate
@@ -228,13 +276,42 @@ export function VoiceControlPanel({
         <input
           id="speech-rate-range"
           type="range"
-          min={options.minimum_speech_rate}
-          max={options.maximum_speech_rate}
-          step={5}
-          value={speechRate}
-          onChange={(event) => onSpeechRateChange(Number(event.target.value))}
+          min={SPEECH_RATE_SLIDER_MIN}
+          max={SPEECH_RATE_SLIDER_MAX}
+          step={0.1}
+          value={speechRateSliderPosition}
+          aria-valuetext={formatSpeechRate(speechRate)}
+          onChange={(event) =>
+            onSpeechRateChange(
+              getSpeechRateFromSliderPosition(
+                Number(event.target.value),
+                options.minimum_speech_rate,
+                options.maximum_speech_rate
+              )
+            )
+          }
+          onKeyDown={(event) => {
+            const direction =
+              event.key === "ArrowLeft" || event.key === "ArrowDown"
+                ? -1
+                : event.key === "ArrowRight" || event.key === "ArrowUp"
+                  ? 1
+                  : 0;
+            if (direction !== 0) {
+              event.preventDefault();
+              onSpeechRateChange(
+                clamp(
+                  speechRate + direction * SPEECH_RATE_STEP,
+                  options.minimum_speech_rate,
+                  options.maximum_speech_rate
+                )
+              );
+            }
+          }}
           className={clsx(styles.rateRange, "mt-3 h-5 w-full")}
-          style={{ "--speech-rate-progress": `${speechRateProgress}%` } as CSSProperties}
+          style={{
+            "--speech-rate-progress": `${speechRateSliderPosition}%`,
+          } as CSSProperties}
         />
         <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
           <span>0.5×</span>
