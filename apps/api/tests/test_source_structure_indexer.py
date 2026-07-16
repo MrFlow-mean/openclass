@@ -19,11 +19,13 @@ from app.services.image_ocr import OCRLineLayout, OCRPageLayout
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_indexer import (
     CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
+    DetectedChapter,
     PageText,
     ParsedSourceDocument,
     SourceStructureIndexer,
     _canonical_structural_title_from_body,
     _chapter_for_chunk,
+    _close_chapter_ranges,
     _detected_pdf_toc_pages,
     _pdf_outline_chapters,
     _pdf_toc_chapters,
@@ -78,6 +80,41 @@ def test_epub_navigation_builds_verified_stable_chapter_identity(tmp_path: Path)
     assert first_view.visuals[0].content_hash == second_view.visuals[0].content_hash
     assert first_view.visuals[0].asset_path
     assert "asset_path" not in first_view.visuals[0].model_dump(mode="json")
+
+
+def test_epub_ncx_preserves_native_parent_child_hierarchy(tmp_path: Path) -> None:
+    epub_path = tmp_path / "nested-book.epub"
+    _write_nested_ncx_epub(epub_path)
+    source_store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(epub_path, mime_type="application/epub+zip")
+    source_store.save_source(record)
+
+    SourceStructureIndexer(store=structure_store).rebuild_structure(record)
+    chapters = structure_store.get_structure_view(source=record).chapters
+
+    assert [chapter.title for chapter in chapters] == [
+        "Part I",
+        "Overview",
+        "Details",
+        "Part II",
+    ]
+    assert [chapter.level for chapter in chapters] == [1, 2, 3, 1]
+    assert chapters[1].parent_id == chapters[0].id
+    assert chapters[2].parent_id == chapters[1].id
+    assert chapters[3].parent_id is None
+    assert chapters[2].path == ["Part I", "Overview", "Details"]
+
+
+def test_chapter_range_closing_does_not_flatten_navigation_order() -> None:
+    chapters = [
+        DetectedChapter(title="Parent", level=1, start_offset=100),
+        DetectedChapter(title="Child", level=2, start_offset=20),
+    ]
+
+    _close_chapter_ranges(chapters, 200)
+
+    assert [chapter.title for chapter in chapters] == ["Parent", "Child"]
 
 
 def test_plain_text_without_headings_uses_linear_chunks_without_fake_toc(tmp_path: Path) -> None:
@@ -690,6 +727,69 @@ def _write_epub(path: Path) -> None:
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
             ),
         )
+
+
+def _write_nested_ncx_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+            </container>""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+              <manifest>
+                <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+                <item id="part1" href="part1.xhtml" media-type="application/xhtml+xml"/>
+                <item id="overview" href="overview.xhtml" media-type="application/xhtml+xml"/>
+                <item id="details" href="details.xhtml" media-type="application/xhtml+xml"/>
+                <item id="part2" href="part2.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine toc="toc">
+                <itemref idref="part1"/><itemref idref="overview"/>
+                <itemref idref="details"/><itemref idref="part2"/>
+              </spine>
+            </package>""",
+        )
+        archive.writestr(
+            "OEBPS/toc.ncx",
+            """<?xml version="1.0"?>
+            <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+              <navMap>
+                <navPoint id="part1">
+                  <navLabel><text>Part I</text></navLabel>
+                  <content src="part1.xhtml"/>
+                  <navPoint id="overview">
+                    <navLabel><text>Overview</text></navLabel>
+                    <content src="overview.xhtml"/>
+                    <navPoint id="details">
+                      <navLabel><text>Details</text></navLabel>
+                      <content src="details.xhtml"/>
+                    </navPoint>
+                  </navPoint>
+                </navPoint>
+                <navPoint id="part2">
+                  <navLabel><text>Part II</text></navLabel>
+                  <content src="part2.xhtml"/>
+                </navPoint>
+              </navMap>
+            </ncx>""",
+        )
+        for name, title in (
+            ("part1.xhtml", "Part I"),
+            ("overview.xhtml", "Overview"),
+            ("details.xhtml", "Details"),
+            ("part2.xhtml", "Part II"),
+        ):
+            archive.writestr(
+                f"OEBPS/{name}",
+                f"<html><body><h1>{title}</h1><p>{title} body.</p></body></html>",
+            )
 
 
 def _write_pdf_with_outline(path: Path) -> None:

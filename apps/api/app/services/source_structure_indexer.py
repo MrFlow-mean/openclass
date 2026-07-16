@@ -46,7 +46,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 5
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 6
 SourceIndexProgressCallback = Callable[[str, int], None]
 
 
@@ -1039,8 +1039,8 @@ def _epub_spine_items(archive: SafeSourceArchive) -> list[str]:
 def _epub_navigation_items(
     archive: SafeSourceArchive,
     names: list[str],
-) -> list[tuple[str, str, int]]:
-    items: list[tuple[str, str, int]] = []
+) -> list[tuple[str, str, int, int]]:
+    items: list[tuple[str, str, int, int]] = []
     nav_names = [name for name in names if re.search(r"(^|/)(nav|toc)\.(xhtml|html|htm)$", name, re.I)]
     for name in nav_names:
         try:
@@ -1052,12 +1052,12 @@ def _epub_navigation_items(
         base = str(Path(name).parent)
         if base == ".":
             base = ""
-        for order, (href, label) in enumerate(parser.links):
+        for href, label, level in parser.links:
             if not label.strip() or not href.strip():
                 continue
             target = f"{base}/{href.split('#', 1)[0]}".lstrip("/")
             if target:
-                items.append((target, _clean_label(label), order))
+                items.append((target, _clean_label(label), len(items), level))
     if items:
         return _dedupe_nav_items(items)
     for name in [entry for entry in names if entry.lower().endswith(".ncx")]:
@@ -1068,30 +1068,51 @@ def _epub_navigation_items(
         base = str(Path(name).parent)
         if base == ".":
             base = ""
-        for order, point in enumerate(root.iter()):
-            if not point.tag.endswith("navPoint"):
-                continue
-            label = ""
-            src = ""
-            for child in point.iter():
-                if child.tag.endswith("text") and child.text:
-                    label = child.text
-                if child.tag.endswith("content"):
-                    src = child.attrib.get("src", "")
-            if label and src:
-                target = f"{base}/{src.split('#', 1)[0]}".lstrip("/")
-                items.append((target, _clean_label(label), order))
+        nav_map = next(
+            (element for element in root.iter() if element.tag.split("}")[-1] == "navMap"),
+            None,
+        )
+        if nav_map is None:
+            continue
+
+        def visit(parent: Any, level: int = 1) -> None:
+            for point in parent:
+                if point.tag.split("}")[-1] != "navPoint":
+                    continue
+                label = ""
+                src = ""
+                for child in point:
+                    child_tag = child.tag.split("}")[-1]
+                    if child_tag == "navLabel":
+                        label_node = next(
+                            (
+                                descendant
+                                for descendant in child.iter()
+                                if descendant.tag.split("}")[-1] == "text"
+                                and descendant.text
+                            ),
+                            None,
+                        )
+                        label = label_node.text if label_node is not None else ""
+                    elif child_tag == "content":
+                        src = child.attrib.get("src", "")
+                if label and src:
+                    target = f"{base}/{src.split('#', 1)[0]}".lstrip("/")
+                    items.append((target, _clean_label(label), len(items), level))
+                visit(point, level + 1)
+
+        visit(nav_map)
     return _dedupe_nav_items(items)
 
 
 def _chapters_from_epub_nav(
-    nav_items: list[tuple[str, str, int]],
+    nav_items: list[tuple[str, str, int, int]],
     docs: list[tuple[str, str, list[DetectedChapter]]],
     offset_by_name: dict[str, int],
 ) -> list[DetectedChapter]:
     docs_by_name = {name: text for name, text, _headings in docs}
     chapters: list[DetectedChapter] = []
-    for target, label, order in nav_items:
+    for target, label, order, navigation_level in nav_items:
         if target not in docs_by_name:
             continue
         base_offset = offset_by_name.get(target)
@@ -1101,16 +1122,22 @@ def _chapters_from_epub_nav(
         local_index = _find_title_offset(text, label)
         start_offset = base_offset + max(local_index, 0)
         number = _number_from_title(label)
+        numbered_level = len(number.split(".")) if number else 1
         chapters.append(
             DetectedChapter(
                 title=label,
                 number=number,
-                level=max(1, len(number.split("."))) if number else 1,
+                level=max(1, navigation_level, numbered_level),
                 source_locator=f"epub:{target}",
                 start_offset=start_offset,
                 confidence=0.95 if local_index >= 0 else 0.78,
                 verified=True,
-                metadata={"source": "epub_navigation", "file": target, "nav_order": order},
+                metadata={
+                    "source": "epub_navigation",
+                    "file": target,
+                    "nav_order": order,
+                    "navigation_level": navigation_level,
+                },
             )
         )
     return chapters
@@ -1212,23 +1239,30 @@ class _TextHeadingParser(HTMLParser):
 class _NavLinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.links: list[tuple[str, str]] = []
+        self.links: list[tuple[str, str, int]] = []
         self._href: str | None = None
         self._text: list[str] = []
+        self._list_depth = 0
+        self._link_level = 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"ol", "ul"}:
+            self._list_depth += 1
         if tag != "a":
             return
         attrs_dict = {key: value or "" for key, value in attrs}
         self._href = attrs_dict.get("href", "")
         self._text = []
+        self._link_level = max(1, self._list_depth)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "a" and self._href:
-            self.links.append((self._href, " ".join(self._text)))
+            self.links.append((self._href, " ".join(self._text), self._link_level))
         if tag == "a":
             self._href = None
             self._text = []
+        if tag in {"ol", "ul"}:
+            self._list_depth = max(0, self._list_depth - 1)
 
     def handle_data(self, data: str) -> None:
         if self._href is not None:
@@ -1706,11 +1740,14 @@ def _looks_like_markdown(text: str) -> bool:
 
 
 def _close_chapter_ranges(chapters: list[DetectedChapter], text_length: int) -> None:
-    chapters.sort(key=lambda chapter: chapter.start_offset if chapter.start_offset is not None else text_length)
-    for index, chapter in enumerate(chapters):
+    ordered_chapters = sorted(
+        chapters,
+        key=lambda chapter: chapter.start_offset if chapter.start_offset is not None else text_length,
+    )
+    for index, chapter in enumerate(ordered_chapters):
         if chapter.start_offset is None:
             continue
-        next_chapter = chapters[index + 1] if index + 1 < len(chapters) else None
+        next_chapter = ordered_chapters[index + 1] if index + 1 < len(ordered_chapters) else None
         if chapter.end_offset is None:
             chapter.end_offset = next_chapter.start_offset if next_chapter else text_length
         if chapter.page_start is not None and chapter.page_end is None:
@@ -1933,15 +1970,17 @@ def _estimate_tokens(text: str) -> int:
     return max(1, ascii_chars // 4 + non_ascii_chars // 2)
 
 
-def _dedupe_nav_items(items: list[tuple[str, str, int]]) -> list[tuple[str, str, int]]:
+def _dedupe_nav_items(
+    items: list[tuple[str, str, int, int]],
+) -> list[tuple[str, str, int, int]]:
     seen: set[tuple[str, str]] = set()
-    deduped: list[tuple[str, str, int]] = []
-    for target, label, order in items:
+    deduped: list[tuple[str, str, int, int]] = []
+    for target, label, order, level in items:
         key = (target, label)
         if key in seen:
             continue
         seen.add(key)
-        deduped.append((target, label, order))
+        deduped.append((target, label, order, level))
     return deduped
 
 
