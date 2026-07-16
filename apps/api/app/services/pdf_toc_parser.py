@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,29 @@ from app.services.image_ocr import OCRLineLayout, OCRPageLayout, extract_pdf_pag
 
 MAX_OCR_TOC_PAGES = 24
 ROW_Y_TOLERANCE = 0.006
+COLUMN_START_GAP = 0.20
+COLUMN_GUTTER_PADDING = 0.015
+PAGE_NUMBER_MIN_X_DELTA = 0.10
+
+_CHINESE_ORDINAL = r"0-9一二三四五六七八九十百千零〇两"
+_TOC_HEADINGS = {
+    "目录",
+    "总目录",
+    "章节目录",
+    "目次",
+    "contents",
+    "tableofcontents",
+    "sommaire",
+    "inhalt",
+}
+
+
+@dataclass(frozen=True)
+class StructuralHeadingMarker:
+    kind: str
+    level: int
+    number: str = ""
+    marker: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,6 +80,85 @@ class _RawTocRow:
     printed_page_inferred: bool = False
 
 
+def normalize_toc_text(value: str) -> str:
+    """Normalize PDF text-layer quirks without changing visible title content."""
+    normalized = unicodedata.normalize("NFKC", value or "")
+    result: list[str] = []
+    index = 0
+    while index < len(normalized):
+        character = normalized[index]
+        if unicodedata.category(character) != "Co":
+            result.append(character)
+            index += 1
+            continue
+        end = index + 1
+        while end < len(normalized) and normalized[end] == character:
+            end += 1
+        run_length = end - index
+        result.append("…" * run_length if run_length >= 2 else character)
+        index = end
+    return "".join(result)
+
+
+def is_toc_heading(value: str) -> bool:
+    normalized = re.sub(r"[^a-z\u4e00-\u9fff]+", "", normalize_toc_text(value).lower())
+    return normalized in _TOC_HEADINGS
+
+
+def parse_structural_heading(value: str) -> StructuralHeadingMarker | None:
+    cleaned = _clean_title(normalize_toc_text(value))
+    if not cleaned or is_toc_heading(cleaned):
+        return None
+
+    chinese = re.match(
+        rf"^(第\s*([{_CHINESE_ORDINAL}]+)\s*(章|篇|部|卷|单元|节))",
+        cleaned,
+    )
+    if chinese:
+        unit = chinese.group(3)
+        kind = "section" if unit == "节" else "chapter"
+        return StructuralHeadingMarker(
+            kind=kind,
+            level=2 if kind == "section" else 1,
+            number=chinese.group(2),
+            marker=chinese.group(1),
+        )
+
+    english = re.match(
+        r"^((chapter|part|book|unit|section|appendix)\s+([0-9ivxlcdm]+(?:\.[0-9]+)*|[a-z]))(?=\s|[.:：、-]|$)",
+        cleaned,
+        flags=re.I,
+    )
+    if english:
+        token = english.group(2).lower()
+        return StructuralHeadingMarker(
+            kind="section" if token == "section" else "chapter",
+            level=2 if token == "section" else 1,
+            number=english.group(3),
+            marker=english.group(1),
+        )
+
+    decimal = re.match(r"^(\d+(?:\.\d+){0,8})(?=\s|[.:：、-]|[\u4e00-\u9fff]|$)", cleaned)
+    if decimal:
+        number = decimal.group(1)
+        return StructuralHeadingMarker(
+            kind="numbered_heading",
+            level=max(1, len(number.split("."))),
+            number=number,
+            marker=number,
+        )
+
+    appendix = re.match(r"^(附录)(?:\s*([A-Z0-9一二三四五六七八九十]+))?", cleaned, flags=re.I)
+    if appendix:
+        return StructuralHeadingMarker(
+            kind="appendix",
+            level=1,
+            number=appendix.group(2) or "",
+            marker=appendix.group(0),
+        )
+    return None
+
+
 def extract_pdf_toc(
     path: Path,
     *,
@@ -99,6 +202,7 @@ def extract_pdf_toc(
     for row in rows:
         normalized_title = _normalized_title(row.title)
         matching_outline = outline_by_title.get(normalized_title)
+        structural_marker = parse_structural_heading(row.title)
         physical_page: int | None = None
         verified = False
         confidence = 0.64
@@ -141,6 +245,8 @@ def extract_pdf_toc(
                     "ocr_x": round(row.x, 4),
                     "outline_title": matching_outline.title if matching_outline else "",
                     "outline_page": matching_outline.page_no if matching_outline else None,
+                    "structure_kind": structural_marker.kind if structural_marker else "",
+                    "structure_marker": structural_marker.marker if structural_marker else "",
                 },
             )
         )
@@ -179,25 +285,30 @@ def extract_pdf_toc_from_range(
         )
     rows = _toc_rows(layouts)
     _assign_levels(rows)
-    nodes = [
-        PdfTocNode(
-            title=row.title,
-            number=row.number,
-            level=row.level,
-            printed_page=row.printed_page or 0,
-            toc_page=row.toc_page,
-            confidence=0.72,
-            metadata={
-                "source": "pdf_toc_layout_ocr",
-                "printed_page": row.printed_page,
-                "toc_page": row.toc_page,
-                "verification": "toc_candidate",
-                "ocr_x": round(row.x, 4),
-            },
+    nodes: list[PdfTocNode] = []
+    for row in rows:
+        structural_marker = parse_structural_heading(row.title)
+        if structural_marker is None and _explicit_level(row.title, row.number) is None:
+            continue
+        nodes.append(
+            PdfTocNode(
+                title=row.title,
+                number=row.number,
+                level=row.level,
+                printed_page=row.printed_page or 0,
+                toc_page=row.toc_page,
+                confidence=0.72,
+                metadata={
+                    "source": "pdf_toc_layout_ocr",
+                    "printed_page": row.printed_page,
+                    "toc_page": row.toc_page,
+                    "verification": "toc_candidate",
+                    "ocr_x": round(row.x, 4),
+                    "structure_kind": structural_marker.kind if structural_marker else "",
+                    "structure_marker": structural_marker.marker if structural_marker else "",
+                },
+            )
         )
-        for row in rows
-        if _explicit_level(row.title, row.number) is not None
-    ]
     return PdfTocExtraction(
         nodes=nodes,
         toc_page_start=page_start,
@@ -221,13 +332,19 @@ def _toc_page_range(outline: list[PdfOutlineAnchor], *, page_count: int) -> tupl
 
 def _toc_rows(layouts: list[OCRPageLayout]) -> list[_RawTocRow]:
     rows: list[_RawTocRow] = []
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, str, int]] = set()
     for page in layouts:
         for grouped_lines in _group_page_rows(page.lines):
             row = _parse_layout_row(grouped_lines, toc_page=page.page_no)
             if row is None:
                 continue
-            key = (_normalized_title(row.title), row.printed_page or -1)
+            structural_marker = parse_structural_heading(row.title)
+            key = (
+                _normalized_title(row.title),
+                row.printed_page or -1,
+                structural_marker.kind if structural_marker else "",
+                structural_marker.level if structural_marker else row.level,
+            )
             if not key[0] or key in seen:
                 continue
             seen.add(key)
@@ -236,6 +353,46 @@ def _toc_rows(layouts: list[OCRPageLayout]) -> list[_RawTocRow]:
 
 
 def _group_page_rows(lines: list[OCRLineLayout]) -> list[list[OCRLineLayout]]:
+    columns = _split_page_columns(lines)
+    return [group for column in columns for group in _group_column_rows(column)]
+
+
+def _split_page_columns(lines: list[OCRLineLayout]) -> list[list[OCRLineLayout]]:
+    structural_starts = sorted(
+        line.x
+        for line in lines
+        if _printed_page_number(line.text) is None
+        if parse_structural_heading(_clean_title_part(line.text)) is not None
+    )
+    if len(structural_starts) < 4:
+        return [lines]
+
+    clusters: list[list[float]] = []
+    for start in structural_starts:
+        if not clusters or start - clusters[-1][-1] >= COLUMN_START_GAP:
+            clusters.append([start])
+        else:
+            clusters[-1].append(start)
+    clusters = [cluster for cluster in clusters if len(cluster) >= 2]
+    if len(clusters) < 2:
+        return [lines]
+
+    column_starts = [median(cluster) for cluster in clusters]
+    boundaries = [
+        max(column_starts[index], min(clusters[index + 1]) - COLUMN_GUTTER_PADDING)
+        for index in range(len(clusters) - 1)
+    ]
+    columns: list[list[OCRLineLayout]] = [[] for _ in clusters]
+    for line in lines:
+        column_index = next(
+            (index for index, boundary in enumerate(boundaries) if line.x < boundary),
+            len(clusters) - 1,
+        )
+        columns[column_index].append(line)
+    return [column for column in columns if column]
+
+
+def _group_column_rows(lines: list[OCRLineLayout]) -> list[list[OCRLineLayout]]:
     ordered = sorted(lines, key=lambda line: (-line.y, line.x))
     groups: list[list[OCRLineLayout]] = []
     group_y: list[float] = []
@@ -250,39 +407,51 @@ def _group_page_rows(lines: list[OCRLineLayout]) -> list[list[OCRLineLayout]]:
 
 
 def _parse_layout_row(lines: list[OCRLineLayout], *, toc_page: int) -> _RawTocRow | None:
-    visible = [line for line in lines if line.text.strip()]
+    visible = sorted((line for line in lines if line.text.strip()), key=lambda line: line.x)
     if not visible:
         return None
 
+    title_anchor_x = min(
+        (
+            line.x
+            for line in visible
+            if _printed_page_number(line.text) is None
+            and not _is_leader(_clean_title_part(line.text))
+        ),
+        default=min(line.x for line in visible),
+    )
     page_line: OCRLineLayout | None = None
     printed_page: int | None = None
     for line in reversed(visible):
         parsed_page = _printed_page_number(line.text)
-        if parsed_page is not None and line.x >= 0.68:
+        if parsed_page is not None and line.x >= title_anchor_x + PAGE_NUMBER_MIN_X_DELTA:
             page_line = line
             printed_page = parsed_page
             break
-    page_x = page_line.x if page_line is not None else 0.68
+    page_x = page_line.x if page_line is not None else max(line.x + line.width for line in visible) + 0.001
     title_lines = [
         line
         for line in visible
         if line is not page_line and line.x < page_x and _printed_page_number(line.text) is None
     ]
-    title_parts = [_clean_title_part(line.text) for line in title_lines]
-    title_parts = [part for part in title_parts if part and not _is_leader(part)]
+    title_lines = _dedupe_overlapping_title_lines(title_lines)
+    title_parts: list[str] = []
+    retained_title_lines: list[OCRLineLayout] = []
+    for line in title_lines:
+        part = _clean_title_part(line.text)
+        if not part or _is_leader(part):
+            continue
+        title_parts.append(part)
+        retained_title_lines.append(line)
     if not title_parts:
         return None
     title = _clean_title(" ".join(title_parts))
     if len(title) < 2 or len(title) > 180 or _printed_page_number(title) is not None:
         return None
-    if printed_page is None and not _chapter_number(title) and not re.match(
-        r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*[章节篇部]",
-        title,
-    ):
+    if printed_page is None and parse_structural_heading(title) is None:
         return None
-    title_lines = [line for line, part in zip(title_lines, [_clean_title_part(line.text) for line in title_lines]) if part]
-    x = min((line.x for line in title_lines), default=0.0)
-    height = max((line.height for line in title_lines), default=0.0)
+    x = min((line.x for line in retained_title_lines), default=0.0)
+    height = max((line.height for line in retained_title_lines), default=0.0)
     return _RawTocRow(
         title=title,
         printed_page=printed_page,
@@ -291,6 +460,36 @@ def _parse_layout_row(lines: list[OCRLineLayout], *, toc_page: int) -> _RawTocRo
         height=height,
         number=_chapter_number(title),
     )
+
+
+def _dedupe_overlapping_title_lines(lines: list[OCRLineLayout]) -> list[OCRLineLayout]:
+    retained: list[OCRLineLayout] = []
+    for line in sorted(lines, key=lambda item: item.width, reverse=True):
+        key = _normalized_title(line.text) or re.sub(
+            r"[^0-9a-z\u4e00-\u9fff]+",
+            "",
+            _clean_title(line.text).lower(),
+        )
+        if not key:
+            continue
+        line_end = line.x + line.width
+        duplicate = False
+        for existing in retained:
+            existing_key = _normalized_title(existing.text) or re.sub(
+                r"[^0-9a-z\u4e00-\u9fff]+",
+                "",
+                _clean_title(existing.text).lower(),
+            )
+            overlap = max(0.0, min(line_end, existing.x + existing.width) - max(line.x, existing.x))
+            shorter_width = max(0.001, min(line.width, existing.width))
+            contained_overlap = overlap / shorter_width >= 0.85
+            text_overlap = key in existing_key or existing_key in key
+            if contained_overlap and (text_overlap or existing.width >= line.width * 1.35):
+                duplicate = True
+                break
+        if not duplicate:
+            retained.append(line)
+    return sorted(retained, key=lambda line: line.x)
 
 
 def _assign_levels(rows: list[_RawTocRow]) -> None:
@@ -363,10 +562,9 @@ def _fill_missing_printed_pages(rows: list[_RawTocRow], outline: list[PdfOutline
 
 
 def _explicit_level(title: str, number: str) -> int | None:
-    if re.match(r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*[章篇部]", title):
-        return 1
-    if re.match(r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*节", title):
-        return 2
+    structural_marker = parse_structural_heading(title)
+    if structural_marker is not None:
+        return structural_marker.level
     if re.match(r"^[A-Z](?:\s+|(?=[\u4e00-\u9fff]))", title):
         return 2
     if number:
@@ -376,6 +574,9 @@ def _explicit_level(title: str, number: str) -> int | None:
 
 def _chapter_number(title: str) -> str:
     cleaned = _clean_title(title)
+    structural_marker = parse_structural_heading(cleaned)
+    if structural_marker is not None:
+        return structural_marker.number
     decimal = re.match(r"^(\d+(?:\.\d+){0,8})(?=\s|[.:：、-]|[\u4e00-\u9fff]|$)", cleaned)
     if decimal:
         return decimal.group(1)
@@ -387,7 +588,7 @@ def _chapter_number(title: str) -> str:
 
 
 def _printed_page_number(value: str) -> int | None:
-    cleaned = value.strip()
+    cleaned = normalize_toc_text(value).strip()
     match = re.fullmatch(
         r"[.．·•⋯…:：\s]*[（(\[]?\s*([0-9]{1,4})\s*[）)\]]?[.．·•⋯…\s]*",
         cleaned,
@@ -398,27 +599,36 @@ def _printed_page_number(value: str) -> int | None:
 
 
 def _clean_title_part(value: str) -> str:
-    return re.sub(r"^[.．。·•⋯…\s]+|[.．。·•⋯…\s]+$", "", value or "").strip()
+    normalized = normalize_toc_text(value)
+    return re.sub(r"^[.．。·•⋯…\s]+|[.．。·•⋯…\s]+$", "", normalized).strip()
 
 
 def _clean_title(value: str) -> str:
-    cleaned = re.sub(r"\s*[=+•\-]*\s*[（(][A-Z0-9]{1,6}[）)]\s*$", "", value or "", flags=re.I)
+    normalized = normalize_toc_text(value)
+    cleaned = re.sub(r"\s*[=+•\-]*\s*[（(][A-Z0-9]{1,6}[）)]\s*$", "", normalized, flags=re.I)
     cleaned = re.sub(r"[.．。·•⋯…！!+=\-\s]+$", "", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _is_leader(value: str) -> bool:
-    return bool(re.fullmatch(r"[.．。·•⋯…\s]+", value or ""))
+    return bool(re.fullmatch(r"[.．。·•⋯…\s]+", normalize_toc_text(value)))
 
 
 def _normalized_title(value: str) -> str:
     cleaned = _clean_title(value).lower()
-    cleaned = re.sub(r"^第\s*[0-9一二三四五六七八九十百零〇两]+\s*[章节篇部]\s*", "", cleaned)
-    cleaned = re.sub(r"^chapter\s+[0-9ivxlcdm]+\s*", "", cleaned)
+    cleaned = re.sub(
+        rf"^第\s*[{_CHINESE_ORDINAL}]+\s*[章节篇部卷单元]\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"^(?:chapter|part|book|unit|section|appendix)\s+[0-9a-zivxlcdm.]+\s*",
+        "",
+        cleaned,
+    )
     cleaned = re.sub(r"^\d+(?:\.\d+)*\s*", "", cleaned)
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", cleaned)
 
 
 def _is_toc_heading(value: str) -> bool:
-    normalized = re.sub(r"[^a-z\u4e00-\u9fff]+", "", (value or "").lower())
-    return normalized in {"目录", "目次", "contents", "tableofcontents", "sommaire", "inhalt"}
+    return is_toc_heading(value)

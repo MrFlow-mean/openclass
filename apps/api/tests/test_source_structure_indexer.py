@@ -22,9 +22,13 @@ from app.services.source_structure_indexer import (
     PageText,
     ParsedSourceDocument,
     SourceStructureIndexer,
+    _canonical_structural_title_from_body,
     _chapter_for_chunk,
+    _detected_pdf_toc_pages,
     _pdf_outline_chapters,
     _pdf_toc_chapters,
+    _looks_like_toc_page,
+    _parse_toc_line,
     _verify_pdf_toc_nodes,
 )
 from app.services.source_structure_store import SourceStructureStore
@@ -120,6 +124,106 @@ def test_bookmarkless_pdf_toc_uses_verified_printed_page_mapping() -> None:
     assert [chapter.level for chapter in chapters] == [1, 2, 1]
     assert all(chapter.verified for chapter in chapters)
     assert all(chapter.metadata["printed_page_offset"] == 3 for chapter in chapters)
+
+
+def test_spaced_toc_heading_and_private_use_leaders_are_normalized() -> None:
+    toc_text = "目\u3000 \u3000录\n第一章 通用主题 １" + "\U001001ba" * 6
+
+    assert _looks_like_toc_page(toc_text) is True
+    assert _parse_toc_line("第一章 通用主题 １" + "\U001001ba" * 6) == (
+        "第一章 通用主题",
+        1,
+    )
+    marker = pdf_toc_parser.parse_structural_heading("第一节 基础概念")
+    assert marker is not None
+    assert (marker.kind, marker.level, marker.number) == ("section", 2, "一")
+    assert _parse_toc_line("正文中的数值 0\U001001b05") is None
+
+
+def test_toc_page_detection_stops_before_body_pages() -> None:
+    pages = [
+        PageText(page_no=1, text="封面"),
+        PageText(page_no=2, text="目  录\n第一章 总论……1\n第一节 基础……3\n第二章 后续……8"),
+        PageText(page_no=3, text="第三章 进阶……20\n第一节 展开……20\n第二节 深入……25"),
+        PageText(page_no=4, text="第一章 总论\n第一节 基础\n这是正文内容。"),
+        PageText(page_no=5, text="习题中的第1章引用 3……5\n其他正文"),
+    ]
+
+    assert [page.page_no for page in _detected_pdf_toc_pages(pages)] == [2, 3]
+
+
+def test_layout_toc_splits_columns_before_grouping_rows() -> None:
+    layout = OCRPageLayout(
+        page_no=2,
+        lines=[
+            OCRLineLayout("第一章 总论", x=0.10, y=0.90, width=0.24, height=0.02),
+            OCRLineLayout("1", x=0.45, y=0.90, width=0.02, height=0.02),
+            OCRLineLayout("第一节 基础概念", x=0.15, y=0.80, width=0.26, height=0.02),
+            OCRLineLayout("3", x=0.45, y=0.80, width=0.02, height=0.02),
+            OCRLineLayout("第二章 后续主题", x=0.55, y=0.90, width=0.26, height=0.02),
+            OCRLineLayout("20", x=0.90, y=0.90, width=0.03, height=0.02),
+            OCRLineLayout("第一节 继续学习", x=0.60, y=0.80, width=0.24, height=0.02),
+            OCRLineLayout("20", x=0.90, y=0.80, width=0.03, height=0.02),
+        ],
+    )
+
+    rows = pdf_toc_parser._toc_rows([layout])
+    pdf_toc_parser._assign_levels(rows)
+
+    assert [row.title for row in rows] == [
+        "第一章 总论",
+        "第一节 基础概念",
+        "第二章 后续主题",
+        "第一节 继续学习",
+    ]
+    assert [row.printed_page for row in rows] == [1, 3, 20, 20]
+    assert [row.level for row in rows] == [1, 2, 1, 2]
+
+
+def test_layout_toc_keeps_same_title_at_chapter_and_section_levels() -> None:
+    layout = _toc_layout_page(
+        2,
+        [
+            ("第二章 同名主题", 29, 0.90, 0.20),
+            ("第一节 同名主题", 29, 0.80, 0.24),
+        ],
+    )
+
+    rows = pdf_toc_parser._toc_rows([layout])
+
+    assert [(row.title, row.printed_page) for row in rows] == [
+        ("第二章 同名主题", 29),
+        ("第一节 同名主题", 29),
+    ]
+
+
+def test_body_heading_canonicalizes_noisy_ocr_title() -> None:
+    node = pdf_toc_parser.PdfTocNode(
+        title="第四节 正态总体的抽样分布 ⋯149",
+        printed_page=149,
+        toc_page=4,
+        level=2,
+        number="四",
+    )
+
+    assert _canonical_structural_title_from_body(
+        "第四节 正态总体的抽样分布\n本节正文。",
+        node,
+    ) == "第四节 正态总体的抽样分布"
+
+
+def test_layout_toc_keeps_a_structural_marker_split_from_its_title() -> None:
+    row = pdf_toc_parser._parse_layout_row(
+        [
+            OCRLineLayout("第五节", x=0.14, y=0.45, width=0.06, height=0.02),
+            OCRLineLayout("两个总体下未知参数", x=0.22, y=0.45, width=0.24, height=0.02),
+        ],
+        toc_page=3,
+    )
+
+    assert row is not None
+    pdf_toc_parser._assign_levels([row])
+    assert (row.title, row.number, row.level) == ("第五节 两个总体下未知参数", "五", 2)
 
 
 def test_layout_toc_keeps_chapters_and_sections_at_distinct_levels() -> None:

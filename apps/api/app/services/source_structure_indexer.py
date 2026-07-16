@@ -25,6 +25,9 @@ from app.services.pdf_toc_parser import (
     PdfTocNode,
     extract_pdf_toc,
     extract_pdf_toc_from_range,
+    is_toc_heading,
+    normalize_toc_text,
+    parse_structural_heading,
 )
 from app.services.native_source_index import source_chunk_text_hash
 from app.services.source_chapter_identity import stable_source_chapter_id
@@ -43,7 +46,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 4
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 5
 SourceIndexProgressCallback = Callable[[str, int], None]
 
 
@@ -896,7 +899,7 @@ def _parse_pdf(
                 "ocr_toc_node_count": len(extraction.nodes),
             }
     elif not outline_chapters:
-        detected_toc_pages = [page for page in pages[:30] if _looks_like_toc_page(page.text)]
+        detected_toc_pages = _detected_pdf_toc_pages(pages)
         if detected_toc_pages:
             extraction = extract_pdf_toc_from_range(
                 path,
@@ -1406,6 +1409,14 @@ def _verify_pdf_toc_nodes(nodes: list[PdfTocNode], pages: list[PageText]) -> tup
         page = mapped_page or direct_page
         if page is None:
             continue
+        canonical_title = _canonical_structural_title_from_body(page.text, node)
+        if canonical_title and canonical_title != node.title:
+            node.metadata = {
+                **node.metadata,
+                "ocr_title": node.title,
+                "title_canonicalized_from_body": True,
+            }
+            node.title = canonical_title
         node.physical_page = page.page_no
         node.verified = True
         node.confidence = 0.9 if mapped_page is not None else 0.82
@@ -1418,6 +1429,35 @@ def _verify_pdf_toc_nodes(nodes: list[PdfTocNode], pages: list[PageText]) -> tup
             "printed_page_mapping_support": mapping_support,
         }
     return printed_page_offset, mapping_support
+
+
+def _canonical_structural_title_from_body(text: str, node: PdfTocNode) -> str | None:
+    node_marker = parse_structural_heading(node.title)
+    if node_marker is None:
+        return None
+    candidates: list[str] = []
+    for raw_line in text.splitlines():
+        line = _clean_label(raw_line)
+        if not line or len(line) > 180:
+            continue
+        marker = parse_structural_heading(line)
+        if marker is None:
+            continue
+        if marker.kind != node_marker.kind or marker.level != node_marker.level:
+            continue
+        if marker.number and node_marker.number and marker.number.lower() != node_marker.number.lower():
+            continue
+        candidates.append(line)
+    if not candidates:
+        return None
+    normalized_node = _normalize_for_match(node.title)
+    exact = next(
+        (candidate for candidate in candidates if _normalize_for_match(candidate) == normalized_node),
+        None,
+    )
+    if exact is not None:
+        return exact
+    return max(candidates, key=len)
 
 
 def _merge_pdf_navigation(
@@ -1477,7 +1517,7 @@ def _close_pdf_navigation_ranges(
 
 
 def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedChapter]:
-    toc_pages = [page for page in pages[:30] if _looks_like_toc_page(page.text)]
+    toc_pages = _detected_pdf_toc_pages(pages)
     if not toc_pages:
         return []
     body_pages = [page for page in pages if page.page_no > max(toc.page_no for toc in toc_pages)]
@@ -1560,11 +1600,11 @@ def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedCha
 
 
 def _parse_toc_line(line: str) -> tuple[str, int] | None:
-    raw = html.unescape(line or "").strip()
+    raw = normalize_toc_text(html.unescape(line or "")).strip()
     if len(raw) < 4 or len(raw) > 240:
         return None
     page_match = re.search(
-        r"[（(\[]?\s*(\d{1,4}|[IVXLCDM]{1,8})\s*[）)\]]?\s*[.．·•]?\s*$",
+        r"[（(\[]?\s*(\d{1,4}|[IVXLCDM]{1,8})\s*[）)\]]?\s*([.．。·•⋯…\s]*)$",
         raw,
         flags=re.I,
     )
@@ -1572,9 +1612,14 @@ def _parse_toc_line(line: str) -> tuple[str, int] | None:
         return None
     prefix = raw[: page_match.start()]
     leader_match = re.search(r"(?:[.．。·•⋯…]|\s){2,}$", prefix)
-    if not leader_match or not re.search(r"[.．。·•⋯…]", leader_match.group(0)):
+    trailing_leader = page_match.group(2)
+    has_leader_before = bool(
+        leader_match and re.search(r"[.．。·•⋯…]", leader_match.group(0))
+    )
+    has_leader_after = bool(re.search(r"[.．。·•⋯…]", trailing_leader))
+    if not has_leader_before and not has_leader_after:
         return None
-    title = _clean_label(prefix[: leader_match.start()])
+    title = _clean_label(prefix[: leader_match.start()] if leader_match else prefix)
     if not title or re.fullmatch(r"\d+(?:\.\d+)*", title):
         return None
     page_token = page_match.group(1)
@@ -1584,6 +1629,9 @@ def _parse_toc_line(line: str) -> tuple[str, int] | None:
 
 def _toc_title_level(title: str) -> int:
     cleaned = _clean_label(title)
+    structural_marker = parse_structural_heading(cleaned)
+    if structural_marker is not None:
+        return structural_marker.level
     number = _number_from_title(cleaned)
     if number and "." in number:
         return min(6, len(number.split(".")))
@@ -1604,10 +1652,46 @@ def _roman_numeral_value(value: str) -> int:
 
 
 def _looks_like_toc_page(text: str) -> bool:
-    lowered = text.lower()
-    toc_heading = "contents" in lowered or "table of contents" in lowered or "目录" in text
-    dotted_lines = sum(1 for line in text.splitlines() if _parse_toc_line(line))
-    return toc_heading or dotted_lines >= 3
+    lines = [line for line in text.splitlines() if line.strip()]
+    toc_heading = any(is_toc_heading(line) for line in lines[:12])
+    parsed_rows = sum(1 for line in lines if _parse_toc_line(line))
+    structural_rows = sum(1 for line in lines if parse_structural_heading(line) is not None)
+    return toc_heading or parsed_rows >= 3 or (structural_rows >= 4 and parsed_rows >= 2)
+
+
+def _detected_pdf_toc_pages(pages: list[PageText]) -> list[PageText]:
+    candidates = pages[:30]
+    if not candidates:
+        return []
+
+    explicit_start = next(
+        (
+            index
+            for index, page in enumerate(candidates)
+            if any(
+                is_toc_heading(line)
+                for line in [line for line in page.text.splitlines() if line.strip()][:12]
+            )
+        ),
+        None,
+    )
+    if explicit_start is None:
+        explicit_start = next(
+            (index for index, page in enumerate(candidates) if _looks_like_toc_page(page.text)),
+            None,
+        )
+    if explicit_start is None:
+        return []
+
+    detected = [candidates[explicit_start]]
+    for page in candidates[explicit_start + 1 :]:
+        lines = [line for line in page.text.splitlines() if line.strip()]
+        parsed_rows = sum(1 for line in lines if _parse_toc_line(line))
+        structural_rows = sum(1 for line in lines if parse_structural_heading(line) is not None)
+        if parsed_rows < 3 or structural_rows < 2:
+            break
+        detected.append(page)
+    return detected
 
 
 def _docx_heading_level(style_name: str) -> int | None:
@@ -1795,6 +1879,9 @@ def _find_title_offset(text: str, title: str) -> int:
 
 def _number_from_title(title: str) -> str:
     cleaned = _clean_label(title)
+    structural_marker = parse_structural_heading(cleaned)
+    if structural_marker is not None and structural_marker.number:
+        return structural_marker.number
     patterns = [
         r"^(\d+(?:\.\d+){0,8})(?=\s|[.:：、-]|$)",
         r"^chapter\s+(\d+(?:\.\d+){0,8})(?=\s|[.:：、-]|$)",
