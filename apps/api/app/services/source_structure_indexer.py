@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.models import (
     SourceChapter,
@@ -43,6 +43,16 @@ from app.services.source_xml import parse_untrusted_xml
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
 CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 4
+SourceIndexProgressCallback = Callable[[str, int], None]
+
+
+def _report_progress(
+    callback: SourceIndexProgressCallback | None,
+    phase: str,
+    progress: int,
+) -> None:
+    if callback is not None:
+        callback(phase, max(0, min(100, progress)))
 
 
 @dataclass
@@ -88,7 +98,12 @@ class SourceStructureIndexer:
         self.store = store
         self.visual_extractor = visual_extractor
 
-    def ensure_structure(self, record: SourceIngestionRecord) -> SourceStructure | None:
+    def ensure_structure(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        progress_callback: SourceIndexProgressCallback | None = None,
+    ) -> SourceStructure | None:
         current = self.store.get_structure(
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
@@ -100,9 +115,11 @@ class SourceStructureIndexer:
                 current.visual_index_version >= CURRENT_SOURCE_VISUAL_INDEX_VERSION
             )
             if structure_is_current and visuals_are_current:
+                _report_progress(progress_callback, "persisting", 96)
                 return current
             if current.status in {"ready", "linear_only"}:
                 if structure_is_current and not _record_supports_visual_index(record):
+                    _report_progress(progress_callback, "persisting", 96)
                     return current
                 # Reuse the public rebuild boundary for lazy upgrades.  Besides
                 # preserving the existing observable contract, this keeps text,
@@ -110,15 +127,26 @@ class SourceStructureIndexer:
                 # rebuild_structure retains the previous usable bundle if either
                 # structural or visual parsing fails.
                 if not structure_is_current and visuals_are_current:
-                    return self.rebuild_structure(record, preserve_existing_visuals=True)
-                return self.rebuild_structure(record)
-        return self.rebuild_structure(record)
+                    if progress_callback is None:
+                        return self.rebuild_structure(record, preserve_existing_visuals=True)
+                    return self.rebuild_structure(
+                        record,
+                        preserve_existing_visuals=True,
+                        progress_callback=progress_callback,
+                    )
+                if progress_callback is None:
+                    return self.rebuild_structure(record)
+                return self.rebuild_structure(record, progress_callback=progress_callback)
+        if progress_callback is None:
+            return self.rebuild_structure(record)
+        return self.rebuild_structure(record, progress_callback=progress_callback)
 
     def rebuild_structure(
         self,
         record: SourceIngestionRecord,
         *,
         preserve_existing_visuals: bool = False,
+        progress_callback: SourceIndexProgressCallback | None = None,
     ) -> SourceStructure:
         previous_visuals: list[SourceVisualAsset] = []
         if preserve_existing_visuals:
@@ -152,6 +180,7 @@ class SourceStructureIndexer:
                 building=building,
                 preserve_existing_visuals=preserve_existing_visuals,
                 previous_visuals=previous_visuals,
+                progress_callback=progress_callback,
             )
 
     def _rebuild_structure_staged(
@@ -162,12 +191,21 @@ class SourceStructureIndexer:
         building: SourceStructure,
         preserve_existing_visuals: bool = False,
         previous_visuals: list[SourceVisualAsset] | None = None,
+        progress_callback: SourceIndexProgressCallback | None = None,
     ) -> SourceStructure:
         extracted_storage_keys: list[str] = []
         try:
-            parsed = self._parse_record(record)
+            _report_progress(progress_callback, "parsing", 25)
+            parsed = (
+                self._parse_record(record, progress_callback=progress_callback)
+                if progress_callback is not None
+                else self._parse_record(record)
+            )
+            _report_progress(progress_callback, "mapping_structure", 58)
             chapters = self._chapters_for_record(record, parsed)
+            _report_progress(progress_callback, "building_chunks", 63)
             chunks = self._chunks_for_record(record, parsed, chapters)
+            _report_progress(progress_callback, "extracting_visuals", 70)
             if preserve_existing_visuals and previous is not None:
                 visual_result = SourceVisualExtractionResult(
                     status=(
@@ -184,13 +222,20 @@ class SourceStructureIndexer:
                 )
             else:
                 try:
-                    visual_result = self.visual_extractor.extract(
-                        record=record,
-                        path=_local_source_path(record),
-                        structure=building,
-                        chapters=chapters,
-                        chunks=chunks,
-                    )
+                    visual_kwargs: dict[str, Any] = {
+                        "record": record,
+                        "path": _local_source_path(record),
+                        "structure": building,
+                        "chapters": chapters,
+                        "chunks": chunks,
+                    }
+                    if progress_callback is not None:
+                        visual_kwargs["progress_callback"] = lambda completed, total: _report_progress(
+                            progress_callback,
+                            "extracting_visuals",
+                            70 + round(22 * completed / max(1, total)),
+                        )
+                    visual_result = self.visual_extractor.extract(**visual_kwargs)
                     if (
                         visual_result.status == "failed"
                         and previous is not None
@@ -216,6 +261,7 @@ class SourceStructureIndexer:
                             "资料文本已建立索引，但视觉索引失败；重新构建后才能使用图表证据。"
                         ],
                     )
+            _report_progress(progress_callback, "persisting", 94)
             extracted_storage_keys = [
                 visual.storage_key for visual in visual_result.visuals if visual.storage_key
             ]
@@ -276,7 +322,12 @@ class SourceStructureIndexer:
             )
             return self.store.save_structure_bundle(structure=failed, chapters=[], chunks=[])
 
-    def _parse_record(self, record: SourceIngestionRecord) -> ParsedSourceDocument:
+    def _parse_record(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        progress_callback: SourceIndexProgressCallback | None = None,
+    ) -> ParsedSourceDocument:
         local_path = _local_source_path(record)
         if not local_path:
             return ParsedSourceDocument(
@@ -289,7 +340,7 @@ class SourceStructureIndexer:
         if suffix == ".epub" or _looks_like_epub(record.mime_type):
             return _parse_epub(local_path)
         if suffix == ".pdf" or record.mime_type == "application/pdf":
-            return _parse_pdf(local_path)
+            return _parse_pdf(local_path, progress_callback=progress_callback)
         if suffix in {".docx", ".doc"} or "wordprocessingml" in record.mime_type:
             return _parse_docx(local_path)
         if suffix == ".pptx" or "presentationml" in record.mime_type:
@@ -751,7 +802,11 @@ def _parse_xlsx(path: Path) -> ParsedSourceDocument:
     )
 
 
-def _parse_pdf(path: Path) -> ParsedSourceDocument:
+def _parse_pdf(
+    path: Path,
+    *,
+    progress_callback: SourceIndexProgressCallback | None = None,
+) -> ParsedSourceDocument:
     try:
         from pypdf import PdfReader
     except Exception as exc:  # pragma: no cover - dependency guard
@@ -760,6 +815,8 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
     pages: list[PageText] = []
     parts: list[str] = []
     offset = 0
+    page_count = len(reader.pages)
+    last_progress = -1
     for page_index, page in enumerate(reader.pages):
         text = (page.extract_text() or "").strip()
         page_text = f"\n\n[Page {page_index + 1}]\n{text}"
@@ -767,6 +824,10 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
         parts.append(page_text)
         offset += len(page_text)
         pages.append(PageText(page_no=page_index + 1, text=text, start_offset=start, end_offset=offset))
+        page_progress = 25 + round(30 * (page_index + 1) / max(1, page_count))
+        if page_progress != last_progress:
+            _report_progress(progress_callback, "reading_pages", page_progress)
+            last_progress = page_progress
     full_text = "".join(parts)
     ocr_used = False
     if len(re.sub(r"\s+", "", full_text)) < max(40, len(pages) * 8) and pages:

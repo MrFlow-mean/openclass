@@ -70,7 +70,7 @@ class SourceIngestionService:
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
-        return [self.structure_store.attach_summary(record) for record in records]
+        return [self._attach_job(self.structure_store.attach_summary(record)) for record in records]
 
     def add_url_source(
         self,
@@ -134,6 +134,30 @@ class SourceIngestionService:
         mime_type: str,
         title: str = "",
     ) -> SourceIngestionRecord:
+        queued = self.queue_file_source(
+            owner_user_id=owner_user_id,
+            package=package,
+            file_name=file_name,
+            content=content,
+            mime_type=mime_type,
+            title=title,
+        )
+        return self.process_file_source(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            source_id=queued.id,
+        )
+
+    def queue_file_source(
+        self,
+        *,
+        owner_user_id: str,
+        package: CoursePackage,
+        file_name: str,
+        content: bytes,
+        mime_type: str,
+        title: str = "",
+    ) -> SourceIngestionRecord:
         if not file_name.strip():
             raise SourceIngestionError("File name is required.")
         if not _supported_mime(mime_type, file_name):
@@ -153,8 +177,64 @@ class SourceIngestionService:
             metadata={"adapter": "openclass_native"},
         )
         file_metadata = _save_local_source_file(record, content)
-        if source_type in {"audio_file", "video_file"}:
-            original_path = Path(file_metadata["local_source_path"])
+        queued = self.store.save_source(
+            record.model_copy(
+                update={
+                    "metadata": {
+                        **record.metadata,
+                        **file_metadata,
+                        "content_hash": hashlib.sha256(content).hexdigest(),
+                        "native_index_version": 1,
+                    }
+                }
+            )
+        )
+        self._start_job(
+            queued,
+            adapter="openclass_native",
+            phase="uploaded",
+            progress=15,
+        )
+        return self._attach_job(self.structure_store.attach_summary(queued))
+
+    def process_file_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord:
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None:
+            raise SourceIngestionError("Source not found.")
+        job = self.job_store.latest_for_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if job is None:
+            job = self._start_job(
+                record,
+                adapter=str(record.metadata.get("adapter") or "openclass_native"),
+                phase="parsing",
+                progress=20,
+            )
+        else:
+            job = self._update_job(
+                job,
+                record=record,
+                status="parsing",
+                progress=20,
+                phase="parsing",
+            )
+
+        file_metadata = dict(record.metadata)
+        if record.source_type in {"audio_file", "video_file"}:
+            original_path = Path(str(file_metadata.get("local_source_path") or ""))
             if self.media_transcription_provider is None:
                 error = "Media transcription requires an explicitly configured adapter."
                 failed = self.store.save_source(
@@ -164,12 +244,6 @@ class SourceIngestionService:
                         phase="transcription",
                     )
                 )
-                job = self._start_job(
-                    failed,
-                    adapter="openclass_native_media",
-                    phase="transcription",
-                    progress=100,
-                )
                 self._finish_job(
                     job,
                     record=failed,
@@ -178,42 +252,40 @@ class SourceIngestionService:
                     phase="failed",
                     error=error,
                 )
-                return failed
+                return self._attach_job(self.structure_store.attach_summary(failed))
             try:
                 transcript = self.media_transcription_provider.transcribe(
                     original_path,
-                    mime_type=mime_type,
+                    mime_type=record.mime_type,
                 )
             except Exception as exc:
                 failed = self.store.save_source(self._failed_record(record.model_copy(update={"metadata": {**record.metadata, **file_metadata}}), str(exc), phase="transcription"))
-                job = self._start_job(failed, adapter="openclass_native_media", phase="transcription", progress=100)
                 self._finish_job(job, record=failed, status="failed", progress=100, phase="failed", error=str(exc))
-                return failed
+                return self._attach_job(self.structure_store.attach_summary(failed))
             transcript_record = record.model_copy(
-                update={"file_name": f"{Path(file_name).stem}-transcript.txt", "mime_type": "text/plain"}
+                update={"file_name": f"{Path(record.file_name).stem}-transcript.txt", "mime_type": "text/plain"}
             )
             transcript_metadata = _save_local_source_text(transcript_record, transcript.text)
             file_metadata = {
                 **transcript_metadata,
                 "original_source_path": str(original_path),
-                "original_mime_type": mime_type,
+                "original_mime_type": record.mime_type,
                 "transcription_provider": transcript.provider,
                 "transcription_model": transcript.model,
                 "transcript_language": transcript.language,
             }
-        record = record.model_copy(
+            record = transcript_record
+        ready = record.model_copy(
             update={
-                "status": "ready",
+                "status": "parsing",
                 "metadata": {
                     **record.metadata,
                     **file_metadata,
-                    "content_hash": hashlib.sha256(content).hexdigest(),
                     "native_index_version": 1,
                 },
             }
         )
-        job = self._start_job(record, adapter="openclass_native", phase="parsing", progress=25)
-        return self._save_and_index(record, job)
+        return self._save_and_index(ready, job)
 
     def add_text_source(
         self,
@@ -387,19 +459,48 @@ class SourceIngestionService:
         phase: str,
         error: str = "",
     ) -> SourceIngestionJob:
-        updated = job.model_copy(
-            update={
-                "status": status,
-                "progress": progress,
-                "error": error,
-                "phase_history": [*job.phase_history, phase],
-            }
+        return self._update_job(
+            job,
+            record=record,
+            status=status,
+            progress=progress,
+            phase=phase,
+            error=error,
         )
+
+    def _update_job(
+        self,
+        job: SourceIngestionJob,
+        *,
+        record: SourceIngestionRecord,
+        status: str,
+        progress: int,
+        phase: str,
+        error: str = "",
+    ) -> SourceIngestionJob:
+        phases = job.phase_history
+        if not phases or phases[-1] != phase:
+            phases = [*phases, phase]
         return self.job_store.save(
-            updated,
+            job.model_copy(
+                update={
+                    "status": status,
+                    "progress": max(job.progress, min(100, progress)),
+                    "error": error,
+                    "phase_history": phases,
+                }
+            ),
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
         )
+
+    def _attach_job(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
+        job = self.job_store.latest_for_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        return record.model_copy(update={"ingestion_job": job})
 
     def _save_and_index(
         self,
@@ -408,42 +509,55 @@ class SourceIngestionService:
         *,
         rebuild: bool = False,
     ) -> SourceIngestionRecord:
-        saved = self.store.save_source(record.model_copy(update={"status": "indexing", "error": ""}))
-        indexing_job = self.job_store.save(
-            job.model_copy(update={"status": "indexing", "progress": 55, "phase_history": [*job.phase_history, "indexing"]}),
-            owner_user_id=record.owner_user_id,
-            package_id=record.package_id,
+        saved = self.store.save_source(record.model_copy(update={"status": "parsing", "error": ""}))
+        indexing_job = self._update_job(
+            job,
+            record=saved,
+            status="parsing",
+            progress=25,
+            phase="parsing",
         )
+
+        def report_progress(phase: str, progress: int) -> None:
+            nonlocal saved, indexing_job
+            next_status = "indexing" if progress >= 60 else "parsing"
+            if saved.status != next_status:
+                saved = self.store.save_source(saved.model_copy(update={"status": next_status}))
+            indexing_job = self._update_job(
+                indexing_job,
+                record=saved,
+                status=next_status,
+                progress=progress,
+                phase=phase,
+            )
+
         try:
             structure = (
-                self.structure_indexer.rebuild_structure(saved)
+                self.structure_indexer.rebuild_structure(saved, progress_callback=report_progress)
                 if rebuild
-                else self.structure_indexer.ensure_structure(saved)
+                else self.structure_indexer.ensure_structure(saved, progress_callback=report_progress)
             )
         except Exception as exc:
             failed = self.store.save_source(saved.model_copy(update={"status": "failed", "error": str(exc)}))
-            self.job_store.save(
-                indexing_job.model_copy(
-                    update={"status": "failed", "progress": 100, "error": str(exc), "phase_history": [*indexing_job.phase_history, "failed"]}
-                ),
-                owner_user_id=record.owner_user_id,
-                package_id=record.package_id,
+            self._update_job(
+                indexing_job,
+                record=failed,
+                status="failed",
+                progress=100,
+                error=str(exc),
+                phase="failed",
             )
-            return self.structure_store.attach_summary(failed)
+            return self._attach_job(self.structure_store.attach_summary(failed))
         final_status = "ready" if structure.status in {"ready", "linear_only"} else "failed"
         error = structure.error if final_status == "failed" else ""
         automation_outcome = SourceImportAutomationOutcome(artifact_ids=[], errors=[])
         if final_status == "ready" and self.import_automation_runner is not None:
-            transforming_job = self.job_store.save(
-                indexing_job.model_copy(
-                    update={
-                        "status": "indexing",
-                        "progress": 85,
-                        "phase_history": [*indexing_job.phase_history, "transforming"],
-                    }
-                ),
-                owner_user_id=record.owner_user_id,
-                package_id=record.package_id,
+            transforming_job = self._update_job(
+                indexing_job,
+                record=saved,
+                status="indexing",
+                progress=97,
+                phase="transforming",
             )
             indexing_job = transforming_job
             try:
@@ -476,19 +590,15 @@ class SourceIngestionService:
                 }
             )
         )
-        self.job_store.save(
-            indexing_job.model_copy(
-                update={
-                    "status": final_status,
-                    "progress": 100,
-                    "error": error,
-                    "phase_history": [*indexing_job.phase_history, final_status],
-                }
-            ),
-            owner_user_id=record.owner_user_id,
-            package_id=record.package_id,
+        self._update_job(
+            indexing_job,
+            record=final_record,
+            status=final_status,
+            progress=100,
+            error=error,
+            phase=final_status,
         )
-        return self.structure_store.attach_summary(final_record)
+        return self._attach_job(self.structure_store.attach_summary(final_record))
 
     def _failed_record(self, record: SourceIngestionRecord, error: str, *, phase: str) -> SourceIngestionRecord:
         return record.model_copy(

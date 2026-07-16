@@ -734,6 +734,7 @@ class SourceIngestionRecord(BaseModel):
     structure_has_verified_toc: bool = False
     structure_error: str = ""
     structure_updated_at: str | None = None
+    ingestion_job: SourceIngestionJob | None = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     metadata: dict[str, Any] = Field(default_factory=dict)

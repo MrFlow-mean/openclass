@@ -381,17 +381,19 @@ def test_source_import_uses_native_local_index(
     )
     assert imported.status_code == 200
     source = imported.json()
-    assert source["status"] == "ready"
+    assert source["status"] == "parsing"
+    assert source["ingestion_job"]["progress"] == 15
     assert source["error"] == ""
     assert source["open_notebook_notebook_id"] == ""
     assert source["metadata"]["adapter"] == "openclass_native"
     assert source["metadata"]["content_hash"]
     assert "open_notebook_sync_status" not in source["metadata"]
-    assert source["structure_status"] == "ready"
+    assert source["structure_status"] == "pending"
 
     listed = api_client.get(f"/api/packages/{package_id}/sources")
     assert listed.status_code == 200
     assert listed.json()[0]["status"] == "ready"
+    assert listed.json()[0]["ingestion_job"]["progress"] == 100
     assert listed.json()[0]["structure_has_verified_toc"] is True
 
 

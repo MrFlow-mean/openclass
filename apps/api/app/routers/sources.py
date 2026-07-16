@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -41,6 +41,7 @@ def list_package_sources(package_id: str, user: UserView = Depends(current_user)
 @router.post("/api/packages/{package_id}/sources", response_model=SourceIngestionRecord)
 async def import_package_source(
     package_id: str,
+    background_tasks: BackgroundTasks,
     source_uri: str | None = Form(default=None),
     title: str = Form(default=""),
     text: str | None = Form(default=None),
@@ -54,8 +55,8 @@ async def import_package_source(
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-            return await run_in_threadpool(
-                source_ingestion_service.add_file_source,
+            queued = await run_in_threadpool(
+                source_ingestion_service.queue_file_source,
                 owner_user_id=user.id,
                 package=package,
                 file_name=file.filename or "source",
@@ -63,6 +64,13 @@ async def import_package_source(
                 mime_type=file.content_type or "application/octet-stream",
                 title=title,
             )
+            background_tasks.add_task(
+                source_ingestion_service.process_file_source,
+                owner_user_id=user.id,
+                package_id=package.id,
+                source_id=queued.id,
+            )
+            return queued
         if text and text.strip():
             return source_ingestion_service.add_text_source(
                 owner_user_id=user.id,

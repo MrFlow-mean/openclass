@@ -1448,3 +1448,25 @@ select {
     transition-duration: 0.001ms !important;
   }
 }
+
+@keyframes sourceProcessingProgressSlide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.source-processing-progress__indeterminate {
+  width: 38%;
+  animation: sourceProcessingProgressSlide 1.15s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-processing-progress__indeterminate {
+    width: 100%;
+    animation: none;
+    opacity: 0.55;
+  }
+}

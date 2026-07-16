@@ -315,6 +315,7 @@ export interface SourceIngestionRecord {
   structure_has_verified_toc: boolean;
   structure_error: string;
   structure_updated_at?: string | null;
+  ingestion_job?: SourceIngestionJob | null;
   created_at: string;
   updated_at: string;
   metadata: Record<string, unknown>;

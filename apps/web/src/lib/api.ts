@@ -591,7 +591,8 @@ export const api = {
   },
   async importPackageSource(
     packageId: string,
-    payload: { file?: File | null; sourceUri?: string; text?: string; title?: string }
+    payload: { file?: File | null; sourceUri?: string; text?: string; title?: string },
+    options: { onUploadProgress?: (progress: number) => void } = {}
   ) {
     const formData = new FormData();
     if (payload.file) {
@@ -605,6 +606,42 @@ export const api = {
     }
     if (payload.title) {
       formData.append("title", payload.title);
+    }
+    if (payload.file && typeof XMLHttpRequest !== "undefined") {
+      return new Promise<SourceIngestionRecord>((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open("POST", `${getApiBase()}/api/packages/${packageId}/sources`);
+        authHeaders().forEach((value, key) => request.setRequestHeader(key, value));
+        request.upload.addEventListener("progress", (event) => {
+          if (event.lengthComputable) {
+            options.onUploadProgress?.(Math.round((event.loaded / event.total) * 100));
+          }
+        });
+        request.addEventListener("load", () => {
+          if (request.status < 200 || request.status >= 300) {
+            let message = request.responseText || `Source import failed with ${request.status}`;
+            try {
+              const parsed = JSON.parse(request.responseText) as { detail?: unknown };
+              if (typeof parsed.detail === "string") {
+                message = parsed.detail;
+              }
+            } catch {
+              // Keep the raw response text for non-JSON errors.
+            }
+            reject(new Error(message));
+            return;
+          }
+          try {
+            options.onUploadProgress?.(100);
+            resolve(JSON.parse(request.responseText) as SourceIngestionRecord);
+          } catch {
+            reject(new Error("资料上传成功，但服务器返回了无效状态。"));
+          }
+        });
+        request.addEventListener("error", () => reject(new Error("资料上传失败，请检查网络后重试。")));
+        request.addEventListener("abort", () => reject(new Error("资料上传已取消。")));
+        request.send(formData);
+      });
     }
     const response = await fetch(`${getApiBase()}/api/packages/${packageId}/sources`, {
       method: "POST",

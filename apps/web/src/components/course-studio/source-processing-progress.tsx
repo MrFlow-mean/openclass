@@ -20,6 +20,17 @@ const SOURCE_STATUS_PROGRESS: Partial<Record<SourceIngestionRecord["status"], So
   indexing: { label: "正在建立检索索引", value: 78 },
 };
 
+const JOB_PHASE_LABELS: Record<string, string> = {
+  uploaded: "文件已接收，正在准备解析",
+  parsing: "正在解析正文",
+  reading_pages: "正在逐页读取正文",
+  mapping_structure: "正在识别目录与正文结构",
+  building_chunks: "正在建立检索片段",
+  extracting_visuals: "正在提取图表与图片",
+  persisting: "正在保存资料索引",
+  transforming: "正在生成导入产物",
+};
+
 export function SourceProcessingProgress({ label, value, className }: SourceProcessingProgressProps) {
   const isDeterminate = typeof value === "number";
   const normalizedValue = isDeterminate ? Math.max(0, Math.min(100, Math.round(value))) : undefined;
@@ -42,7 +53,7 @@ export function SourceProcessingProgress({ label, value, className }: SourceProc
         <div
           className={clsx(
             "h-full rounded-full bg-emerald-500 transition-[width] duration-500 ease-out",
-            !isDeterminate && "w-1/2 animate-pulse motion-reduce:animate-none"
+            !isDeterminate && "source-processing-progress__indeterminate"
           )}
           style={isDeterminate ? { width: `${normalizedValue}%` } : undefined}
         />
@@ -52,6 +63,14 @@ export function SourceProcessingProgress({ label, value, className }: SourceProc
 }
 
 export function getSourceProcessingState(source: SourceIngestionRecord): SourceProcessingState | null {
+  const job = source.ingestion_job;
+  if (job && ACTIVE_JOB_STATUSES.has(job.status)) {
+    const phase = job.phase_history.at(-1) ?? "";
+    return {
+      label: JOB_PHASE_LABELS[phase] ?? SOURCE_STATUS_PROGRESS[job.status]?.label ?? "正在处理资料",
+      value: job.progress,
+    };
+  }
   const ingestionState = SOURCE_STATUS_PROGRESS[source.status];
   if (ingestionState) {
     return ingestionState;
@@ -67,3 +86,10 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
   }
   return null;
 }
+
+const ACTIVE_JOB_STATUSES = new Set<SourceIngestionRecord["status"]>([
+  "queued",
+  "fetching",
+  "parsing",
+  "indexing",
+]);

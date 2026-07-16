@@ -7,7 +7,7 @@ import tempfile
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from app.models import (
     SourceChapter,
@@ -65,6 +65,7 @@ class SourceVisualExtractor:
         structure: SourceStructure,
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> SourceVisualExtractionResult:
         if _is_audio_or_video(record):
             return SourceVisualExtractionResult(status="unsupported")
@@ -75,7 +76,11 @@ class SourceVisualExtractor:
             )
 
         try:
-            adapter_result = self._adapter_result(path=path, record=record)
+            adapter_result = self._adapter_result(
+                path=path,
+                record=record,
+                progress_callback=progress_callback,
+            )
         except Exception as exc:
             ai_usage_logger.log_event(
                 "source_visual_extraction_failed",
@@ -156,10 +161,16 @@ class SourceVisualExtractor:
             )
         return SourceVisualExtractionResult(visuals=visuals, warnings=warnings, status=status)
 
-    def _adapter_result(self, *, path: Path, record: SourceIngestionRecord) -> SourceVisualAdapterResult:
+    def _adapter_result(
+        self,
+        *,
+        path: Path,
+        record: SourceIngestionRecord,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> SourceVisualAdapterResult:
         suffix = path.suffix.lower()
         if suffix == ".pdf" or record.mime_type == "application/pdf":
-            return extract_pdf_visuals(path)
+            return extract_pdf_visuals(path, progress_callback=progress_callback)
         office_format = _office_format(suffix=suffix, mime_type=record.mime_type)
         if office_format:
             return extract_office_visuals(path, office_format=office_format)

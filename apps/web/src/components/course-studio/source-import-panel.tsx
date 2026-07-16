@@ -55,6 +55,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
   const [title, setTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [removingSourceId, setRemovingSourceId] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -115,15 +116,25 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
       return;
     }
     setIsImporting(true);
+    setUploadProgress(0);
     const imported: SourceIngestionRecord[] = [];
     const failures: string[] = [];
     try {
-      for (const file of fileList) {
+      for (const [fileIndex, file] of fileList.entries()) {
         try {
-          const record = await api.importPackageSource(packageId, {
-            file,
-            title: fileList.length === 1 ? title.trim() : "",
-          });
+          const record = await api.importPackageSource(
+            packageId,
+            {
+              file,
+              title: fileList.length === 1 ? title.trim() : "",
+            },
+            {
+              onUploadProgress: (fileProgress) => {
+                const overallProgress = ((fileIndex + fileProgress / 100) / fileList.length) * 100;
+                setUploadProgress(Math.round(overallProgress));
+              },
+            }
+          );
           imported.push(record);
           setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
         } catch (error) {
@@ -136,6 +147,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
       }
     } finally {
       setIsImporting(false);
+      setUploadProgress(null);
     }
     if (failures.length) {
       onError(`${imported.length} 个文件导入成功，${failures.length} 个失败：${failures.join("；")}`);
@@ -337,7 +349,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
             >
               {uploadButton}
               {isImporting ? (
-                <SourceProcessingProgress className="w-full max-w-60 text-left" label="正在上传并解析资料" />
+                <SourceProcessingProgress
+                  className="w-full max-w-60 text-left"
+                  label={uploadProgress === 100 ? "上传完成，正在创建处理任务" : "正在上传资料"}
+                  value={uploadProgress ?? undefined}
+                />
               ) : (
                 <span>继续拖入资料，或点击上传。</span>
               )}
@@ -369,7 +385,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
             <UploadCloud className={clsx("h-8 w-8", isDragActive ? "text-blue-600" : "text-gray-300")} />
             {uploadButton}
             {isImporting ? (
-              <SourceProcessingProgress className="w-full max-w-60 text-left" label="正在上传并解析资料" />
+              <SourceProcessingProgress
+                className="w-full max-w-60 text-left"
+                label={uploadProgress === 100 ? "上传完成，正在创建处理任务" : "正在上传资料"}
+                value={uploadProgress ?? undefined}
+              />
             ) : (
               <span>{isDragActive ? "松开上传资料。" : "拖拽文件到这里，或点击上传资料。"}</span>
             )}

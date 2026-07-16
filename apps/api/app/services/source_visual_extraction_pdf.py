@@ -7,7 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from app.models import SourceVisualAsset
 
@@ -107,7 +107,11 @@ class PdfVisualCluePage:
     height: int
 
 
-def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
+def extract_pdf_visuals(
+    path: Path,
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> SourceVisualAdapterResult:
     try:
         import fitz  # type: ignore[import-not-found]
     except Exception:
@@ -136,6 +140,8 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                 ],
             )
         for page_index in range(document.page_count):
+            if progress_callback is not None:
+                progress_callback(page_index, document.page_count)
             page = document.load_page(page_index)
             page_rect = page.rect
             occupied: list[tuple[float, float, float, float]] = []
@@ -401,6 +407,8 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                 break
 
     finally:
+        if progress_callback is not None and not render_budget.exhausted:
+            progress_callback(document.page_count, document.page_count)
         document.close()
     if render_budget.exhausted:
         warnings.append("PDF visual indexing stopped at the configured render resource budget.")
