@@ -97,8 +97,10 @@ def test_pdf_extractor_rejects_full_page_scan_layer_but_keeps_real_figure(
     image_visuals = [visual for visual in result.visuals if visual.kind == "image"]
     assert result.status == "ready"
     assert len(image_visuals) == 1
-    assert image_visuals[0].bbox[0] > 0.20
-    assert image_visuals[0].bbox[2] < 0.80
+    assert image_visuals[0].bbox[0] < 0.20
+    assert image_visuals[0].bbox[2] > 0.80
+    assert image_visuals[0].metadata["visual_completeness_verified"] is True
+    assert image_visuals[0].metadata["embedded_component_count"] == 1
 
 
 def test_pdf_extractor_crops_caption_anchored_visual_baked_into_page_scan(
@@ -126,7 +128,7 @@ def test_pdf_extractor_crops_caption_anchored_visual_baked_into_page_scan(
     scan_regions = [
         visual
         for visual in result.visuals
-        if visual.metadata.get("pdf_region_type") == "caption_anchored_scan_region"
+        if visual.metadata.get("pdf_region_type") == "caption_anchored_logical_region"
     ]
     assert result.status == "ready"
     assert len(scan_regions) == 1
@@ -135,7 +137,61 @@ def test_pdf_extractor_crops_caption_anchored_visual_baked_into_page_scan(
     assert region.caption.startswith("Figure 2-1")
     assert 0.08 < region.bbox[1] < region.bbox[3] < 0.40
     assert region.metadata["codex_render_policy"] == "recreate_simple_or_keep_original"
+    assert region.metadata["visual_completeness_verified"] is True
     assert region.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_pdf_extractor_merges_captioned_components_into_one_complete_logical_visual(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "captioned-composite.pdf"
+    component = ImageReader(io.BytesIO(_png(90, 60, label="component")))
+    pdf = canvas.Canvas(str(path), pagesize=(600, 800))
+    pdf.drawImage(component, 150, 500, width=90, height=60)
+    pdf.drawImage(component, 300, 500, width=90, height=60)
+    pdf.drawString(180, 470, "Figure 3-10: Composite workflow")
+    pdf.save()
+
+    result = extract_pdf_visuals(path)
+
+    logical_regions = [
+        visual
+        for visual in result.visuals
+        if visual.metadata.get("pdf_region_type") == "caption_anchored_logical_region"
+    ]
+    assert result.status == "ready"
+    assert len(logical_regions) == 1
+    assert logical_regions[0].metadata["embedded_component_count"] == 2
+    assert logical_regions[0].metadata["visual_completeness_verified"] is True
+    assert logical_regions[0].bbox[0] < 0.15
+    assert logical_regions[0].bbox[2] > 0.85
+    assert not any(
+        visual.metadata.get("pdf_region_type") == "embedded_image"
+        for visual in result.visuals
+    )
+
+
+def test_pdf_extractor_marks_unbounded_neighboring_components_unverified(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unbounded-components.pdf"
+    component = ImageReader(io.BytesIO(_png(100, 70, label="component")))
+    pdf = canvas.Canvas(str(path), pagesize=(600, 800))
+    pdf.drawImage(component, 170, 420, width=100, height=70)
+    pdf.drawImage(component, 285, 420, width=100, height=70)
+    pdf.save()
+
+    result = extract_pdf_visuals(path)
+
+    fragments = [
+        visual
+        for visual in result.visuals
+        if visual.metadata.get("pdf_region_type") == "embedded_image"
+    ]
+    assert result.status == "partial"
+    assert len(fragments) == 2
+    assert all(item.metadata["force_unverified"] is True for item in fragments)
+    assert all(item.metadata["visual_completeness_verified"] is False for item in fragments)
 
 
 def test_materialization_preserves_cross_page_and_verified_anchor_fields(

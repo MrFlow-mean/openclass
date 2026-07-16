@@ -25,7 +25,8 @@ SCAN_REGION_SIDE_MARGIN_RATIO = 0.055
 SCAN_REGION_CAPTION_GAP = 4.0
 _FIGURE_CAPTION_RE = re.compile(
     r"^(?:图|表|figure|fig\.?|table)\s*[A-Za-z0-9IVXivx]+"
-    r"(?:\s*[-–—－.]\s*[A-Za-z0-9IVXivx]+)?(?:\s|$)",
+    r"(?:\s*[-–—－.]\s*[A-Za-z0-9IVXivx]+)?"
+    r"(?=\s|$|[:：,，。;；(（\u3400-\u9fff])",
     re.IGNORECASE,
 )
 
@@ -79,6 +80,7 @@ class _CaptionAnchoredScanRegion:
     caption: str
     caption_rect: tuple[float, float, float, float]
     text_row_count: int
+    embedded_component_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,10 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                 break
 
             seen_image_rects: set[tuple[float, float, float, float]] = set()
+            image_occurrences: list[
+                tuple[int, int, int, tuple[float, float, float, float], str]
+            ] = []
+            logical_component_rects: list[tuple[float, float, float, float]] = []
             try:
                 images = page.get_images(full=True)
             except Exception:
@@ -204,6 +210,7 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                     rounded = tuple(round(value, 2) for value in rect)
                     if rounded in seen_image_rects:
                         continue
+                    seen_image_rects.add(rounded)
                     if _is_full_page_background_region(rect, page_rect):
                         # Scanned/OCR PDFs commonly expose the entire scanned page as
                         # one image underneath a text layer.  It is a page carrier,
@@ -212,48 +219,121 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
                         # page edges at once.
                         has_full_page_carrier = True
                         continue
+                    if _valid_text_rect(rect):
+                        logical_component_rects.append(rect)
                     if not _useful_region(rect, page_rect):
                         continue
-                    if any(_overlap_ratio(rect, prior) > 0.92 for prior in occupied):
-                        continue
-                    seen_image_rects.add(rounded)
-                    rendered, width, height = _render_region(page, rect, budget=render_budget)
-                    if render_budget.exhausted:
-                        break
-                    if not rendered:
-                        continue
-                    visuals.append(
-                        RawSourceVisual(
-                            kind="image",
-                            source_locator=(
-                                f"pdf:page:{page_index + 1}:image:{image_index}:occurrence:{occurrence_index}"
-                            ),
-                            native_order=native_order,
-                            content=rendered,
-                            mime_type="image/png",
-                            page_no=page_index + 1,
-                            bbox=_normalize_bbox(rect, page_rect),
-                            caption=_caption_below(page, rect),
-                            ocr_text=_text_in_rect(page, rect),
-                            width=width,
-                            height=height,
-                            confidence=0.94,
-                            metadata={
-                                "pdf_region_type": "embedded_image",
-                                "xref": xref,
-                                **(
-                                    {"native_object_identity": native_object_identity}
-                                    if native_object_identity
-                                    else {}
-                                ),
-                                **_boundary_gap_metadata(page, rect),
-                            },
-                        )
+                    image_occurrences.append(
+                        (image_index, xref, occurrence_index, rect, native_object_identity)
                     )
-                    native_order += 1
-                    occupied.append(rect)
+
+            logical_regions = _caption_anchored_scan_regions(
+                page,
+                embedded_rects=logical_component_rects,
+            )
+            if len(logical_regions) > MAX_PDF_OBJECTS_PER_PAGE:
+                render_budget.exhausted = True
+                break
+            for region_index, region in enumerate(logical_regions):
+                rect = region.rect
+                if any(_substantial_overlap(rect, prior, threshold=0.72) for prior in occupied):
+                    continue
+                rendered, width, height = _render_region(
+                    page,
+                    rect,
+                    budget=render_budget,
+                )
                 if render_budget.exhausted:
                     break
+                if not rendered:
+                    continue
+                component_count = region.embedded_component_count
+                visuals.append(
+                    RawSourceVisual(
+                        kind="image" if component_count else "diagram",
+                        source_locator=(
+                            f"pdf:page:{page_index + 1}:logical-figure:{region_index}"
+                        ),
+                        native_order=native_order,
+                        content=rendered,
+                        mime_type="image/png",
+                        page_no=page_index + 1,
+                        bbox=_normalize_bbox(rect, page_rect),
+                        caption=region.caption,
+                        ocr_text=_text_in_rect(page, rect),
+                        width=width,
+                        height=height,
+                        confidence=0.96 if component_count else 0.9,
+                        metadata={
+                            "pdf_region_type": "caption_anchored_logical_region",
+                            "scan_page_carrier": has_full_page_carrier,
+                            "caption_bbox": _normalize_bbox(region.caption_rect, page_rect),
+                            "visual_text_row_count": region.text_row_count,
+                            "embedded_component_count": component_count,
+                            "visual_completeness_verified": True,
+                            "visual_completeness_status": "verified_logical_region",
+                            "requires_full_visual_capture": True,
+                            "codex_render_policy": "recreate_simple_or_keep_original",
+                            **_boundary_gap_metadata(page, rect),
+                        },
+                    )
+                )
+                native_order += 1
+                occupied.append(rect)
+            if render_budget.exhausted:
+                break
+
+            for image_index, xref, occurrence_index, rect, native_object_identity in image_occurrences:
+                if any(_overlap_ratio(rect, prior) > 0.92 for prior in occupied):
+                    continue
+                self_contained = _embedded_image_is_self_contained(
+                    rect,
+                    page_rect,
+                    logical_component_rects,
+                )
+                rendered, width, height = _render_region(page, rect, budget=render_budget)
+                if render_budget.exhausted:
+                    break
+                if not rendered:
+                    continue
+                visuals.append(
+                    RawSourceVisual(
+                        kind="image",
+                        source_locator=(
+                            f"pdf:page:{page_index + 1}:image:{image_index}:occurrence:{occurrence_index}"
+                        ),
+                        native_order=native_order,
+                        content=rendered,
+                        mime_type="image/png",
+                        page_no=page_index + 1,
+                        bbox=_normalize_bbox(rect, page_rect),
+                        caption=_caption_below(page, rect),
+                        ocr_text=_text_in_rect(page, rect),
+                        width=width,
+                        height=height,
+                        confidence=0.94,
+                        metadata={
+                            "pdf_region_type": "embedded_image",
+                            "xref": xref,
+                            **(
+                                {"native_object_identity": native_object_identity}
+                                if native_object_identity
+                                else {}
+                            ),
+                            "visual_completeness_verified": self_contained,
+                            "visual_completeness_status": (
+                                "verified_native_object"
+                                if self_contained
+                                else "ambiguous_embedded_component"
+                            ),
+                            "requires_full_visual_capture": True,
+                            "force_unverified": not self_contained,
+                            **_boundary_gap_metadata(page, rect),
+                        },
+                    )
+                )
+                native_order += 1
+                occupied.append(rect)
             if render_budget.exhausted:
                 break
 
@@ -307,57 +387,6 @@ def extract_pdf_visuals(path: Path) -> SourceVisualAdapterResult:
             if render_budget.exhausted:
                 break
 
-            if has_full_page_carrier:
-                scan_regions = _caption_anchored_scan_regions(page)
-                if len(scan_regions) > MAX_PDF_OBJECTS_PER_PAGE:
-                    render_budget.exhausted = True
-                    break
-                for region_index, region in enumerate(scan_regions):
-                    rect = region.rect
-                    if any(_overlap_ratio(rect, prior) > 0.72 for prior in occupied):
-                        continue
-                    rendered, width, height = _render_region(
-                        page,
-                        rect,
-                        budget=render_budget,
-                    )
-                    if render_budget.exhausted:
-                        break
-                    if not rendered:
-                        continue
-                    visuals.append(
-                        RawSourceVisual(
-                            kind="diagram",
-                            source_locator=(
-                                f"pdf:page:{page_index + 1}:caption-region:{region_index}"
-                            ),
-                            native_order=native_order,
-                            content=rendered,
-                            mime_type="image/png",
-                            page_no=page_index + 1,
-                            bbox=_normalize_bbox(rect, page_rect),
-                            caption=region.caption,
-                            ocr_text=_text_in_rect(page, rect),
-                            width=width,
-                            height=height,
-                            confidence=0.88,
-                            metadata={
-                                "pdf_region_type": "caption_anchored_scan_region",
-                                "scan_page_carrier": True,
-                                "caption_bbox": _normalize_bbox(
-                                    region.caption_rect,
-                                    page_rect,
-                                ),
-                                "visual_text_row_count": region.text_row_count,
-                                "codex_render_policy": "recreate_simple_or_keep_original",
-                                **_boundary_gap_metadata(page, rect),
-                            },
-                        )
-                    )
-                    native_order += 1
-                    occupied.append(rect)
-                if render_budget.exhausted:
-                    break
     finally:
         document.close()
     if render_budget.exhausted:
@@ -586,12 +615,17 @@ def _page_text_lines(page: Any) -> tuple[list[_PdfTextLine], bool]:
     return lines, reliable
 
 
-def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion]:
-    """Find local visuals baked into a full-page scan using verified caption layout.
+def _caption_anchored_scan_regions(
+    page: Any,
+    *,
+    embedded_rects: Iterable[tuple[float, float, float, float]] = (),
+) -> list[_CaptionAnchoredScanRegion]:
+    """Find complete logical visuals using verified caption and component layout.
 
     The crop is derived from page geometry, not a document- or subject-specific
-    caption.  It fails closed unless a centered caption, a preceding prose
-    boundary, and non-prose visual rows all agree on one bounded region.
+    caption. It combines nearby embedded image components with text inside the
+    same caption-bounded region. If neither components nor non-prose visual rows
+    establish a complete region, no crop is emitted.
     """
 
     lines, reliable = _page_text_lines(page)
@@ -604,6 +638,7 @@ def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion
     page_rect = page.rect
     page_width = max(1.0, float(page_rect.width))
     page_height = max(1.0, float(page_rect.height))
+    candidate_rects = [rect for rect in embedded_rects if _valid_text_rect(rect)]
     regions: list[_CaptionAnchoredScanRegion] = []
     for caption in rows:
         normalized_caption = " ".join(caption.text.split())
@@ -617,31 +652,59 @@ def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion
         ):
             continue
 
+        nearby_components = [
+            rect
+            for rect in candidate_rects
+            if rect[3] <= caption.rect[1] + 2.0
+            and 0.0 <= caption.rect[1] - rect[3] <= page_height * 0.16
+        ]
+        component_top = (
+            min(rect[1] for rect in nearby_components)
+            if nearby_components
+            else caption.rect[1]
+        )
+        nearby_component_text_rows = [
+            row
+            for row in rows
+            if nearby_components
+            and row.rect[1] >= float(page_rect.y0) + page_height * 0.08
+            and row.rect[3] <= component_top + 2.0
+            and component_top - row.rect[3] <= page_height * 0.05
+            and not _looks_like_body_text_row(row, page_rect)
+        ]
+        component_visual_top = min(
+            [component_top, *(row.rect[1] for row in nearby_component_text_rows)]
+        )
         preceding_body_rows = [
             row
             for row in rows
-            if row.rect[3] <= caption.rect[1] - 3.0
+            if row.rect[3] <= component_top - 3.0
             and caption.rect[1] - row.rect[3] <= page_height * 0.48
             and _looks_like_body_text_row(row, page_rect)
         ]
-        if not preceding_body_rows:
+        if not preceding_body_rows and not nearby_components:
             continue
-        boundary = max(preceding_body_rows, key=lambda row: row.rect[3])
-        continuation_rows = [
-            row
-            for row in rows
-            if boundary.rect[3] <= row.rect[1]
-            and row.rect[1] - boundary.rect[3]
-            <= max(8.0, (boundary.rect[3] - boundary.rect[1]) * 0.8)
-            and _looks_like_body_text_continuation(row, page_rect)
-        ]
-        if continuation_rows:
-            boundary = max(continuation_rows, key=lambda row: row.rect[3])
-        line_height = max(1.0, boundary.rect[3] - boundary.rect[1])
-        top = boundary.rect[3] + max(3.0, line_height * 0.35)
+        if preceding_body_rows:
+            boundary = max(preceding_body_rows, key=lambda row: row.rect[3])
+            continuation_rows = [
+                row
+                for row in rows
+                if boundary.rect[3] <= row.rect[1]
+                and row.rect[3] <= component_top - 3.0
+                and row.rect[1] - boundary.rect[3]
+                <= max(8.0, (boundary.rect[3] - boundary.rect[1]) * 0.8)
+                and _looks_like_body_text_continuation(row, page_rect)
+            ]
+            if continuation_rows:
+                boundary = max(continuation_rows, key=lambda row: row.rect[3])
+            line_height = max(1.0, boundary.rect[3] - boundary.rect[1])
+            top = boundary.rect[3] + max(3.0, line_height * 0.35)
+        else:
+            top = max(float(page_rect.y0), component_visual_top - 4.0)
         bottom = caption.rect[1] - SCAN_REGION_CAPTION_GAP
         height_ratio = (bottom - top) / page_height
-        if height_ratio < 0.065 or height_ratio > 0.56:
+        minimum_height_ratio = 0.035 if nearby_components else 0.065
+        if height_ratio < minimum_height_ratio or height_ratio > 0.56:
             continue
 
         visual_rows = [
@@ -655,7 +718,7 @@ def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion
             if row.fragment_count >= 3
             or (row.rect[2] - row.rect[0]) / page_width < 0.48
         ]
-        if not visual_rows or not non_prose_rows:
+        if not nearby_components and (not visual_rows or not non_prose_rows):
             continue
 
         side_margin = page_width * SCAN_REGION_SIDE_MARGIN_RATIO
@@ -670,7 +733,7 @@ def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion
         )
         if not _useful_region(rect, page_rect):
             continue
-        if any(_overlap_ratio(rect, existing.rect) > 0.80 for existing in regions):
+        if any(_substantial_overlap(rect, existing.rect, threshold=0.80) for existing in regions):
             continue
         regions.append(
             _CaptionAnchoredScanRegion(
@@ -678,6 +741,7 @@ def _caption_anchored_scan_regions(page: Any) -> list[_CaptionAnchoredScanRegion
                 caption=normalized_caption,
                 caption_rect=caption.rect,
                 text_row_count=len(visual_rows),
+                embedded_component_count=len(nearby_components),
             )
         )
     return regions
@@ -1291,3 +1355,41 @@ def _overlap_ratio(first: tuple[float, float, float, float], second: tuple[float
     intersection = max(0.0, right - left) * max(0.0, bottom - top)
     first_area = max(1.0, (first[2] - first[0]) * (first[3] - first[1]))
     return intersection / first_area
+
+
+def _substantial_overlap(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+    *,
+    threshold: float,
+) -> bool:
+    return max(_overlap_ratio(first, second), _overlap_ratio(second, first)) > threshold
+
+
+def _embedded_image_is_self_contained(
+    rect: tuple[float, float, float, float],
+    page_rect: Any,
+    page_image_rects: Iterable[tuple[float, float, float, float]],
+) -> bool:
+    page_width = max(1.0, float(page_rect.width))
+    page_height = max(1.0, float(page_rect.height))
+    width_ratio = max(0.0, rect[2] - rect[0]) / page_width
+    height_ratio = max(0.0, rect[3] - rect[1]) / page_height
+    if width_ratio < 0.16 or height_ratio < 0.07 or width_ratio * height_ratio < 0.015:
+        return False
+
+    for other in page_image_rects:
+        if other == rect:
+            continue
+        horizontal_overlap = _axis_overlap_ratio((rect[0], rect[2]), (other[0], other[2]))
+        vertical_overlap = _axis_overlap_ratio((rect[1], rect[3]), (other[1], other[3]))
+        horizontal_gap = max(0.0, max(rect[0], other[0]) - min(rect[2], other[2]))
+        vertical_gap = max(0.0, max(rect[1], other[1]) - min(rect[3], other[3]))
+        same_visual_cluster = (
+            vertical_overlap >= 0.25 and horizontal_gap <= page_width * 0.08
+        ) or (
+            horizontal_overlap >= 0.25 and vertical_gap <= page_height * 0.06
+        )
+        if same_visual_cluster:
+            return False
+    return True
