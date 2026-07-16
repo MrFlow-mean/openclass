@@ -36,7 +36,6 @@ def test_create_empty_lesson_has_blank_document_and_no_ai_runtime() -> None:
     assert current_head_commit(lesson).snapshot.content_text == ""
     assert lesson.learning_requirements is None
     assert lesson.board_task_requirements is None
-    assert lesson.active_interaction_session is None
 
 
 def test_branch_switch_and_restore_keep_document_history_only() -> None:

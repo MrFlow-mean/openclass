@@ -76,7 +76,7 @@ def test_health_reports_codex_only_backend(api_client: TestClient, monkeypatch: 
     assert not any(route.path.startswith("/api/realtime") for route in main_module.app.routes)
     assert not any("/research" in route.path for route in main_module.app.routes)
     evidence_routes = [route.path for route in main_module.app.routes if "/evidence/" in route.path]
-    assert evidence_routes == ["/api/lessons/{lesson_id}/evidence/pending"]
+    assert evidence_routes == []
 
 
 def _docx_text_nodes(content: bytes) -> list[str]:
@@ -102,10 +102,6 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     assert generated.status_code == 200
     package = generated.json()
     lesson = package["lessons"][0]
-
-    pending_evidence = api_client.get(f"/api/lessons/{lesson['id']}/evidence/pending")
-    assert pending_evidence.status_code == 200
-    assert pending_evidence.json() is None
 
     first_document = _document_with_text(lesson["board_document"], "First smoke version")
     first_save = api_client.post(

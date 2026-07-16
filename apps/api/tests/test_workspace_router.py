@@ -124,4 +124,3 @@ def test_generate_lesson_without_blank_flag_still_creates_codex_only_document(mo
     assert lesson.board_document.content_text == ""
     assert lesson.learning_requirements is None
     assert lesson.board_task_requirements is None
-    assert lesson.active_interaction_session is None

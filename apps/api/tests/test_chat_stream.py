@@ -177,7 +177,7 @@ def test_chat_stream_emits_agent_activity_before_final(monkeypatch) -> None:
                 turn_id="agentturn_test",
                 stage="turn_decision",
                 label="判断任务类型",
-                role="AgentTurnDecision",
+                role="codex",
             )
         ]
         return response

@@ -1125,7 +1125,6 @@ def process_codex_chat_on_lesson(
                 agent_activity=teaching_result.activity,
                 learning_requirement_sheet=build_requirements(lesson.title),
                 active_requirement_sheet=None,
-                active_interaction_session=None,
                 learning_clarification=_neutral_clarification(),
                 board_task_sheet=teaching_result.board_task,
                 active_board_task_sheet=None,
@@ -1141,7 +1140,6 @@ def process_codex_chat_on_lesson(
                 ),
                 requirement_cleared=True,
                 board_document_operation_status="none",
-                board_patch_diff=[],
                 teaching_progress=teaching_result.progress,
                 auto_teaching_operation_status=teaching_result.status,
                 auto_teaching_operation_failure_reason=teaching_result.failure_reason,
@@ -1268,7 +1266,6 @@ def process_codex_chat_on_lesson(
                 lesson.board_teaching_progress = None
                 lesson.learning_requirements = None
                 lesson.board_task_requirements = None
-                lesson.active_interaction_session = None
                 clarification = _neutral_clarification()
                 metadata = {
                     "kind": "board_document_edit" if changed else "basic_chat",
@@ -1301,7 +1298,6 @@ def process_codex_chat_on_lesson(
                     ],
                     "active_requirement_sheet_after": None,
                     "active_board_task_sheet_after": None,
-                    "active_interaction_session_after": None,
                     "learning_clarification_after": clarification.model_dump(mode="json"),
                     "requirement_cleared": True,
                     "board_task_cleared": True,
@@ -1329,7 +1325,6 @@ def process_codex_chat_on_lesson(
                     agent_activity=result.activity,
                     learning_requirement_sheet=build_requirements(lesson.title),
                     active_requirement_sheet=None,
-                    active_interaction_session=None,
                     learning_clarification=clarification,
                     board_task_sheet=None,
                     active_board_task_sheet=None,
@@ -1344,11 +1339,8 @@ def process_codex_chat_on_lesson(
                     ),
                     needs_clarification=False,
                     clarification_questions=[],
-                    scope_options=[],
-                    focus_candidates=[],
                     requirement_cleared=True,
                     board_document_operation_status="succeeded" if changed else "none",
-                    board_patch_diff=[],
                     course_package=workspace_state.package_view_for_lesson(
                         workspace,
                         package,
