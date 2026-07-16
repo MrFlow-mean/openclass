@@ -64,6 +64,7 @@ from app.services.source_grounded_board import (
     resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
+from app.services.source_visual_region_resolution import resolve_visual_clues_for_requirement
 from app.services.source_grounded_board import SOURCE_BOARD_TOKEN_BUDGET
 
 
@@ -777,6 +778,13 @@ def _prepare_source_generation_inputs(
     on_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> tuple[LearningRequirementSheet, list[str]]:
     prepared = requirement.model_copy(deep=True)
+    prepared = resolve_visual_clues_for_requirement(
+        adapter=adapter,
+        requirement=prepared,
+        owner_user_id=owner_user_id,
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
+    )
     grounding = prepared.source_grounding
     evidence = grounding.frozen_evidence
     if sum(item.token_count for item in evidence) > SOURCE_BOARD_TOKEN_BUDGET:
