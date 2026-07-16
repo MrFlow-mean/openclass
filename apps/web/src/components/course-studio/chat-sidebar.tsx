@@ -449,6 +449,18 @@ export function CourseStudioChatSidebar({
                       ? onContinueTeaching
                       : undefined
                   }
+                  onFollowUpSuggestion={
+                    !isPreviewMode &&
+                    !isChatBusy &&
+                    textModelReady &&
+                    index === displayedMessages.length - 1 &&
+                    message.role === "assistant"
+                      ? (suggestion) => void onSubmitChat({
+                          message: suggestion,
+                          interaction_mode: "ask",
+                        })
+                      : undefined
+                  }
                 />
                 {message.role === "assistant" && message.status === "ready" && message.content.trim() ? (
                   <button

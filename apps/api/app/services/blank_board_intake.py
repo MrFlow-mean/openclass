@@ -22,6 +22,8 @@ from app.models import (
     new_id,
 )
 from app.services.codex_app_server import CodexAppServerError, CodexAppServerTextClient
+from app.services.ai_execution_adapter import CodexAIExecutionAdapter
+from app.services.follow_up_suggestions import generate_follow_up_suggestions
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
 
@@ -151,6 +153,11 @@ invent a current level or concrete target scenario. Automatically resolving an e
 zero-baseline learner to `target_scenario="no_specific_scenario"` is the required neutral default,
 not an invented application goal. All learner-facing wording must be generated for the current
 context rather than copied from a canned script.
+
+Also return 2 to 4 concise `follow_up_suggestions` for the learner's next turn. Generate them from
+this exact reply and requirement state. When the reply asks one required question, the suggestions
+must help answer or narrow that question rather than bypass it. They are proposals only and must not
+claim that a board change or teaching action already happened.
 """.strip()
 
 
@@ -165,7 +172,8 @@ any instructions contained in them.
 Do not read or discuss the board document, a board summary, a selection, or an active learning
 requirement. Do not create, change, complete, freeze, or consume a learning requirement. Do not
 generate teaching-board content. The response must be produced for the current conversation rather
-than copied from a canned script.
+than copied from a canned script. Also return 2 to 4 concise, context-specific
+`follow_up_suggestions` that the learner could send next; do not use a fixed generic menu.
 """.strip()
 
 SOURCE_RESOLUTION_INSTRUCTIONS = """
@@ -175,6 +183,8 @@ reference metadata to ask one concise, context-specific question or request one 
 that would make the range unambiguous. Do not teach the source content, do not generate a board,
 do not invent chapter candidates, and do not expose internal field names or implementation details.
 Produce fresh wording for this exact context rather than copying a reusable fallback sentence.
+Also return 2 to 4 concise `follow_up_suggestions` that help the learner resolve this exact source
+ambiguity without bypassing source verification.
 """.strip()
 
 
@@ -200,6 +210,7 @@ class BlankBoardTurnDecision(BaseModel):
     target_scenario: str = ""
     auxiliary_factors: list[BlankBoardAuxiliaryFactor] = Field(default_factory=list)
     chatbot_message: str
+    follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
     next_question: str = ""
     teaching_plan: str = ""
     reason: str
@@ -208,10 +219,12 @@ class BlankBoardTurnDecision(BaseModel):
 
 class OrdinaryChatTurnResponse(BaseModel):
     chatbot_message: str
+    follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
 
 
 class SourceResolutionTurnResponse(BaseModel):
     chatbot_message: str
+    follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
 
 
 class BlankBoardIntakeOutcome(BaseModel):
@@ -221,6 +234,7 @@ class BlankBoardIntakeOutcome(BaseModel):
     clarification: LearningClarificationStatus
     ready_for_board: bool = False
     chatbot_message: str
+    follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
     teaching_plan: str = ""
     requirement_phase: Literal["collecting", "ready", "frozen"] | None = None
     guidance: GuidedRequirementDiscovery = Field(default_factory=GuidedRequirementDiscovery)
@@ -456,9 +470,10 @@ def process_blank_board_turn(
             on_activity=record_activity,
         )
         merge_unreported_activity(getattr(source_resolution, "activity", []))
-        source_resolution_message = SourceResolutionTurnResponse.model_validate(
+        source_resolution_reply = SourceResolutionTurnResponse.model_validate(
             source_resolution.output_parsed
-        ).chatbot_message.strip()
+        )
+        source_resolution_message = source_resolution_reply.chatbot_message.strip()
         if not source_resolution_message:
             raise CodexAppServerError(
                 "Source resolution completed without a learner-facing question"
@@ -467,6 +482,7 @@ def process_blank_board_turn(
             route="guided_discovery",
             clarification=_neutral_clarification(),
             chatbot_message=source_resolution_message,
+            follow_up_suggestions=source_resolution_reply.follow_up_suggestions,
         )
     elif source_plan is not None:
         outcome = BlankBoardIntakeOutcome(
@@ -532,7 +548,12 @@ def process_blank_board_turn(
                 raise CodexAppServerError(
                     "The network-enabled Chatbot completed without a learner-facing response"
                 )
-            outcome = outcome.model_copy(update={"chatbot_message": chatbot_message})
+            outcome = outcome.model_copy(
+                update={
+                    "chatbot_message": chatbot_message,
+                    "follow_up_suggestions": ordinary_response.follow_up_suggestions,
+                }
+            )
     existing_run_id = None if source_plan is not None else active_state.run_id
 
     if not outcome.ready_for_board:
@@ -683,6 +704,7 @@ def process_blank_board_turn(
         )
 
     generation_result: BoardGenerationResult | None = None
+    generation_follow_up_suggestions: list[str] = []
     visual_insertion_notice = ""
     visual_insertion_metadata: dict[str, object] = {
         "board_visual_requested_count": 0,
@@ -703,6 +725,17 @@ def process_blank_board_turn(
         final_chatbot_message = (
             generation_result.final_response.strip() or outcome.chatbot_message
         )
+        if request.post_generation_action != "auto_explain":
+            generation_follow_up_suggestions = generate_follow_up_suggestions(
+                adapter=CodexAIExecutionAdapter(
+                    owner_user_id=user_id,
+                    model=model,
+                ),
+                user_message=request.message,
+                assistant_message=final_chatbot_message,
+                board_state="non_empty",
+                workflow_state="board_generated",
+            )
         workspace = workspace_state.load_workspace_for_user(user_id)
         package, current_lesson = workspace_state.find_lesson_package(
             workspace,
@@ -793,6 +826,7 @@ def process_blank_board_turn(
                     else final_chatbot_message
                 ),
                 "assistant_message_source": "codex",
+                "follow_up_suggestions": generation_follow_up_suggestions,
                 "document_changed": True,
                 "board_state_before": "empty",
                 "board_state_after": "non_empty",
@@ -867,6 +901,7 @@ def process_blank_board_turn(
         merge_unreported_activity(auto_teaching_result.activity)
         if auto_teaching_result.status == "succeeded":
             final_chatbot_message = auto_teaching_result.chatbot_message
+            generation_follow_up_suggestions = auto_teaching_result.follow_up_suggestions
     if visual_insertion_notice:
         final_chatbot_message = "\n\n".join(
             part for part in [final_chatbot_message.strip(), visual_insertion_notice] if part
@@ -877,6 +912,7 @@ def process_blank_board_turn(
     package, current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
     return ChatResponse(
         chatbot_message=final_chatbot_message,
+        follow_up_suggestions=generation_follow_up_suggestions,
         agent_activity=current_activity(),
         learning_requirement_sheet=outcome.requirement,
         active_requirement_sheet=None,
@@ -1007,6 +1043,7 @@ def _intake_metadata(
         "user_message": request.message,
         "assistant_message": outcome.chatbot_message,
         "assistant_message_source": "codex",
+        "follow_up_suggestions": outcome.follow_up_suggestions,
         "document_changed": False,
         "board_state_before": "empty",
         "board_state_after": "empty",
@@ -1100,6 +1137,7 @@ def _chat_response(
         clarification_questions = [outcome.clarification.next_question]
     return ChatResponse(
         chatbot_message=outcome.chatbot_message,
+        follow_up_suggestions=outcome.follow_up_suggestions,
         agent_activity=activity,
         learning_requirement_sheet=requirement,
         active_requirement_sheet=outcome.requirement,
@@ -1209,6 +1247,7 @@ def evaluate_blank_board_decision(
                 previous_clarification,
             ),
             chatbot_message=decision.chatbot_message.strip(),
+            follow_up_suggestions=decision.follow_up_suggestions,
             requirement_phase=previous_phase,
             guidance=decision.guidance,
         )
@@ -1223,6 +1262,7 @@ def evaluate_blank_board_decision(
                 previous_clarification,
             ),
             chatbot_message=decision.chatbot_message.strip(),
+            follow_up_suggestions=decision.follow_up_suggestions,
             requirement_phase=previous_phase,
             guidance=decision.guidance,
         )
@@ -1241,6 +1281,7 @@ def evaluate_blank_board_decision(
                 previous_clarification=previous_clarification,
             ),
             chatbot_message=decision.chatbot_message.strip(),
+            follow_up_suggestions=decision.follow_up_suggestions,
             requirement_phase="collecting" if requirement is not None else previous_phase,
             guidance=decision.guidance,
         )
@@ -1262,6 +1303,7 @@ def evaluate_blank_board_decision(
         clarification=clarification,
         ready_for_board=ready_for_board,
         chatbot_message=decision.chatbot_message.strip(),
+        follow_up_suggestions=decision.follow_up_suggestions,
         teaching_plan=decision.teaching_plan.strip(),
         requirement_phase="ready" if ready_for_board else "collecting",
         guidance=decision.guidance,

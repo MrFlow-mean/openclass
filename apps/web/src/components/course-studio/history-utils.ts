@@ -53,6 +53,7 @@ export function createChatMessage(
       | "editedFromCommitId"
       | "agentActivity"
       | "guidedRequirementDiscovery"
+      | "followUpSuggestions"
     >
   >
 ): ChatMessage {
@@ -84,6 +85,14 @@ export function formatDate(value: string) {
 export function metadataText(commit: CommitRecord, key: string): string | null {
   const value = commit.metadata?.[key];
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function metadataStringList(commit: CommitRecord, key: string): string[] {
+  const value = commit.metadata?.[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => typeof item === "string" && item.trim() ? [item.trim()] : []).slice(0, 4);
 }
 
 export function metadataBool(commit: CommitRecord, key: string): boolean {
@@ -421,6 +430,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
             guidedRequirementDiscovery: guidedRequirementDiscoveryFromMetadata(
               commit.metadata?.guided_requirement_discovery
             ),
+            followUpSuggestions: metadataStringList(commit, "follow_up_suggestions"),
             commitId: commit.id,
             parentCommitIds: commit.parent_ids,
           }

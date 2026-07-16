@@ -10,6 +10,7 @@ import {
   Copy,
   LoaderCircle,
   MessageSquare,
+  MoveUpRight,
   PencilLine,
   Sparkles,
   TextQuote,
@@ -36,6 +37,7 @@ export type CourseChatMessageView = {
   selection?: SelectionRef | null;
   agentActivity?: AgentActivityEvent[];
   guidedRequirementDiscovery?: GuidedRequirementDiscovery | null;
+  followUpSuggestions?: string[];
   teachingProgress?: SectionTeachingProgress | null;
   commitId?: string | null;
   parentCommitIds?: string[];
@@ -173,6 +175,7 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
 export function CourseChatMessage({
   message,
   onContinueTeaching,
+  onFollowUpSuggestion,
   onStartEdit,
   isEditing = false,
   editingContent = "",
@@ -183,6 +186,7 @@ export function CourseChatMessage({
 }: {
   message: CourseChatMessageView;
   onContinueTeaching?: () => void;
+  onFollowUpSuggestion?: (suggestion: string) => void;
   onStartEdit?: () => void;
   isEditing?: boolean;
   editingContent?: string;
@@ -199,6 +203,7 @@ export function CourseChatMessage({
   const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
   const teachingProgress = message.teachingProgress;
   const agentActivity = message.agentActivity ?? [];
+  const followUpSuggestions = message.followUpSuggestions ?? [];
   const hasContent = message.content.trim().length > 0;
 
   async function copyMessage() {
@@ -339,6 +344,27 @@ export function CourseChatMessage({
                 ) : null}
               </div>
             ) : null}
+          </div>
+        ) : null}
+
+        {isAssistant && !isPending && !isError && followUpSuggestions.length && onFollowUpSuggestion ? (
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <p className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+              接下来可以
+            </p>
+            <div className="divide-y divide-gray-100">
+              {followUpSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => onFollowUpSuggestion(suggestion)}
+                  className="group/suggestion flex w-full items-start gap-2.5 px-3 py-2.5 text-left text-[12px] leading-5 text-gray-700 transition hover:bg-gray-50 hover:text-gray-950"
+                >
+                  <MoveUpRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400 transition group-hover/suggestion:text-gray-700" />
+                  <span>{suggestion}</span>
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
 

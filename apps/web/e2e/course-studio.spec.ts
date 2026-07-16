@@ -609,6 +609,10 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   const userMessage = `我想学习一个新知识点 ${unique}`;
   const assistantOpening = `这是已持久化的学习需求回复 ${unique}`;
   const assistantMessage = `${assistantOpening}\n$$\nx(t) = \\sin(2\\pi t)\n$$\n向量 $$\\boldsymbol{x}$$ 也应显示为行内公式。\n公式后面的说明仍应正常显示。`;
+  const followUpSuggestions = [
+    `用一个生活场景解释这个公式 ${unique}`,
+    `进一步说明这个向量的含义 ${unique}`,
+  ];
   let persistedPackage: Record<string, unknown> | null = null;
 
   await enterAsGuest(page);
@@ -645,6 +649,7 @@ test("restores persisted learning-intake assistant replies after a page refresh"
           user_message: userMessage,
           assistant_message: assistantMessage,
           assistant_message_source: "chatbot_learning_intake",
+          follow_up_suggestions: followUpSuggestions,
         },
       });
       branch.head_commit_id = commitId;
@@ -658,6 +663,9 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   await expect(chatSidebar.getByText(userMessage)).toBeVisible();
   await expect(chatSidebar.getByText(assistantOpening)).toBeVisible();
   await expect(chatSidebar.getByText("公式后面的说明仍应正常显示。")).toBeVisible();
+  await expect(chatSidebar.getByText("接下来可以")).toBeVisible();
+  await expect(chatSidebar.getByRole("button", { name: followUpSuggestions[0] })).toBeVisible();
+  await expect(chatSidebar.getByRole("button", { name: followUpSuggestions[1] })).toBeVisible();
   await expect(chatSidebar.locator(".katex-display")).toHaveCount(1);
   await expect(chatSidebar.locator(".katex")).toHaveCount(2);
   await expect(chatSidebar).not.toContainText("$$");

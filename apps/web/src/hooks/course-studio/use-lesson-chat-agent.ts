@@ -564,12 +564,14 @@ export function useLessonChatAgent({
               ? {
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
+                  followUpSuggestions: response.follow_up_suggestions ?? [],
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
               : {
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
+                  followUpSuggestions: response.follow_up_suggestions ?? [],
                 }
           )
         );
@@ -586,12 +588,14 @@ export function useLessonChatAgent({
               ? {
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
+                  followUpSuggestions: response.follow_up_suggestions ?? [],
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
               : {
                   agentActivity: finalAgentActivity,
                   guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
+                  followUpSuggestions: response.follow_up_suggestions ?? [],
                 }
           )
         );

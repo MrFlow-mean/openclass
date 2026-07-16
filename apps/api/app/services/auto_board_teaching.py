@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from markdown_it import MarkdownIt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import (
     AgentActivityEvent,
@@ -37,17 +37,22 @@ You are the learner-facing Chatbot in OpenClass. The Board AI has already select
 one board section. Explain only from the supplied directive. Do not claim that you read the whole
 board, do not add unsupported facts, do not write or edit the board, and do not ask whether to begin.
 Teach the current section naturally and stop after this section so the learner can continue later.
+Also return 2 to 4 concise, context-specific `follow_up_suggestions` that the learner could send as
+their next turn. They are proposals, not executed actions, and must stay within the authorized
+section or ask to continue through the normal workflow. Do not use a fixed generic menu.
 """
 
 
 class _LearnerExplanation(BaseModel):
     chatbot_message: str
+    follow_up_suggestions: list[str] = Field(default_factory=list, max_length=4)
 
 
 @dataclass(frozen=True)
 class AutoTeachingResult:
     status: Literal["succeeded", "failed"]
     chatbot_message: str = ""
+    follow_up_suggestions: list[str] = field(default_factory=list)
     failure_reason: str | None = None
     board_task: BoardTaskRequirementSheet | None = None
     board_task_run_id: str | None = None
@@ -222,6 +227,11 @@ def _teach_section(
         activity.extend(explanation_response.activity)
         explanation = _LearnerExplanation.model_validate(explanation_response.output_parsed)
         chatbot_message = explanation.chatbot_message.strip()
+        follow_up_suggestions = [
+            suggestion.strip()
+            for suggestion in explanation.follow_up_suggestions[:4]
+            if suggestion.strip()
+        ]
         if not chatbot_message:
             raise RuntimeError("empty_board_explanation")
     except Exception as exc:
@@ -270,6 +280,7 @@ def _teach_section(
             "user_message": "",
             "assistant_message": chatbot_message,
             "assistant_message_source": "chatbot_board_directed",
+            "follow_up_suggestions": follow_up_suggestions,
             "document_changed": False,
             "board_task_run_id": run_id,
             "board_task_version_id": version_id,
@@ -294,6 +305,7 @@ def _teach_section(
     return AutoTeachingResult(
         status="succeeded",
         chatbot_message=chatbot_message,
+        follow_up_suggestions=follow_up_suggestions,
         board_task=task,
         board_task_run_id=run_id,
         board_task_version_id=version_id,

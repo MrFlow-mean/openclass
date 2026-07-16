@@ -52,6 +52,7 @@ from app.services.codex_app_server import (
     run_codex_thread_turn,
 )
 from app.services.history import commit_operations, current_head_commit
+from app.services.follow_up_suggestions import generate_follow_up_suggestions
 from app.services.lesson_factory import build_requirements
 from app.services.rich_document import (
     build_document,
@@ -1285,6 +1286,7 @@ def process_codex_chat_on_lesson(
             package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
             return ChatResponse(
                 chatbot_message=teaching_result.chatbot_message,
+                follow_up_suggestions=teaching_result.follow_up_suggestions,
                 agent_activity=teaching_result.activity,
                 learning_requirement_sheet=build_requirements(lesson.title),
                 active_requirement_sheet=None,
@@ -1483,6 +1485,16 @@ def process_codex_chat_on_lesson(
                             "Codex board output would flatten the existing document structure"
                         )
                 changed = document_changed(current_document, next_document)
+                follow_up_suggestions = generate_follow_up_suggestions(
+                    adapter=CodexAIExecutionAdapter(
+                        owner_user_id=user_id,
+                        model=codex_model,
+                    ),
+                    user_message=request.message,
+                    assistant_message=result.final_response,
+                    board_state=board_state_before,
+                    workflow_state="board_changed" if changed else "conversation",
+                )
                 lesson.board_teaching_guide = None
                 lesson.board_teaching_progress = None
                 lesson.learning_requirements = None
@@ -1493,6 +1505,7 @@ def process_codex_chat_on_lesson(
                     "user_message": request.message,
                     "assistant_message": result.final_response,
                     "assistant_message_source": "codex",
+                    "follow_up_suggestions": follow_up_suggestions,
                     "interaction_mode": request.interaction_mode,
                     "selection": (
                         request.selection.model_dump(mode="json")
@@ -1570,6 +1583,7 @@ def process_codex_chat_on_lesson(
                 package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
                 return ChatResponse(
                     chatbot_message=result.final_response,
+                    follow_up_suggestions=follow_up_suggestions,
                     agent_activity=result.activity,
                     learning_requirement_sheet=build_requirements(lesson.title),
                     active_requirement_sheet=None,

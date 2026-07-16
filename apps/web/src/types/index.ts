@@ -859,6 +859,7 @@ export interface GuidedRequirementDiscovery {
 
 export interface ChatResponse {
   chatbot_message: string;
+  follow_up_suggestions?: string[];
   agent_activity?: AgentActivityEvent[];
   learning_requirement_sheet: LearningRequirementSheet;
   active_requirement_sheet?: LearningRequirementSheet | null;
