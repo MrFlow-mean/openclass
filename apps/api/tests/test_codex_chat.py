@@ -398,6 +398,83 @@ def test_untyped_learning_turn_merges_a_selected_level_before_mode_is_resolved()
     assert outcome.guidance.selection_target == "learning_content"
 
 
+def test_untyped_zero_baseline_defaults_to_no_specific_scenario() -> None:
+    previous = build_requirements("A broad learning theme")
+    previous.teaching_type = None
+    previous.learning_content = "A broad learning theme"
+    previous.current_level = ""
+    previous.target_scenario = ""
+    previous.theme = previous.learning_content
+    previous.learning_goal = previous.learning_content
+    previous.work_mode = "unknown"
+    previous.granularity = "unclear"
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type=None,
+        learning_content="A broad learning theme",
+        current_level="No prior learning or usable experience in this field",
+        zero_baseline_confirmed=True,
+        chatbot_message="That gives us a neutral starting point.",
+        next_question="Which foundational entry should we start with?",
+        reason="The learner explicitly confirmed a zero baseline.",
+        guidance=GuidedRequirementDiscovery(
+            strategy="entry_point_discovery",
+            selection_target="learning_content",
+            question_title="Which foundational entry should we start with?",
+            learning_map_summary="A compact map of the field's foundational entries.",
+            entry_point_options=[
+                GuidedRequirementEntryPoint(
+                    title="First foundation",
+                    description="Start with one foundational concept.",
+                    answer_value="One foundational concept",
+                )
+            ],
+            recommended_entry_point="First foundation",
+            reason_for_recommendation="It requires no prior foundation.",
+        ),
+    )
+
+    outcome = evaluate_blank_board_decision(
+        decision,
+        previous_requirement=previous,
+    )
+
+    assert outcome.requirement is not None
+    assert outcome.requirement.target_scenario == "无明确应用场景"
+    assert outcome.clarification.missing_items == ["teaching_type"]
+    assert outcome.guidance.selection_target == "learning_content"
+
+
+def test_zero_baseline_does_not_replace_a_confirmed_target_scenario() -> None:
+    previous = build_requirements("A broad learning theme")
+    previous.teaching_type = None
+    previous.learning_content = "A broad learning theme"
+    previous.current_level = ""
+    previous.target_scenario = "A concrete learner-stated purpose"
+    previous.theme = previous.learning_content
+    previous.learning_goal = previous.learning_content
+    previous.work_mode = "unknown"
+    previous.granularity = "unclear"
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type=None,
+        learning_content="A broad learning theme",
+        current_level="No prior learning or usable experience in this field",
+        zero_baseline_confirmed=True,
+        chatbot_message="The learner's starting point is now clear.",
+        next_question="Which foundational entry should we start with?",
+        reason="The learner explicitly confirmed a zero baseline.",
+    )
+
+    outcome = evaluate_blank_board_decision(
+        decision,
+        previous_requirement=previous,
+    )
+
+    assert outcome.requirement is not None
+    assert outcome.requirement.target_scenario == "A concrete learner-stated purpose"
+
+
 def test_unclear_turn_does_not_persist_an_unconfirmed_learning_topic() -> None:
     decision = BlankBoardTurnDecision(
         intent="unclear",
@@ -549,6 +626,28 @@ def test_specific_knowledge_point_is_ready_with_all_core_factors() -> None:
     assert outcome.clarification.missing_items == []
     assert outcome.ready_for_board is True
     assert outcome.guidance.is_empty()
+
+
+def test_zero_baseline_knowledge_point_is_ready_without_scenario_question() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="knowledge_point",
+        learning_content="A focused foundational concept",
+        content_is_specific=True,
+        current_level="No prior learning or usable experience in this field",
+        zero_baseline_confirmed=True,
+        chatbot_message="The foundational board is ready.",
+        teaching_plan="Introduce the concept from first principles with one simple example.",
+        reason="The learner explicitly confirmed a zero baseline and a focused entry point.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "generate_board"
+    assert outcome.requirement is not None
+    assert outcome.requirement.target_scenario == "无明确应用场景"
+    assert outcome.clarification.missing_items == []
+    assert outcome.ready_for_board is True
 
 
 def test_skill_practice_auxiliary_factors_cannot_replace_missing_core_factors() -> None:
@@ -2056,6 +2155,9 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "Order every remaining option from lower to higher capability" in normalized_intake
     assert "recommend that first zero-baseline option" in normalized_intake
     assert "Do not infer `current_level` from age, education" in normalized_intake
+    assert "Set `zero_baseline_confirmed=true` only when the learner explicitly" in normalized_intake
+    assert "resolve `target_scenario=\"no_specific_scenario\"` automatically" in normalized_intake
+    assert "do not ask how they will apply the knowledge" in normalized_intake
     assert "the choices as plain chat text" in normalized_intake
     assert "Do not rely on clickable cards" in normalized_intake
     assert "exactly one short line" in normalized_intake

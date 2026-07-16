@@ -77,9 +77,18 @@ uncertainty per turn:
 - If `current_level` is known but `learning_content` is absent or still broad, use
   `entry_point_discovery` and `selection_target="learning_content"`. Generate 3 to 6 contextual
   content entry points at a suitable depth for that learner.
-- If learning content and level are known but `target_scenario` is not, use `goal_discovery` and
-  `selection_target="target_scenario"`. Include a natural no-specific-scenario choice when it is
-  genuinely useful; its `answer_value` must be `no_specific_scenario`.
+- Set `zero_baseline_confirmed=true` only when the learner explicitly describes themself as new,
+  beginner, novice, zero-baseline, or otherwise without prior learning or usable experience in the
+  current learning content, including when they select a prior zero-baseline level option. Do not
+  infer this state from age, education, occupation, or an unconfirmed recommendation.
+- When `zero_baseline_confirmed=true` and the learner has not stated a concrete target scenario,
+  resolve `target_scenario="no_specific_scenario"` automatically. Do not use `goal_discovery`, do
+  not ask how they will apply the knowledge, and continue with the next genuinely unresolved factor.
+  Preserve a concrete target scenario when the learner explicitly provides one.
+- If learning content and level are known, `target_scenario` is not resolved, and
+  `zero_baseline_confirmed=false`, use `goal_discovery` and `selection_target="target_scenario"`.
+  Include a natural no-specific-scenario choice when it is genuinely useful; its `answer_value`
+  must be `no_specific_scenario`.
 - If the learning product type itself is unresolved, use `mode_discovery` and
   `selection_target="teaching_type"`. If the learner has described a concrete obstacle, use
   `bottleneck_discovery` and `selection_target="bottleneck"`.
@@ -138,8 +147,10 @@ scripts.
 
 The structured response must describe the complete current requirement state, including facts
 preserved from the supplied active sheet and any corrections in the current user message. Never
-invent a current level or target scenario. All learner-facing wording must be generated for the
-current context rather than copied from a canned script.
+invent a current level or concrete target scenario. Automatically resolving an explicitly confirmed
+zero-baseline learner to `target_scenario="no_specific_scenario"` is the required neutral default,
+not an invented application goal. All learner-facing wording must be generated for the current
+context rather than copied from a canned script.
 """.strip()
 
 
@@ -179,6 +190,13 @@ class BlankBoardTurnDecision(BaseModel):
     learning_content: str = ""
     content_is_specific: bool = False
     current_level: str = ""
+    zero_baseline_confirmed: bool = Field(
+        default=False,
+        description=(
+            "True only when the learner explicitly confirms no prior learning or usable "
+            "experience in the current learning content."
+        ),
+    )
     target_scenario: str = ""
     auxiliary_factors: list[BlankBoardAuxiliaryFactor] = Field(default_factory=list)
     chatbot_message: str
@@ -1256,9 +1274,10 @@ def _requirement_from_decision(
     teaching_type = decision.teaching_type
     learning_content = decision.learning_content.strip()
     current_level = decision.current_level.strip()
-    target_scenario = decision.target_scenario.strip()
-    if target_scenario == "no_specific_scenario":
-        target_scenario = "无明确应用场景"
+    target_scenario = _resolved_target_scenario(
+        decision,
+        current_level=current_level,
+    )
     auxiliary_factors = [
         LearningRequirementAuxiliaryFactor(
             label=factor.label.strip(),
@@ -1305,12 +1324,18 @@ def _unknown_requirement_from_decision(
 ) -> LearningRequirementSheet | None:
     learning_content = decision.learning_content.strip()
     current_level = decision.current_level.strip()
-    target_scenario = decision.target_scenario.strip()
-    if target_scenario == "no_specific_scenario":
-        target_scenario = "无明确应用场景"
     if previous_requirement is not None:
         next_content = learning_content or previous_requirement.learning_content
         next_level = current_level or previous_requirement.current_level
+        target_scenario = (
+            ""
+            if previous_requirement.target_scenario
+            and not decision.target_scenario.strip()
+            else _resolved_target_scenario(
+                decision,
+                current_level=next_level,
+            )
+        )
         next_scenario = target_scenario or previous_requirement.target_scenario
         if not any((learning_content, current_level, target_scenario)):
             return previous_requirement
@@ -1326,6 +1351,10 @@ def _unknown_requirement_from_decision(
                 "known_background": next_level,
             },
         )
+    target_scenario = _resolved_target_scenario(
+        decision,
+        current_level=current_level,
+    )
     if not any((learning_content, current_level, target_scenario)):
         return None
     return LearningRequirementSheet(
@@ -1349,13 +1378,29 @@ def _unknown_requirement_from_decision(
     )
 
 
+def _resolved_target_scenario(
+    decision: BlankBoardTurnDecision,
+    *,
+    current_level: str,
+) -> str:
+    target_scenario = decision.target_scenario.strip()
+    if target_scenario == "no_specific_scenario":
+        return "无明确应用场景"
+    if not target_scenario and current_level.strip() and decision.zero_baseline_confirmed:
+        return "无明确应用场景"
+    return target_scenario
+
+
 def _missing_core_factors(decision: BlankBoardTurnDecision) -> list[str]:
     missing: list[str] = []
     if not decision.learning_content.strip() or not decision.content_is_specific:
         missing.append("learning_content")
     if not decision.current_level.strip():
         missing.append("current_level")
-    if not decision.target_scenario.strip():
+    if not _resolved_target_scenario(
+        decision,
+        current_level=decision.current_level,
+    ):
         missing.append("target_scenario")
     return missing
 
