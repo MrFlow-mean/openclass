@@ -14,7 +14,7 @@ from app.models import SourceVisualAsset
 from app.services.source_visual_extraction_types import RawSourceVisual, SourceVisualAdapterResult
 
 
-MAX_PDF_SOURCE_PAGES = 1_000
+MAX_PDF_SOURCE_PAGES = 2_000
 MAX_PDF_RENDER_REGIONS = 1_000
 MAX_PDF_REGION_PIXELS = 16_000_000
 MAX_PDF_TOTAL_RENDER_PIXELS = 128_000_000
