@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 
-from app.models import CoursePackage, SourceStructure
+from app.models import CoursePackage, SourceIngestionRecord, SourceStructure
 from app.services.open_notebook_adapter import OpenNotebookSourceResult
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
@@ -11,6 +11,102 @@ from app.services.source_ingestion_jobs import SourceIngestionCoordinator, Sourc
 from app.services.source_ingestion_service import SourceIngestionService
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
+
+
+def test_source_ingestion_defaults_to_native_backend(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLASS_SOURCE_BACKEND", raising=False)
+    database = tmp_path / "openclass.sqlite3"
+
+    service = SourceIngestionService(
+        store=SourceEvidenceStore(database),
+        job_store=SourceIngestionJobStore(database),
+        structure_store=SourceStructureStore(database),
+    )
+
+    assert service.source_backend == "native"
+
+
+def test_native_retry_detaches_failed_open_notebook_source(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    job_store = SourceIngestionJobStore(database)
+    upload_dir = tmp_path / "uploads"
+    source_dir = upload_dir / "sources"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "scan.pdf"
+    source_path.write_bytes(b"local source bytes")
+    received_records = []
+
+    class NativeRetryIndexer:
+        def rebuild_structure(self, record, *, progress_callback=None):
+            received_records.append(record)
+            if progress_callback is not None:
+                progress_callback("persisting", 94)
+            return structure_store.save_structure_bundle(
+                structure=SourceStructure(
+                    owner_user_id=record.owner_user_id,
+                    package_id=record.package_id,
+                    source_ingestion_id=record.id,
+                    status="linear_only",
+                    strategy="linear_text",
+                ),
+                chapters=[],
+                chunks=[],
+            )
+
+    record = source_store.save_source(
+        SourceIngestionRecord(
+            id="source_remote_failed",
+            owner_user_id="user_1",
+            package_id="course_1",
+            title="Scanned source",
+            source_type="local_file",
+            file_name="scan.pdf",
+            mime_type="application/pdf",
+            size_bytes=source_path.stat().st_size,
+            status="failed",
+            error="OpenNotebook unavailable",
+            open_notebook_notebook_id="notebook:remote",
+            open_notebook_source_id="source:remote",
+            open_notebook_command_id="command:remote",
+            metadata={
+                "local_source_path": str(source_path),
+                "adapter": "open_notebook",
+                "source_processing_owner": "open_notebook",
+                "open_notebook_sync_status": "failed",
+                "open_notebook_sync_warning": "unavailable",
+            },
+        )
+    )
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", upload_dir)
+    service = SourceIngestionService(
+        source_backend="native",
+        store=source_store,
+        job_store=job_store,
+        structure_store=structure_store,
+        structure_indexer=NativeRetryIndexer(),
+    )
+
+    retried = service.retry_source(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert retried is not None
+    assert retried.status == "ready"
+    assert retried.open_notebook_notebook_id == ""
+    assert retried.open_notebook_source_id == ""
+    assert retried.open_notebook_command_id == ""
+    assert retried.metadata["adapter"] == "openclass_native"
+    assert "source_processing_owner" not in retried.metadata
+    assert not any(key.startswith("open_notebook_") for key in retried.metadata)
+    assert received_records[0].metadata["adapter"] == "openclass_native"
+    assert "source_processing_owner" not in received_records[0].metadata
+    assert not any(
+        key.startswith("open_notebook_") for key in received_records[0].metadata
+    )
 
 
 def test_source_ingestion_coordinator_allows_bounded_parallel_work() -> None:

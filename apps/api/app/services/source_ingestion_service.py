@@ -93,7 +93,7 @@ class SourceIngestionService:
             store=store,
             local_path=source_local_path,
         )
-        self.source_backend = (source_backend or os.getenv("OPENCLASS_SOURCE_BACKEND", "open_notebook")).strip().lower()
+        self.source_backend = (source_backend or os.getenv("OPENCLASS_SOURCE_BACKEND", "native")).strip().lower()
         if self.source_backend not in {"open_notebook", "native"}:
             raise ValueError("OPENCLASS_SOURCE_BACKEND must be open_notebook or native")
         self.youtube_adapter = youtube_adapter
@@ -266,6 +266,8 @@ class SourceIngestionService:
         )
         if record is None:
             raise SourceIngestionError("Source not found.")
+        if self.source_backend == "native":
+            record = _detach_open_notebook_state(record)
         job = self.job_store.latest_for_source(
             owner_user_id=owner_user_id,
             package_id=package_id,
@@ -545,6 +547,8 @@ class SourceIngestionService:
         if local_path is None:
             raise SourceIngestionError("Source content is unavailable; import the source again.")
         retrying = record.model_copy(update={"status": "queued", "error": ""})
+        if self.source_backend == "native":
+            retrying = _detach_open_notebook_state(retrying)
         self.store.save_source(retrying)
         job = self._start_job(
             retrying,
@@ -1143,6 +1147,29 @@ def _source_type_for_upload(*, mime_type: str, file_name: str) -> str:
 def _text_title(text: str, limit: int = 80) -> str:
     first_line = next((line.strip("# *\t") for line in text.splitlines() if line.strip()), "")
     return first_line[:limit] or "Pasted text"
+
+
+def _detach_open_notebook_state(record: SourceIngestionRecord) -> SourceIngestionRecord:
+    metadata = {
+        key: value
+        for key, value in record.metadata.items()
+        if key != "source_processing_owner"
+        and not key.startswith("open_notebook_")
+        and not key.startswith("last_open_notebook_")
+    }
+    metadata["adapter"] = (
+        "openclass_native_text"
+        if record.source_type == "pasted_text" or record.mime_type == "text/markdown"
+        else "openclass_native"
+    )
+    return record.model_copy(
+        update={
+            "open_notebook_notebook_id": "",
+            "open_notebook_source_id": "",
+            "open_notebook_command_id": "",
+            "metadata": metadata,
+        }
+    )
 
 
 def _safe_file_name(file_name: str) -> str:

@@ -865,6 +865,106 @@ def test_pdf_outline_merges_with_structured_toc_rows(tmp_path: Path, monkeypatch
     assert all(not path.exists() for path in visual_paths)
 
 
+def test_nested_pdf_outline_remains_authoritative_without_toc_ocr(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pdf_path = tmp_path / "nested-outline.pdf"
+    pdf = canvas.Canvas(str(pdf_path))
+    pdf.bookmarkPage("chapter-1")
+    pdf.addOutlineEntry("1 Intro", "chapter-1", level=0)
+    pdf.drawString(72, 720, "1 Intro")
+    pdf.showPage()
+    pdf.bookmarkPage("section-1-1")
+    pdf.addOutlineEntry("1.1 Details", "section-1-1", level=1)
+    pdf.drawString(72, 720, "1.1 Details")
+    pdf.drawString(72, 690, "Grounded body text.")
+    pdf.save()
+
+    def reject_toc_ocr(*_args, **_kwargs):
+        raise AssertionError("a nested native outline must not be replaced by TOC OCR")
+
+    monkeypatch.setattr(indexer_module, "extract_pdf_toc", reject_toc_ocr)
+
+    parsed = indexer_module._parse_pdf(pdf_path)
+
+    assert parsed.strategy == "pdf_outline"
+    assert [chapter.title for chapter in parsed.chapters] == ["1 Intro", "1.1 Details"]
+    assert [chapter.level for chapter in parsed.chapters] == [1, 2]
+    assert all(chapter.verified for chapter in parsed.chapters)
+
+
+def test_missing_codex_supervisor_preserves_deterministic_pdf_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    store = SourceStructureStore(database)
+    record = SourceIngestionRecord(
+        id="source_deterministic_pdf",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        title="Deterministic PDF",
+        source_type="local_file",
+        file_name="deterministic.pdf",
+        mime_type="application/pdf",
+        size_bytes=1,
+        status="ready",
+    )
+    page_text = "1 Intro\nGrounded body text."
+    parsed = ParsedSourceDocument(
+        text=page_text,
+        chapters=[
+            DetectedChapter(
+                title="1 Intro",
+                number="1",
+                level=1,
+                source_locator="pdf:outline:1",
+                start_offset=0,
+                end_offset=len(page_text),
+                page_start=1,
+                page_end=2,
+                confidence=0.95,
+                verified=True,
+                metadata={"source": "pdf_outline"},
+            )
+        ],
+        pages=[
+            PageText(
+                page_no=1,
+                text=page_text,
+                start_offset=0,
+                end_offset=len(page_text),
+                content_start_offset=0,
+            )
+        ],
+        strategy="pdf_outline",
+        metadata={"parser": "pdf"},
+    )
+
+    class UnexpectedVisualExtractor:
+        @staticmethod
+        def extract(**_kwargs):
+            raise AssertionError("text-first source indexing must skip visual extraction")
+
+    indexer = SourceStructureIndexer(
+        store=store,
+        visual_extractor=UnexpectedVisualExtractor(),
+        visual_index_enabled=False,
+        structure_analyzer_factory=lambda _owner: None,
+    )
+    monkeypatch.setattr(indexer, "_parse_record", lambda *_args, **_kwargs: parsed)
+
+    structure = indexer.rebuild_structure(record)
+    view = store.get_structure_view(source=record)
+
+    assert structure.status == "ready"
+    assert structure.strategy == "pdf_outline"
+    assert structure.visual_index_status == "unsupported"
+    assert "codex_supervision_status" not in structure.metadata
+    assert [chapter.normalized_number for chapter in view.chapters] == ["1"]
+
+
 def test_large_blank_pdf_ocr_ignores_synthetic_page_markers_and_keeps_all_pages(
     tmp_path: Path,
     monkeypatch,

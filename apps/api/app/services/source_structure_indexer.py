@@ -138,11 +138,13 @@ class SourceStructureIndexer:
         *,
         store: SourceStructureStore = source_structure_store,
         visual_extractor: SourceVisualExtractor = source_visual_extractor,
+        visual_index_enabled: bool = True,
         coordinator: SourceIngestionCoordinator | None = None,
         structure_analyzer_factory: SourceStructureAnalyzerFactory | None = None,
     ) -> None:
         self.store = store
         self.visual_extractor = visual_extractor
+        self.visual_index_enabled = visual_index_enabled
         self.coordinator = coordinator or store.coordinator
         self.structure_analyzer_factory = structure_analyzer_factory
 
@@ -159,7 +161,7 @@ class SourceStructureIndexer:
         )
         if current and current.status in {"ready", "linear_only", "failed"}:
             structure_is_current = not source_structure_needs_upgrade(current)
-            visuals_are_current = (
+            visuals_are_current = not self.visual_index_enabled or (
                 current.visual_index_version >= CURRENT_SOURCE_VISUAL_INDEX_VERSION
             )
             if structure_is_current and visuals_are_current:
@@ -309,8 +311,10 @@ class SourceStructureIndexer:
             )
             _report_progress(progress_callback, "building_chunks", 63)
             chunks = self._chunks_for_record(record, parsed, chapters_to_publish)
-            _report_progress(progress_callback, "extracting_visuals", 70)
-            if not _structure_is_publishable_after_supervision(parsed):
+            if not self.visual_index_enabled:
+                visual_result = SourceVisualExtractionResult(status="unsupported")
+            elif not _structure_is_publishable_after_supervision(parsed):
+                _report_progress(progress_callback, "extracting_visuals", 70)
                 visual_result = SourceVisualExtractionResult(
                     status="unsupported",
                     warnings=[
@@ -318,6 +322,7 @@ class SourceStructureIndexer:
                     ],
                 )
             elif preserve_existing_visuals and previous is not None:
+                _report_progress(progress_callback, "extracting_visuals", 70)
                 visual_result = SourceVisualExtractionResult(
                     status=(
                         previous.visual_index_status
@@ -333,6 +338,7 @@ class SourceStructureIndexer:
                     ),
                 )
             else:
+                _report_progress(progress_callback, "extracting_visuals", 70)
                 try:
                     visual_kwargs: dict[str, Any] = {
                         "record": record,
@@ -480,19 +486,7 @@ class SourceStructureIndexer:
             return parsed, chapters, quality_result
         analyzer = self.structure_analyzer_factory(record.owner_user_id)
         if analyzer is None:
-            return (
-                _with_codex_supervision_metadata(
-                    parsed,
-                    status="unavailable",
-                    model="",
-                    rounds=0,
-                    repair_count=0,
-                    summary="Codex supervision is unavailable; the directory was not published.",
-                    issues=["Codex source-structure supervision is not configured."],
-                ),
-                chapters,
-                quality_result,
-            )
+            return parsed, chapters, quality_result
         reviewer = getattr(analyzer, "review_pdf_toc", None)
         if not callable(reviewer):
             return self._repair_pdf_structure_with_codex_legacy(
@@ -1436,7 +1430,7 @@ def _parse_pdf(
     chapters = outline_chapters
     strategy = "pdf_outline" if outline_chapters else "linear_text"
     toc_metadata: dict[str, Any] = {}
-    if outline_chapters:
+    if outline_chapters and not any(chapter.level > 1 for chapter in outline_chapters):
         extraction = extract_pdf_toc(
             path,
             outline=[
@@ -3202,6 +3196,28 @@ def _dedupe_nav_items(
     return deduped
 
 
+def _environment_flag(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _optional_codex_source_structure_analyzer(
+    owner_user_id: str,
+) -> SourceStructureAnalyzer | None:
+    if not _environment_flag(
+        "OPENCLASS_CODEX_SOURCE_SUPERVISION_ENABLED",
+        default=False,
+    ):
+        return None
+    return build_codex_source_structure_analyzer(owner_user_id)
+
+
 source_structure_indexer = SourceStructureIndexer(
-    structure_analyzer_factory=build_codex_source_structure_analyzer
+    visual_index_enabled=_environment_flag(
+        "OPENCLASS_SOURCE_VISUAL_INDEX_ENABLED",
+        default=False,
+    ),
+    structure_analyzer_factory=_optional_codex_source_structure_analyzer,
 )
