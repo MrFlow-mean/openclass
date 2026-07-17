@@ -715,6 +715,7 @@ export function WordBoardEditor({
   onExportDocx,
   onExportHtml,
   onFormulaReference,
+  onFormulaGeometryReference,
   onFormulaInkSubmit,
 }: {
   document: BoardDocument;
@@ -737,6 +738,7 @@ export function WordBoardEditor({
   onExportDocx: () => void;
   onExportHtml: () => void;
   onFormulaReference?: (selection: WordBoardSelectionPayload) => void;
+  onFormulaGeometryReference?: (selection: WordBoardSelectionPayload) => void;
   onFormulaInkSubmit?: (payload: FormulaInkEditorSubmitPayload) => boolean;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
@@ -1915,6 +1917,7 @@ export function WordBoardEditor({
                   sourceLatex={activeFormulaSelection.latex}
                   disabled={readOnly}
                   onReference={() => onFormulaReference?.(activeFormulaSelection)}
+                  onGeometryReference={() => onFormulaGeometryReference?.(activeFormulaSelection)}
                   onSubmit={(payload) =>
                     onFormulaInkSubmit({
                       ...payload,

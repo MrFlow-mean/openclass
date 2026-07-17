@@ -3,12 +3,14 @@ import { X } from "lucide-react";
 import type { HTMLAttributes } from "react";
 
 import { SourceImportPanel } from "@/components/course-studio/source-import-panel";
+import { GeometryGenerationPanel } from "@/components/course-studio/geometry-generation-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import { VoiceControlPanel } from "@/components/course-studio/voice-control-panel";
+import { useGeometryWorkspace } from "@/hooks/course-studio/use-geometry-workspace";
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
-import type { BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
+import type { AIModelSelection, BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
 
-export type CourseStudioSidebarTab = "history" | "sources" | "voice";
+export type CourseStudioSidebarTab = "geometry" | "history" | "sources" | "voice";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -33,6 +35,9 @@ type CourseStudioSidePanelProps = {
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  geometryReference: SelectionRef | null;
+  onGeometryReferenceClear: () => void;
+  textModel: AIModelSelection | null;
   speechAutoEnabled: boolean;
   speechIsLoading: boolean;
   speechIsPlaying: boolean;
@@ -80,6 +85,9 @@ export function CourseStudioSidePanel({
   onSwitchBranch,
   onError,
   onSourceReference,
+  geometryReference,
+  onGeometryReferenceClear,
+  textModel,
   speechAutoEnabled,
   speechIsLoading,
   speechIsPlaying,
@@ -103,17 +111,26 @@ export function CourseStudioSidePanel({
   onSpeechVoiceChange,
   onSpeechRateChange,
 }: CourseStudioSidePanelProps) {
+  const geometryWorkspace = useGeometryWorkspace({
+    lessonId: activeLesson.id,
+    incomingSelection: geometryReference,
+    textModel,
+    onClearSelection: onGeometryReferenceClear,
+  });
+
   return (
     <aside
       className={clsx(
-        "relative h-full min-h-0 min-w-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
-        open ? "hidden xl:flex" : "hidden"
+        "h-full min-h-0 min-w-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
+        open
+          ? "fixed inset-y-0 right-0 z-50 flex w-[min(92vw,420px)] shadow-2xl xl:relative xl:inset-auto xl:z-auto xl:w-auto xl:shadow-none"
+          : "hidden"
       )}
     >
       <div
         {...resizeHandleProps}
         className={clsx(
-          "group absolute inset-y-0 left-[-6px] z-30 flex w-3 cursor-col-resize items-center justify-center outline-none",
+          "group absolute inset-y-0 left-[-6px] z-30 hidden w-3 cursor-col-resize items-center justify-center outline-none xl:flex",
           isResizing && "bg-gray-100/60"
         )}
       >
@@ -143,6 +160,7 @@ export function CourseStudioSidePanel({
           { value: "sources", label: "Sources" },
           { value: "history", label: "History" },
           { value: "voice", label: "Voice" },
+          { value: "geometry", label: "Geometry" },
         ].map((tab) => (
           <button
             key={tab.value}
@@ -161,7 +179,22 @@ export function CourseStudioSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
-        {sidebarTab === "sources" ? (
+        {sidebarTab === "geometry" ? (
+          <GeometryGenerationPanel
+            packageId={packageId}
+            selection={geometryWorkspace.selection}
+            instructions={geometryWorkspace.instructions}
+            attachments={geometryWorkspace.attachments}
+            scene={geometryWorkspace.scene}
+            error={geometryWorkspace.error}
+            isGenerating={geometryWorkspace.isGenerating}
+            onInstructionsChange={geometryWorkspace.setInstructions}
+            onAttachmentsChange={geometryWorkspace.setAttachments}
+            onAttachmentError={geometryWorkspace.reportError}
+            onGenerate={geometryWorkspace.generate}
+            onClear={geometryWorkspace.clear}
+          />
+        ) : sidebarTab === "sources" ? (
           <SourceImportPanel key={packageId} packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel

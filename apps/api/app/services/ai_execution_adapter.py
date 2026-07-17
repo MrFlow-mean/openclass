@@ -42,6 +42,7 @@ class AIExecutionAdapter(Protocol):
         system_prompt: str,
         user_prompt: str,
         schema: type[StructuredModel],
+        image_inputs: list[str] | None = None,
     ) -> StructuredExecutionResult: ...
 
     def generate_board(
@@ -118,12 +119,14 @@ class CodexAIExecutionAdapter:
         system_prompt: str,
         user_prompt: str,
         schema: type[StructuredModel],
+        image_inputs: list[str] | None = None,
     ) -> StructuredExecutionResult:
         response = CodexAppServerTextClient(self.owner_user_id).parse(
             model=self.model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
+            image_inputs=image_inputs,
         )
         return StructuredExecutionResult(
             output_parsed=response.output_parsed,

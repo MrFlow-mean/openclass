@@ -85,6 +85,10 @@ export function ChatAttachmentMenu({
   attachments,
   disabled,
   menuAboveRef,
+  limitLabel = "每条消息",
+  testIdPrefix = "chat",
+  triggerText = "",
+  triggerHint = "",
   onChange,
   onError,
 }: {
@@ -92,6 +96,10 @@ export function ChatAttachmentMenu({
   attachments: ChatAttachmentRef[];
   disabled: boolean;
   menuAboveRef: RefObject<HTMLElement | null>;
+  limitLabel?: string;
+  testIdPrefix?: string;
+  triggerText?: string;
+  triggerHint?: string;
   onChange: (attachments: ChatAttachmentRef[]) => void;
   onError: (message: string) => void;
 }) {
@@ -203,12 +211,12 @@ export function ChatAttachmentMenu({
     }
     const availableSlots = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
     if (!availableSlots) {
-      onError(`每条消息最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件。`);
+      onError(`${limitLabel}最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件。`);
       return;
     }
     const selectedFiles = files.slice(0, availableSlots);
     if (selectedFiles.length < files.length) {
-      onError(`每条消息最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件，已保留前 ${selectedFiles.length} 个。`);
+      onError(`${limitLabel}最多添加 ${MAX_CHAT_ATTACHMENTS} 个附件，已保留前 ${selectedFiles.length} 个。`);
     }
     setOpen(false);
     setIsUploading(true);
@@ -289,7 +297,7 @@ export function ChatAttachmentMenu({
           onChange={(event) => void uploadFiles(event)}
           className="hidden"
           disabled={disabled || isUploading}
-          data-testid="chat-image-input"
+          data-testid={`${testIdPrefix}-image-input`}
         />
         <input
           ref={fileInputRef}
@@ -299,7 +307,7 @@ export function ChatAttachmentMenu({
           onChange={(event) => void uploadFiles(event)}
           className="hidden"
           disabled={disabled || isUploading}
-          data-testid="chat-file-input"
+          data-testid={`${testIdPrefix}-file-input`}
         />
         <button
           type="button"
@@ -314,12 +322,15 @@ export function ChatAttachmentMenu({
           aria-expanded={open}
           aria-haspopup="menu"
           className={clsx(
-            "flex h-8 w-8 items-center justify-center rounded-full text-gray-600 transition hover:bg-gray-100 hover:text-black disabled:cursor-not-allowed disabled:opacity-50",
+            "flex h-8 items-center justify-center text-gray-600 transition hover:bg-gray-100 hover:text-black disabled:cursor-not-allowed disabled:opacity-50",
+            triggerText ? "w-auto gap-1.5 rounded-lg px-1.5" : "w-8 rounded-full",
             open && "bg-gray-100 text-black"
           )}
           title={isUploading ? `上传中 ${uploadProgress ?? 0}%` : "添加附件"}
         >
           {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          {triggerText ? <span className="text-[11px] font-medium">{triggerText}</span> : null}
+          {triggerHint ? <span className="text-[10px] text-gray-400">{triggerHint}</span> : null}
         </button>
       </div>
       {menu}
