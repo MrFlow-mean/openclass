@@ -162,7 +162,7 @@ export function CourseStudioSidePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
         {sidebarTab === "sources" ? (
-          <SourceImportPanel packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
+          <SourceImportPanel key={packageId} packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}

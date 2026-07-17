@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { BookOpen, Check, ChevronDown, ChevronRight, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
+import { SourceBatchControls } from "@/components/course-studio/source-batch-controls";
 import { createSourceChapterSelection, sourceChapterLabel } from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
@@ -17,6 +18,7 @@ import {
   sourceStructureQualityNote,
 } from "@/components/course-studio/source-structure-quality";
 import { api } from "@/lib/api";
+import { useSourceBatchManagement } from "@/hooks/course-studio/use-source-batch-management";
 import type { SelectionRef, SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
 
 type SourceImportPanelProps = {
@@ -59,6 +61,16 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
+  const batchManagement = useSourceBatchManagement({
+    packageId,
+    sourceIds: sources.map((source) => source.id),
+    disabled: disabled || isImporting || Boolean(removingSourceId),
+    onRemoved: (sourceIds) => {
+      const removedIds = new Set(sourceIds);
+      setSources((current) => current.filter((source) => !removedIds.has(source.id)));
+    },
+    onError,
+  });
 
   const refreshSources = useCallback(async () => {
     if (!packageId) {
@@ -357,6 +369,19 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
                 <span>继续拖入资料，或点击上传。</span>
               )}
             </div>
+            <SourceBatchControls
+              sourceCount={sources.length}
+              selectedCount={batchManagement.selectedCount}
+              allSelected={batchManagement.allSelected}
+              isActive={batchManagement.isActive}
+              isRemoving={batchManagement.isRemoving}
+              disabled={disabled || isImporting || Boolean(removingSourceId)}
+              onStart={batchManagement.start}
+              onCancel={batchManagement.cancel}
+              onToggleAll={batchManagement.toggleAll}
+              onClear={batchManagement.clear}
+              onRemove={() => void batchManagement.removeSelected()}
+            />
             {sources.map((source) => (
               <SourceRow
                 key={source.id}
@@ -364,6 +389,10 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
                 source={source}
                 isRemoving={removingSourceId === source.id}
                 onRemove={() => void removeSource(source.id)}
+                selectionMode={batchManagement.isActive}
+                isSelected={batchManagement.selectedSourceIds.has(source.id)}
+                selectionDisabled={batchManagement.isRemoving}
+                onToggleSelection={() => batchManagement.toggle(source.id)}
                 onError={onError}
                 onSourceReference={onSourceReference}
                 onSourceUpdate={(updatedSource) =>
@@ -404,6 +433,10 @@ function SourceRow({
   source,
   isRemoving,
   onRemove,
+  selectionMode,
+  isSelected,
+  selectionDisabled,
+  onToggleSelection,
   onError,
   onSourceReference,
   onSourceUpdate,
@@ -412,6 +445,10 @@ function SourceRow({
   source: SourceIngestionRecord;
   isRemoving: boolean;
   onRemove: () => void;
+  selectionMode: boolean;
+  isSelected: boolean;
+  selectionDisabled: boolean;
+  onToggleSelection: () => void;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
   onSourceUpdate: (source: SourceIngestionRecord) => void;
@@ -587,16 +624,34 @@ function SourceRow({
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-3">
+    <div
+      className={clsx(
+        "rounded-lg border bg-white p-3 transition",
+        selectionMode && isSelected ? "border-blue-300 ring-1 ring-blue-100" : "border-gray-200"
+      )}
+    >
       <div className="flex items-start gap-3">
-        <div
-          className={clsx(
-            "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
-            isReady ? "bg-emerald-50 text-emerald-700" : isFailed ? "bg-rose-50 text-rose-700" : "bg-gray-50 text-gray-500"
-          )}
-        >
-          <UploadCloud className="h-4 w-4" />
-        </div>
+        {selectionMode ? (
+          <label className="mt-0.5 flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md bg-blue-50">
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={onToggleSelection}
+              disabled={selectionDisabled}
+              className="h-4 w-4 rounded border-blue-300 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={`选择资料 ${source.title}`}
+            />
+          </label>
+        ) : (
+          <div
+            className={clsx(
+              "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+              isReady ? "bg-emerald-50 text-emerald-700" : isFailed ? "bg-rose-50 text-rose-700" : "bg-gray-50 text-gray-500"
+            )}
+          >
+            <UploadCloud className="h-4 w-4" />
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="space-y-2">
             {isEditingTitle ? (
@@ -704,16 +759,18 @@ function SourceRow({
                   <span>{isStructureOpen ? "收起" : "展开"}</span>
                 </button>
               ) : null}
-              <button
-                type="button"
-                onClick={onRemove}
-                disabled={isRemoving}
-                className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-gray-400 transition hover:border-rose-100 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-                title="移除资料"
-                aria-label={`移除资料 ${source.title}`}
-              >
-                {isRemoving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-              </button>
+              {!selectionMode ? (
+                <button
+                  type="button"
+                  onClick={onRemove}
+                  disabled={isRemoving}
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-gray-400 transition hover:border-rose-100 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="移除资料"
+                  aria-label={`移除资料 ${source.title}`}
+                >
+                  {isRemoving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
             </div>
           </div>
           <p className="mt-2 break-all text-xs leading-5 text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>

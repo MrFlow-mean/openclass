@@ -111,6 +111,94 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("batch selects and deletes uploaded sources", async ({ page }) => {
+  const unique = Date.now();
+  const sourceRecords = [
+    {
+      id: `batch-source-a-${unique}`,
+      title: `批量资料 A ${unique}`,
+      file_name: `batch-a-${unique}.pdf`,
+    },
+    {
+      id: `batch-source-b-${unique}`,
+      title: `批量资料 B ${unique}`,
+      file_name: `batch-b-${unique}.pdf`,
+    },
+  ].map((source) => ({
+    ...source,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    source_type: "local_file",
+    source_uri: null,
+    mime_type: "application/pdf",
+    size_bytes: 1024,
+    status: "ready",
+    error: "",
+    open_notebook_notebook_id: "",
+    open_notebook_source_id: "",
+    open_notebook_command_id: "",
+    structure_status: "linear_only",
+    structure_strategy: "linear",
+    structure_has_verified_toc: false,
+    structure_error: "",
+    structure_updated_at: new Date().toISOString(),
+    ingestion_job: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    metadata: {},
+  }));
+  let visibleSources = [...sourceRecords];
+  const deletedSourceIds: string[] = [];
+
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(visibleSources),
+      });
+      return;
+    }
+    if (request.method() === "DELETE") {
+      const sourceId = path.split("/").at(-1) ?? "";
+      const removedSource = visibleSources.find((source) => source.id === sourceId);
+      deletedSourceIds.push(sourceId);
+      visibleSources = visibleSources.filter((source) => source.id !== sourceId);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(removedSource),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `批量资料测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `批量资料测试页面 ${unique}`);
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Sources" }).click();
+
+  await expect(page.getByText("已上传 2 份资料")).toBeVisible();
+  await page.getByRole("button", { name: "批量管理" }).click();
+  await expect(page.getByLabel(`选择资料 批量资料 A ${unique}`)).toBeVisible();
+  await page.getByRole("button", { name: "全选", exact: true }).click();
+  await expect(page.getByText("已选 2 / 2")).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("确定删除选中的 2 份资料吗");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: "批量删除已选资料" }).click();
+
+  await expect.poll(() => deletedSourceIds).toEqual(sourceRecords.map((source) => source.id));
+  await expect(page.getByRole("button", { name: "批量管理" })).toHaveCount(0);
+  await expect(page.getByText("拖拽文件到这里，或点击上传资料。")).toBeVisible();
+});
+
 test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {
   const unique = Date.now();
   const firstTitle = `引用保留页面一 ${unique}`;
