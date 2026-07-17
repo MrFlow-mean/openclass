@@ -4,6 +4,7 @@ import sqlite3
 import threading
 
 from app.models import CoursePackage, SourceStructure
+from app.services.open_notebook_adapter import OpenNotebookSourceResult
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator, SourceIngestionJobStore
@@ -216,6 +217,74 @@ def test_file_ingestion_exposes_durable_progress_while_indexing(tmp_path, monkey
     assert not worker.is_alive()
 
     completed = service.list_sources(owner_user_id="user_progress", package_id=package.id)[0]
+    assert completed.status == "ready"
+    assert completed.ingestion_job is not None
+    assert completed.ingestion_job.progress == 100
+    assert completed.ingestion_job.phase_history[-1] == "ready"
+
+
+def test_open_notebook_mode_skips_local_structure_pipeline(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    job_store = SourceIngestionJobStore(database)
+
+    class FakeOpenNotebookAdapter:
+        api_url = "http://notebook.test"
+
+        def create_notebook(self, **_kwargs) -> str:
+            return "notebook:test"
+
+        def upload_file_source(self, **_kwargs) -> OpenNotebookSourceResult:
+            return OpenNotebookSourceResult(
+                source_id="source:remote",
+                command_id="command:remote",
+                status="processing",
+            )
+
+        def get_command(self, _command_id: str) -> dict[str, object]:
+            return {"status": "completed", "result": {"source_id": "source:remote"}}
+
+    class RejectingIndexer:
+        def ensure_structure(self, *_args, **_kwargs):
+            raise AssertionError("OpenNotebook mode must not call the local structure indexer")
+
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    service = SourceIngestionService(
+        adapter=FakeOpenNotebookAdapter(),
+        source_backend="open_notebook",
+        store=source_store,
+        job_store=job_store,
+        structure_store=structure_store,
+        structure_indexer=RejectingIndexer(),
+    )
+    package = CoursePackage(id="course_open_notebook", title="Notebook", summary="", lessons=[])
+
+    queued = service.queue_file_source(
+        owner_user_id="user_open_notebook",
+        package=package,
+        file_name="source.md",
+        content=b"# Source\n\nBody",
+        mime_type="text/markdown",
+    )
+    processing = service.process_file_source(
+        owner_user_id="user_open_notebook",
+        package_id=package.id,
+        source_id=queued.id,
+    )
+
+    assert processing.status == "parsing"
+    assert processing.metadata["source_processing_owner"] == "open_notebook"
+    assert structure_store.get_structure(
+        owner_user_id="user_open_notebook",
+        package_id=package.id,
+        source_id=queued.id,
+    ) is None
+
+    completed = service.list_sources(
+        owner_user_id="user_open_notebook",
+        package_id=package.id,
+    )[0]
     assert completed.status == "ready"
     assert completed.ingestion_job is not None
     assert completed.ingestion_job.progress == 100

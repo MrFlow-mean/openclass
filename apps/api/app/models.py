@@ -633,7 +633,7 @@ SourceChapterAnchorStatus = Literal["verified", "unverified"]
 SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
 SourceVisualAnchorStatus = Literal["verified", "unverified"]
 SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
-SourceScopeKind = Literal["chapter", "page_range"]
+SourceScopeKind = Literal["source", "chapter", "page_range"]
 PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
 AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
 

@@ -5,7 +5,11 @@ import { BookOpen, Check, ChevronDown, ChevronRight, ClipboardPaste, Download, F
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { SourceBatchControls } from "@/components/course-studio/source-batch-controls";
-import { createSourceChapterSelection, sourceChapterLabel } from "@/components/course-studio/source-reference";
+import {
+  createOpenNotebookSourceSelection,
+  createSourceChapterSelection,
+  sourceChapterLabel,
+} from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
   SourceProcessingProgress,
@@ -469,6 +473,7 @@ function SourceRow({
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
+  const isOpenNotebookManaged = metadataString(source, "source_processing_owner") === "open_notebook";
   const sourceQuality = source.structure_quality;
   const viewQuality = structureView?.structure?.quality;
   const structureQuality =
@@ -705,10 +710,10 @@ function SourceRow({
                     )
                   )}
                 >
-                  {structureLabel}
+                  {isOpenNotebookManaged ? "OpenNotebook" : structureLabel}
                 </span>
               ) : null}
-              {isReady ? (
+              {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
                   onClick={() => void toggleContent()}
@@ -718,6 +723,17 @@ function SourceRow({
                   aria-label={`查看资料正文 ${source.title}`}
                 >
                   {isLoadingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
+              {isReady && isOpenNotebookManaged && onSourceReference ? (
+                <button
+                  type="button"
+                  onClick={() => onSourceReference(createOpenNotebookSourceSelection(source))}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-blue-600 transition hover:bg-blue-50"
+                  title="引用整份 OpenNotebook 资料"
+                  aria-label={`引用整份资料 ${source.title}`}
+                >
+                  <TextQuote className="h-3.5 w-3.5" />
                 </button>
               ) : null}
               <button
@@ -741,7 +757,7 @@ function SourceRow({
                   <RotateCcw className={clsx("h-3.5 w-3.5", isRetrying && "animate-spin")} />
                 </button>
               ) : null}
-              {isReady ? (
+              {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
                   onClick={() => void toggleStructure()}
@@ -778,7 +794,11 @@ function SourceRow({
             <SourceProcessingProgress className="mt-2" label={processingState.label} value={processingState.value} />
           ) : null}
           {isReady ? (
-            <p className="mt-2 text-xs leading-5 text-gray-500">{structureNote}</p>
+            <p className="mt-2 text-xs leading-5 text-gray-500">
+              {isOpenNotebookManaged
+                ? "资料正文由 OpenNotebook 处理；引用后按本轮问题检索相关片段。"
+                : structureNote}
+            </p>
           ) : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}

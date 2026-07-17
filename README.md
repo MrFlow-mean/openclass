@@ -129,7 +129,9 @@ VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
 
 `.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
 
-资料上传、远端索引、状态同步和资料搜索默认交给 Open Notebook。OpenClass 仍使用本地确定性结构索引先生成章节候选、页码边界和冻结证据；随后由 Codex 作为独立质量监工，对照原始目录页审计完整性、标题、层级、顺序和页码。发现问题时，Codex 输出结构化修复候选，系统重新执行正文锚定和确定性质量门禁，并再次复验；未通过监工和正文门禁的 PDF 目录不会发布，只保留全文检索。可通过 `OPENCLASS_CODEX_SOURCE_SUPERVISION_MAX_ROUNDS` 控制单次任务最多返工轮数，达到上限后保持阻塞而不会把不合格目录标成可用。若仅用于兼容性调试，可显式设置 `OPENCLASS_SOURCE_BACKEND=native` 切回本地资料导入。
+默认的 `OPENCLASS_SOURCE_BACKEND=open_notebook` 模式恢复为由 Open Notebook 独立负责资料解析、索引、状态同步和范围内搜索。OpenClass 只保存原文件和远端资料身份，不再在默认路径中重复执行本地目录、OCR、视觉索引或 Codex 结构监督；用户引用整份资料后，系统按本轮问题检索 Open Notebook，并把返回片段冻结给板书生成链路。
+
+需要继续试验 OpenClass 本地章节目录、页码边界、视觉证据和 Codex 结构监督时，可显式设置 `OPENCLASS_SOURCE_BACKEND=native`。该模式保留现有高级实现，但不再是默认资料处理路径。
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，Realtime 会通过服务端 sideband（旁路控制通道）调用同一条 Chatbot workflow；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 

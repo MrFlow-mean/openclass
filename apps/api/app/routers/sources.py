@@ -251,5 +251,10 @@ def rebuild_package_source_structure(
     source = source_evidence_store.get_source(owner_user_id=user.id, package_id=package_id, source_id=source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
+    if source_ingestion_service.source_backend == "open_notebook":
+        raise HTTPException(
+            status_code=409,
+            detail="OpenNotebook-managed sources do not use the local structure rebuild pipeline.",
+        )
     source_structure_indexer.rebuild_structure(source)
     return source_structure_store.get_structure_view(source=source)

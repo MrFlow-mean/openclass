@@ -107,7 +107,7 @@ class SourceIngestionService:
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
         if self.source_backend == "open_notebook":
-            records = [self.open_notebook_backend.refresh(record) for record in records]
+            records = [self._refresh_open_notebook_source(record) for record in records]
         return [self._attach_job(self.structure_store.attach_summary(record)) for record in records]
 
     def add_url_source(
@@ -368,7 +368,8 @@ class SourceIngestionService:
                     error=synced.error,
                 )
                 return self._attach_job(self.structure_store.attach_summary(synced))
-            ready = synced
+            self._update_open_notebook_job(job, synced)
+            return self._attach_job(self.structure_store.attach_summary(synced))
         return self._save_and_index(ready, job)
 
     def add_text_source(
@@ -412,6 +413,14 @@ class SourceIngestionService:
             if record.status == "failed":
                 job = self._start_job(record, adapter="open_notebook", phase="failed", progress=100)
                 return self._attach_job(self.structure_store.attach_summary(record))
+            job = self._start_job(
+                record,
+                adapter="open_notebook",
+                phase="open_notebook_processing",
+                progress=35,
+            )
+            self._update_open_notebook_job(job, record)
+            return self._attach_job(self.structure_store.attach_summary(record))
         job = self._start_job(
             record,
             adapter=str(record.metadata.get("adapter") or "openclass_native_text"),
@@ -513,6 +522,13 @@ class SourceIngestionService:
                     error=editable_record.error,
                 )
                 return self._attach_job(self.structure_store.attach_summary(editable_record))
+            self.structure_store.delete_for_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            self._update_open_notebook_job(job, editable_record)
+            return self._attach_job(self.structure_store.attach_summary(editable_record))
         return self._save_and_index(editable_record, job, rebuild=True)
 
     def retry_source(
@@ -548,6 +564,13 @@ class SourceIngestionService:
                     error=retrying.error,
                 )
                 return self._attach_job(self.structure_store.attach_summary(retrying))
+            self.structure_store.delete_for_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            self._update_open_notebook_job(job, retrying)
+            return self._attach_job(self.structure_store.attach_summary(retrying))
         return self._save_and_index(retrying, job, rebuild=True)
 
     def list_jobs(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionJob]:
@@ -661,56 +684,72 @@ class SourceIngestionService:
             )
             return self._attach_job(self.structure_store.attach_summary(failed))
 
+        remote_status = status_from_open_notebook(result.status)
         metadata: dict[str, object] = {
             **record.metadata,
-            "open_notebook_sync_status": status_from_open_notebook(result.status),
+            "source_processing_owner": "open_notebook",
+            "open_notebook_sync_status": remote_status,
             "open_notebook_response": result.raw or {},
         }
-        synced = record.model_copy(
+        saved = self.store.save_source(record.model_copy(
             update={
-                "status": "fetching",
+                "status": remote_status,
                 "open_notebook_notebook_id": notebook_id,
                 "open_notebook_source_id": result.source_id,
                 "open_notebook_command_id": result.command_id,
                 "metadata": metadata,
             }
-        )
-        try:
-            snapshot_metadata = fetch_url_source_snapshot(synced, source_uri)
-        except SourceUrlSnapshotError as exc:
-            saved = self.store.save_source(
-                synced.model_copy(
+        ))
+        self._update_open_notebook_job(job, saved)
+        return self._attach_job(saved)
+
+    def _refresh_open_notebook_source(
+        self,
+        record: SourceIngestionRecord,
+    ) -> SourceIngestionRecord:
+        if (
+            record.open_notebook_source_id
+            and record.metadata.get("source_processing_owner") != "open_notebook"
+        ):
+            record = self.store.save_source(
+                record.model_copy(
                     update={
-                        "status": status_from_open_notebook(result.status),
                         "metadata": {
-                            **metadata,
-                            "local_structure_warning": str(exc),
-                        },
+                            **record.metadata,
+                            "source_processing_owner": "open_notebook",
+                        }
                     }
                 )
             )
-            self._update_job(
-                job,
-                record=saved,
-                status=saved.status,
-                progress=35,
-                phase="open_notebook_indexing",
-            )
-            return self._attach_job(self.structure_store.attach_summary(saved))
-        local_path = Path(str(snapshot_metadata.get("local_source_path") or ""))
-        prepared = synced.model_copy(
-            update={
-                "status": "parsing",
-                "size_bytes": local_path.stat().st_size if local_path.is_file() else 0,
-                "metadata": {
-                    **metadata,
-                    **snapshot_metadata,
-                    "content_hash": _file_content_hash(local_path),
-                    "native_index_version": 1,
-                },
-            }
+        refreshed = self.open_notebook_backend.refresh(record, mirror_status=True)
+        job = self.job_store.latest_for_source(
+            owner_user_id=refreshed.owner_user_id,
+            package_id=refreshed.package_id,
+            source_id=refreshed.id,
         )
-        return self._save_and_index(prepared, job)
+        if job is not None:
+            self._update_open_notebook_job(job, refreshed)
+        return refreshed
+
+    def _update_open_notebook_job(
+        self,
+        job: SourceIngestionJob,
+        record: SourceIngestionRecord,
+    ) -> None:
+        if record.status == "ready":
+            phase, progress = "ready", 100
+        elif record.status == "failed":
+            phase, progress = "failed", 100
+        else:
+            phase, progress = "open_notebook_processing", 35
+        self._update_job(
+            job,
+            record=record,
+            status=record.status,
+            progress=progress,
+            phase=phase,
+            error=record.error,
+        )
 
     def _start_job(
         self,
@@ -970,6 +1009,14 @@ class SourceIngestionService:
             if ready.status == "failed":
                 job = self._start_job(ready, adapter="open_notebook", phase="failed", progress=100)
                 return self._attach_job(self.structure_store.attach_summary(ready))
+            job = self._start_job(
+                ready,
+                adapter="open_notebook",
+                phase="open_notebook_processing",
+                progress=35,
+            )
+            self._update_open_notebook_job(job, ready)
+            return self._attach_job(self.structure_store.attach_summary(ready))
         job = self._start_job(
             ready,
             adapter=str(ready.metadata.get("adapter") or "youtube_transcript"),

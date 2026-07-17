@@ -761,7 +761,7 @@ export interface SelectionRef {
   source_locator?: string;
   source_page_start?: number | null;
   source_page_end?: number | null;
-  source_scope_kind?: "chapter" | "page_range";
+  source_scope_kind?: "source" | "chapter" | "page_range";
 }
 
 export type FormulaInkAction = "reference" | "replace";
