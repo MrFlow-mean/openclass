@@ -29,7 +29,9 @@ from app.services.source_structure_indexer import (
     _chapter_for_chunk,
     _close_chapter_ranges,
     _detected_pdf_toc_pages,
+    _find_pdf_toc_node_offset,
     _pdf_outline_chapters,
+    _pdf_structure_ocr_page_limit,
     _pdf_toc_chapters,
     _looks_like_toc_page,
     _parse_toc_line,
@@ -406,6 +408,125 @@ def test_body_heading_canonicalizes_noisy_ocr_title() -> None:
     ) == "第四节 正态总体的抽样分布"
 
 
+def test_body_sentence_with_same_number_does_not_replace_toc_title() -> None:
+    node = pdf_toc_parser.PdfTocNode(
+        title="1.3 Os代数层所给出的仿射S概形",
+        printed_page=8,
+        toc_page=2,
+        level=2,
+        number="1.3",
+    )
+
+    assert _canonical_structural_title_from_body(
+        "1.3.7, 1.3.13, 1.6.3）. 设V是S的另一个仿射开集，并设Xu,v是Xo 的开子概形",
+        node,
+    ) is None
+
+
+def test_unpaged_generic_toc_label_is_not_verified_by_incidental_body_text() -> None:
+    node = pdf_toc_parser.PdfTocNode(
+        title="记号",
+        printed_page=0,
+        toc_page=2,
+        level=1,
+    )
+    pages = [
+        PageText(page_no=2, text="目录\n记号"),
+        PageText(page_no=3, text="正文中使用了许多记号，但这里不是标题。"),
+    ]
+
+    _verify_pdf_toc_nodes([node], pages)
+
+    assert node.verified is False
+    assert node.physical_page is None
+
+
+def test_exact_body_anchor_outranks_incorrect_printed_page_mapping() -> None:
+    nodes = [
+        pdf_toc_parser.PdfTocNode(
+            title="1 Intro", printed_page=1, toc_page=2, level=1, number="1"
+        ),
+        pdf_toc_parser.PdfTocNode(
+            title="2 Next", printed_page=2, toc_page=2, level=1, number="2"
+        ),
+        pdf_toc_parser.PdfTocNode(
+            title="8.8 Ample contraction",
+            printed_page=200,
+            toc_page=2,
+            level=2,
+            number="8.8",
+        ),
+    ]
+    pages = [
+        PageText(page_no=2, text="目录"),
+        PageText(page_no=3, text="1 Intro"),
+        PageText(page_no=4, text="2 Next"),
+        PageText(page_no=10, text="8.8 Ample contraction\nBody"),
+        PageText(page_no=202, text="Unrelated mapped page"),
+    ]
+
+    _verify_pdf_toc_nodes(nodes, pages)
+
+    assert nodes[2].physical_page == 10
+    assert nodes[2].metadata["verification"] == "body_title_match"
+
+
+def test_structural_number_can_anchor_a_noisy_body_heading() -> None:
+    node = pdf_toc_parser.PdfTocNode(
+        title="8.14 Supplement for graded S modules",
+        printed_page=0,
+        toc_page=2,
+        level=2,
+        number="8.14",
+    )
+
+    assert _find_pdf_toc_node_offset(
+        "8.14 Supplement for graded modules\nBody",
+        node,
+    ) == 0
+
+
+def test_structural_cross_reference_inside_a_sentence_is_not_a_heading() -> None:
+    node = pdf_toc_parser.PdfTocNode(
+        title="1.6 Affine morphisms",
+        printed_page=0,
+        toc_page=2,
+        level=2,
+        number="1.6",
+    )
+
+    assert _find_pdf_toc_node_offset(
+        "See 1.6 Affine morphisms for the earlier result.",
+        node,
+    ) == -1
+
+
+def test_numbered_proposition_line_does_not_replace_a_different_section_title() -> None:
+    node = pdf_toc_parser.PdfTocNode(
+        title="1.6 Affine morphisms",
+        printed_page=0,
+        toc_page=2,
+        level=2,
+        number="1.6",
+    )
+
+    assert _find_pdf_toc_node_offset(
+        "1.6 Earlier proposition with unrelated wording and a much longer statement.",
+        node,
+    ) == -1
+
+
+def test_pdf_structure_ocr_limit_is_configurable(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PDF_STRUCTURE_OCR_MAX_PAGES", raising=False)
+    assert _pdf_structure_ocr_page_limit(243) == 243
+    assert _pdf_structure_ocr_page_limit(800) == 400
+
+    monkeypatch.setenv("OPENCLASS_PDF_STRUCTURE_OCR_MAX_PAGES", "120")
+    assert _pdf_structure_ocr_page_limit(243) == 120
+
+
 def test_layout_toc_keeps_a_structural_marker_split_from_its_title() -> None:
     row = pdf_toc_parser._parse_layout_row(
         [
@@ -591,14 +712,14 @@ def test_large_blank_pdf_ocr_ignores_synthetic_page_markers_and_keeps_all_pages(
 
     parsed = indexer_module._parse_pdf(pdf_path)
 
-    assert calls == [{"page_start": 1, "page_end": 205, "max_pages": 200}]
+    assert calls == [{"page_start": 1, "page_end": 205, "max_pages": 205}]
     assert parsed.metadata["ocr_attempted"] is True
     assert parsed.metadata["ocr"] is True
     assert parsed.metadata["ocr_replaced_page_count"] == 1
     assert len(parsed.pages) == 205
     assert parsed.pages[-1].page_no == 205
     assert parsed.pages[0].text == "Recovered scan text"
-    assert "其余页面保留原文字层" in " ".join(parsed.warnings)
+    assert "其余页面保留原文字层" not in " ".join(parsed.warnings)
 
 
 def test_unresolved_pdf_outline_destination_is_not_verified_from_toc_text() -> None:

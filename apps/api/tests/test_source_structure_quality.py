@@ -78,9 +78,13 @@ def test_long_document_with_only_coarse_leaf_ranges_is_partial() -> None:
     )
 
     assert result.quality.level == "partially_verified"
-    assert result.quality.verified_leaf_count == 2
+    assert result.quality.verified_leaf_count == 1
     assert result.quality.expected_leaf_count == 3
     assert result.quality.oversized_leaf_count == 1
+    assert result.chapters[0].anchor_status == "unverified"
+    assert result.chapters[0].metadata["anchor_validation"]["reasons"] == [
+        "oversized_leaf_scope"
+    ]
     assert "当前章节粒度相对资料长度过粗。" in result.quality.diagnostics
 
 

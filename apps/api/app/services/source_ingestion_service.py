@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from app.models import CoursePackage, SourceIngestionJob, SourceIngestionRecord
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
 from app.services.source_ingestion_jobs import SourceIngestionJobStore, source_ingestion_job_store
-from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_indexer import SourceStructureIndexer, source_structure_indexer
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 from app.services.source_url_snapshot import SourceUrlSnapshotError, fetch_url_source_snapshot
 from app.services.youtube_transcript_adapter import (
@@ -777,4 +777,4 @@ def _validate_public_url(raw_uri: str) -> str:
     return uri
 
 
-source_ingestion_service = SourceIngestionService()
+source_ingestion_service = SourceIngestionService(structure_indexer=source_structure_indexer)
