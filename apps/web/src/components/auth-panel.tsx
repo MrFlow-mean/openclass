@@ -81,6 +81,23 @@ type KnowledgeIconItem = {
   style?: AuthCssVars;
 };
 
+const authProviderRetryDelaysMs = [0, 250, 750] as const;
+
+async function loadAuthProvidersWithRetry() {
+  let lastError: unknown = new Error("登录方式加载失败");
+  for (const delayMs of authProviderRetryDelaysMs) {
+    if (delayMs > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    }
+    try {
+      return await api.getAuthProviders();
+    } catch (providerError) {
+      lastError = providerError;
+    }
+  }
+  throw lastError;
+}
+
 const socialSignInOptions: SocialSignInOption[] = [
   {
     id: "google",
@@ -617,7 +634,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       try {
         const [user, providers] = await Promise.all([
           api.getCurrentUser().catch(() => null),
-          api.getAuthProviders().catch(() => []),
+          loadAuthProvidersWithRetry(),
         ]);
         if (!disposed) {
           setCurrentUser(user?.role === "guest" ? null : user);
@@ -630,6 +647,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       } catch {
         if (!disposed) {
           setCurrentUser(null);
+          setAuthProviders([]);
+          setError("无法连接登录服务，请确认后端正在运行后刷新页面重试。");
         }
       } finally {
         if (!disposed) {

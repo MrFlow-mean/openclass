@@ -99,16 +99,21 @@ class SourceIngestionJobStore:
     def path(self) -> Path:
         return self._path or workspace_state.get_store().path
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA journal_mode = WAL")
-        self._initialize_connection(conn, path)
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            self._initialize_connection(conn, path)
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _initialize_connection(self, conn: sqlite3.Connection, path: Path) -> None:
         with self._lock:
