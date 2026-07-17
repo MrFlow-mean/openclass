@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { generateGeometryScene } from "@/lib/geometry-api";
-import type { AIModelSelection, SelectionRef } from "@/types";
+import type { AIModelSelection, ChatAttachmentRef, SelectionRef } from "@/types";
 import type { GeometryScene } from "@/types/geometry";
 
 type UseGeometryWorkspaceOptions = {
@@ -16,6 +16,7 @@ type UseGeometryWorkspaceOptions = {
 type GeometryWorkspaceState = {
   referenceKey: string;
   instructions: string;
+  attachments: ChatAttachmentRef[];
   scene: GeometryScene | null;
   error: string;
   isGenerating: boolean;
@@ -25,6 +26,7 @@ function emptyWorkspaceState(referenceKey = ""): GeometryWorkspaceState {
   return {
     referenceKey,
     instructions: "",
+    attachments: [],
     scene: null,
     error: "",
     isGenerating: false,
@@ -60,6 +62,28 @@ export function useGeometryWorkspace({
     [referenceKey]
   );
 
+  const setAttachments = useCallback(
+    (attachments: ChatAttachmentRef[]) => {
+      setWorkspaceState((current) => ({
+        ...(current.referenceKey === referenceKey ? current : emptyWorkspaceState(referenceKey)),
+        attachments,
+        scene: null,
+        error: "",
+      }));
+    },
+    [referenceKey]
+  );
+
+  const reportError = useCallback(
+    (message: string) => {
+      setWorkspaceState((current) => ({
+        ...(current.referenceKey === referenceKey ? current : emptyWorkspaceState(referenceKey)),
+        error: message,
+      }));
+    },
+    [referenceKey]
+  );
+
   useEffect(
     () => () => {
       requestRef.current?.abort();
@@ -86,6 +110,7 @@ export function useGeometryWorkspace({
         {
           selection,
           instructions: currentState.instructions.trim(),
+          attachments: currentState.attachments,
           text_model: textModel,
         },
         { signal: controller.signal }
@@ -125,9 +150,12 @@ export function useGeometryWorkspace({
     selection,
     instructions: currentState.instructions,
     setInstructions,
+    attachments: currentState.attachments,
+    setAttachments,
     scene: currentState.scene,
     error: currentState.error,
     isGenerating: currentState.isGenerating,
+    reportError,
     generate,
     clear,
   };

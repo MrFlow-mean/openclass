@@ -1116,6 +1116,7 @@ class CodexAppServerTextClient:
         system_prompt: str,
         user_prompt: str,
         schema: type[BaseModel],
+        image_inputs: list[str] | None = None,
         allow_live_web_search: bool = False,
         on_activity: Callable[[AgentActivityEvent], None] | None = None,
     ) -> CodexParsedResponse:
@@ -1140,6 +1141,7 @@ class CodexAppServerTextClient:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
+                image_inputs=image_inputs,
                 deadline_monotonic=deadline_monotonic,
                 allow_live_web_search=allow_live_web_search,
                 on_activity=on_activity,
@@ -1475,6 +1477,7 @@ def _run_structured_turn(
     system_prompt: str,
     user_prompt: str,
     schema: type[BaseModel],
+    image_inputs: list[str] | None = None,
     deadline_monotonic: float | None = None,
     allow_live_web_search: bool = False,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
@@ -1531,7 +1534,13 @@ def _run_structured_turn(
                 "id": request_id,
                 "params": {
                     "threadId": thread_id,
-                    "input": [{"type": "text", "text": user_prompt}],
+                    "input": [
+                        {"type": "text", "text": user_prompt},
+                        *(
+                            {"type": "image", "url": image_input, "detail": "original"}
+                            for image_input in image_inputs or []
+                        ),
+                    ],
                     "model": model,
                     "cwd": cwd,
                     "approvalPolicy": "never",

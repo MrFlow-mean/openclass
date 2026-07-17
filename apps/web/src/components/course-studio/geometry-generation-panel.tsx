@@ -1,32 +1,47 @@
 "use client";
 
 import { Box, LoaderCircle, Sparkles, Trash2 } from "lucide-react";
+import { useRef } from "react";
 
+import { ChatAttachmentChips, ChatAttachmentMenu } from "@/components/course-studio/chat-attachment-menu";
 import { GeometrySceneViewer } from "@/components/course-studio/geometry-scene-viewer";
-import type { SelectionRef } from "@/types";
+import type { ChatAttachmentRef, SelectionRef } from "@/types";
 import type { GeometryScene } from "@/types/geometry";
 
 type GeometryGenerationPanelProps = {
+  packageId: string;
   selection: SelectionRef | null;
   instructions: string;
+  attachments: ChatAttachmentRef[];
   scene: GeometryScene | null;
   error: string;
   isGenerating: boolean;
   onInstructionsChange: (value: string) => void;
+  onAttachmentsChange: (attachments: ChatAttachmentRef[]) => void;
+  onAttachmentError: (message: string) => void;
   onGenerate: () => void | Promise<void>;
   onClear: () => void;
 };
 
 export function GeometryGenerationPanel({
+  packageId,
   selection,
   instructions,
+  attachments,
   scene,
   error,
   isGenerating,
   onInstructionsChange,
+  onAttachmentsChange,
+  onAttachmentError,
   onGenerate,
   onClear,
 }: GeometryGenerationPanelProps) {
+  const attachmentBoundaryRef = useRef<HTMLDivElement | null>(null);
+  const attachmentsReady = attachments.every(
+    (attachment) => attachment.kind === "image" || attachment.status === "ready"
+  );
+
   return (
     <div className="space-y-4" data-geometry-generation-panel>
       <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-950 to-slate-800 p-4 text-white">
@@ -64,15 +79,43 @@ export function GeometryGenerationPanel({
             placeholder="例如：突出平行关系，或使用立体视角"
             className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] leading-5 text-slate-800 outline-none transition placeholder:text-slate-300 focus:border-slate-400"
           />
+          <div ref={attachmentBoundaryRef} className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 py-1.5">
+            <ChatAttachmentChips
+              attachments={attachments}
+              disabled={isGenerating}
+              onRemove={(sourceId) =>
+                onAttachmentsChange(
+                  attachments.filter((attachment) => attachment.source_ingestion_id !== sourceId)
+                )
+              }
+            />
+            <div className="flex min-h-9 items-center gap-1.5 px-2">
+              <ChatAttachmentMenu
+                packageId={packageId}
+                attachments={attachments}
+                disabled={isGenerating}
+                menuAboveRef={attachmentBoundaryRef}
+                limitLabel="每次生成"
+                testIdPrefix="geometry"
+                triggerText="添加照片和文件"
+                triggerHint="从电脑上传"
+                onChange={onAttachmentsChange}
+                onError={onAttachmentError}
+              />
+            </div>
+          </div>
           <button
             type="button"
-            disabled={isGenerating}
+            disabled={isGenerating || !attachmentsReady}
             onClick={() => void onGenerate()}
             className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 text-[12px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
           >
             {isGenerating ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
             {isGenerating ? "正在构建图形…" : scene ? "重新生成" : "生成图形"}
           </button>
+          {!attachmentsReady ? (
+            <p className="mt-2 text-[10px] leading-4 text-amber-700">文件正在解析，完成后即可生成图形。</p>
+          ) : null}
         </section>
       ) : (
         <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-8 text-center">

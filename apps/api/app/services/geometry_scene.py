@@ -118,6 +118,12 @@ formula, a problem statement, or both. Infer only the objects supported by the e
 incidence, parallel, perpendicular, tangent, symmetry, or solid relationships. Labels should match
 the quoted notation when possible.
 
+The request may also include backend-verified attachment text and image inputs explicitly selected
+for this generation. Use them as supporting evidence for the quoted excerpt, including diagrams,
+constraints, labels, and measurements that are visible in the attachment. Do not infer content from
+unselected files or unrelated course materials. If the attachment and excerpt conflict, keep the
+excerpt as the generation scope and disclose the ambiguity in summary.
+
 Return only the supplied GeometryScene contract. Never return HTML, JavaScript, SVG, Markdown, or
 executable expressions. Do not invent a fixed lesson template. If the excerpt leaves scale or
 orientation free, choose a simple representative configuration and disclose that choice in summary.
@@ -132,6 +138,8 @@ def generate_geometry_scene(
     adapter: AIExecutionAdapter,
     source_excerpt: str,
     instructions: str = "",
+    attachment_context: str = "",
+    image_inputs: list[str] | None = None,
 ) -> GeometryScene:
     normalized_excerpt = source_excerpt.strip()
     if not normalized_excerpt:
@@ -142,11 +150,13 @@ def generate_geometry_scene(
             {
                 "board_excerpt": normalized_excerpt,
                 "user_guidance": instructions.strip(),
+                "verified_attachment_context": attachment_context.strip(),
                 "response_contract": GeometryScene.model_json_schema(),
             },
             ensure_ascii=False,
         ),
         schema=GeometryScene,
+        image_inputs=image_inputs,
     )
     scene = GeometryScene.model_validate(response.output_parsed)
     return scene.model_copy(update={"source_excerpt": normalized_excerpt})

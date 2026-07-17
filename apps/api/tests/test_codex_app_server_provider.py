@@ -147,6 +147,7 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
         system_prompt="system",
         user_prompt="user",
         schema=_StructuredPayload,
+        image_inputs=["data:image/png;base64,AAAA"],
         allow_live_web_search=True,
     )
 
@@ -158,7 +159,10 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
     assert nested_schema["required"] == ["note"]
     turn_params = session.writes[0]["params"]
     assert "sandboxPolicy" not in turn_params
-    assert turn_params["input"] == [{"type": "text", "text": "user"}]
+    assert turn_params["input"] == [
+        {"type": "text", "text": "user"},
+        {"type": "image", "url": "data:image/png;base64,AAAA", "detail": "original"},
+    ]
     assert session.thread_params["config"] == {
         "default_permissions": "openclass_chat",
         "web_search": "live",

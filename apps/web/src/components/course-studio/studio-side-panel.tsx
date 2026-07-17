@@ -181,12 +181,16 @@ export function CourseStudioSidePanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
         {sidebarTab === "geometry" ? (
           <GeometryGenerationPanel
+            packageId={packageId}
             selection={geometryWorkspace.selection}
             instructions={geometryWorkspace.instructions}
+            attachments={geometryWorkspace.attachments}
             scene={geometryWorkspace.scene}
             error={geometryWorkspace.error}
             isGenerating={geometryWorkspace.isGenerating}
             onInstructionsChange={geometryWorkspace.setInstructions}
+            onAttachmentsChange={geometryWorkspace.setAttachments}
+            onAttachmentError={geometryWorkspace.reportError}
             onGenerate={geometryWorkspace.generate}
             onClear={geometryWorkspace.clear}
           />

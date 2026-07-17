@@ -1,4 +1,4 @@
-import type { AIModelSelection, SelectionRef } from "@/types";
+import type { AIModelSelection, ChatAttachmentRef, SelectionRef } from "@/types";
 
 export type GeometryDimension = "2d" | "3d";
 
@@ -63,5 +63,6 @@ export interface GeometryScene {
 export interface GeometryGenerationPayload {
   selection: SelectionRef;
   instructions?: string;
+  attachments?: ChatAttachmentRef[];
   text_model?: AIModelSelection | null;
 }

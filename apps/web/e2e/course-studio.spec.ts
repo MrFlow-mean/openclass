@@ -236,12 +236,50 @@ test("restores each lesson's attached composer reference after switching tabs", 
 test("references board content into the geometry workspace and renders a generated scene", async ({ page }) => {
   const unique = Date.now();
   const referencedText = `在四边形 ABCD 中，AB 平行于 CD，连接 AC 与 BD ${unique}`;
+  const sourceId = `source_geometry_attachment_${unique}`;
+  const fileName = `geometry-question-${unique}.png`;
   let generationPayload: Record<string, unknown> | null = null;
 
   await enterAsGuest(page);
   await createPackageFromHome(page, `图形生成课程包 ${unique}`);
   await createLessonFromEmptyStudio(page, `图形生成页面 ${unique}`);
   await writeEditorTextAndWaitForSave(page, referencedText);
+
+  await page.route("**/api/packages/*/sources", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: sourceId,
+        owner_user_id: "guest-test",
+        package_id: "package-test",
+        title: fileName,
+        source_type: "local_file",
+        source_uri: null,
+        file_name: fileName,
+        mime_type: "image/png",
+        size_bytes: 68,
+        status: "queued",
+        error: "",
+        open_notebook_notebook_id: "",
+        open_notebook_source_id: "",
+        open_notebook_command_id: "",
+        structure_status: "pending",
+        structure_strategy: null,
+        structure_has_verified_toc: false,
+        structure_error: "",
+        structure_updated_at: null,
+        ingestion_job: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        metadata: {},
+      }),
+    });
+  });
 
   await page.route("**/api/lessons/*/geometry/generate", async (route) => {
     generationPayload = route.request().postDataJSON() as Record<string, unknown>;
@@ -282,12 +320,32 @@ test("references board content into the geometry workspace and renders a generat
   await expect(page.getByRole("button", { name: "Geometry" })).toBeVisible();
   await expect(geometryPanel.getByText("几何图形生成")).toBeVisible();
   await expect(geometryPanel.getByText(referencedText, { exact: true })).toBeVisible();
+  await expect(geometryPanel.getByText("添加照片和文件")).toBeVisible();
+  await geometryPanel.getByRole("button", { name: "添加附件" }).click();
+  await expect(page.getByRole("menuitem", { name: "添加图片" })).toBeVisible();
+  await page.getByTestId("geometry-image-input").setInputFiles({
+    name: fileName,
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    ),
+  });
+  await expect(geometryPanel.getByLabel("已添加附件")).toContainText(fileName);
   await geometryPanel.getByRole("button", { name: "生成图形" }).click();
 
   await expect(page.getByRole("img", { name: "平行边四边形交互图形" })).toBeVisible();
   await expect(page.getByText("3D · 拖动旋转")).toBeVisible();
   const submittedPayload = generationPayload as Record<string, unknown> | null;
   expect((submittedPayload?.["selection"] as { excerpt?: string } | undefined)?.excerpt).toBe(referencedText);
+  expect(submittedPayload?.["attachments"]).toEqual([
+    expect.objectContaining({
+      source_ingestion_id: sourceId,
+      name: fileName,
+      mime_type: "image/png",
+      kind: "image",
+    }),
+  ]);
 });
 
 test("adds images and files from the chat plus menu and includes them in the turn", async ({ page }) => {

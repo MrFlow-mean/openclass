@@ -3,10 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
-from app.models import AIModelSelection, SelectionRef, UserView
+from app.models import AIModelSelection, ChatAttachmentRef, SelectionRef, UserView
 from app.routers.auth import current_user
 from app.services.ai_execution_adapter import CodexAIExecutionAdapter
 from app.services.ai_model_catalog import default_text_selection
+from app.services.chat_attachments import prepare_chat_attachments, verify_chat_attachments
 from app.services.codex_app_server import CodexAppServerError
 from app.services.geometry_scene import GeometryScene, generate_geometry_scene
 from app.services.workspace_state import find_lesson_package, load_workspace_for_user
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api")
 class GeometryGenerationRequest(BaseModel):
     selection: SelectionRef
     instructions: str = Field(default="", max_length=2000)
+    attachments: list[ChatAttachmentRef] = Field(default_factory=list, max_length=10)
     text_model: AIModelSelection | None = None
 
 
@@ -48,7 +50,7 @@ def create_geometry_scene(
     user: UserView = Depends(current_user),
 ) -> GeometryScene:
     workspace = load_workspace_for_user(user.id)
-    _, lesson = find_lesson_package(workspace, lesson_id)
+    package, lesson = find_lesson_package(workspace, lesson_id)
     if payload.selection.document_id and payload.selection.document_id != lesson.board_document.id:
         raise HTTPException(status_code=409, detail="引用内容不属于当前板书版本")
     excerpt = _validated_board_excerpt(
@@ -60,6 +62,16 @@ def create_geometry_scene(
     if selected_model.provider != "openai_codex":
         raise HTTPException(status_code=422, detail="当前图形生成只支持已连接的 Codex 文本模型")
     try:
+        prepared_attachments = prepare_chat_attachments(
+            attachments=verify_chat_attachments(
+                owner_user_id=user.id,
+                package_id=package.id,
+                attachments=payload.attachments,
+            )
+        )
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
         return generate_geometry_scene(
             adapter=CodexAIExecutionAdapter(
                 owner_user_id=user.id,
@@ -67,6 +79,8 @@ def create_geometry_scene(
             ),
             source_excerpt=excerpt,
             instructions=payload.instructions,
+            attachment_context=prepared_attachments.prompt_context,
+            image_inputs=prepared_attachments.image_inputs,
         )
     except CodexAppServerError as exc:
         raise HTTPException(status_code=503, detail="图形生成模型暂不可用，请检查模型连接") from exc
