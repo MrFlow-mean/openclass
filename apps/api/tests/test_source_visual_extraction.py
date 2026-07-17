@@ -523,6 +523,7 @@ def test_store_reads_visual_bytes_with_scope_path_and_hash_validation(
         asset_path=str(stored_path),
         mime_type="image/png",
         content_hash=content_hash,
+        position_hash="position_stored",
         anchor_status="verified",
     )
     store.save_structure_bundle(
@@ -547,6 +548,32 @@ def test_store_reads_visual_bytes_with_scope_path_and_hash_validation(
     assert result is not None
     assert result[0].id == stored_asset.id
     assert result[1] == content
+    assert store.save_visual_codex_analysis(
+        owner_user_id="owner_1",
+        package_id="package_1",
+        source_ingestion_id="source_stored",
+        visual_id=stored_asset.id,
+        content_hash="wrong_hash",
+        position_hash=stored_asset.position_hash,
+        analysis={"status": "completed"},
+    ) is None
+    analyzed = store.save_visual_codex_analysis(
+        owner_user_id="owner_1",
+        package_id="package_1",
+        source_ingestion_id="source_stored",
+        visual_id=stored_asset.id,
+        content_hash=stored_asset.content_hash,
+        position_hash=stored_asset.position_hash,
+        analysis={
+            "status": "completed",
+            "version": 1,
+            "content_hash": stored_asset.content_hash,
+            "position_hash": stored_asset.position_hash,
+            "description": "Persisted analysis",
+        },
+    )
+    assert analyzed is not None
+    assert analyzed.metadata["codex_visual_analysis"]["description"] == "Persisted analysis"
     assert store.get_visual(
         owner_user_id="owner_1",
         package_id="package_1",

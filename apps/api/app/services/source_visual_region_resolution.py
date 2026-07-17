@@ -33,8 +33,6 @@ from app.services.source_visual_storage import (
 )
 
 
-MAX_VISUAL_CLUE_PAGES_PER_REFERENCE = 12
-MAX_VISUAL_CLUES_PER_PAGE = 80
 MIN_COMPLETE_REGION_AREA = 0.008
 MAX_COMPLETE_REGION_AREA = 0.90
 MIN_RESOLUTION_CONFIDENCE = 0.72
@@ -211,8 +209,8 @@ def _resolve_pdf_clue_pages(
         if item.page_start is not None:
             existing_by_page[item.page_start].append(item)
 
-    for page_no in sorted(by_page)[:MAX_VISUAL_CLUE_PAGES_PER_REFERENCE]:
-        page_clues = by_page[page_no][:MAX_VISUAL_CLUES_PER_PAGE]
+    for page_no in sorted(by_page):
+        page_clues = by_page[page_no]
         clue_by_visual_id = {clue.id: clue for clue in page_clues}
         cached_visual_ids = _refresh_cached_page_resolutions(
             source=source,
