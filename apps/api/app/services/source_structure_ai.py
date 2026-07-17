@@ -173,9 +173,15 @@ def _normalize_merged_toc_levels(
 def build_codex_source_structure_analyzer(
     owner_user_id: str,
 ) -> SourceStructureAnalyzer | None:
+    default_enabled = (
+        "0"
+        if os.getenv("OPENCLASS_SOURCE_BACKEND", "open_notebook").strip().lower()
+        == "open_notebook"
+        else "1"
+    )
     enabled = os.getenv(
         "OPENCLASS_CODEX_SOURCE_ANALYSIS_ENABLED",
-        "1",
+        default_enabled,
     ).strip().lower()
     if enabled in {"0", "false", "no", "off"}:
         return None

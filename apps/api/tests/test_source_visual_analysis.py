@@ -46,6 +46,7 @@ def _visual(index: int, content: bytes) -> tuple[SourceVisualEvidence, SourceVis
 def test_every_visual_uses_one_parallel_codex_turn_and_then_reuses_cache(
     monkeypatch,
 ) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED", "true")
     content = b"\x89PNG\r\n\x1a\nvisual"
     pairs = [_visual(index, content) for index in range(4)]
     assets = {asset.id: asset for _evidence, asset in pairs}
@@ -150,6 +151,7 @@ def test_visual_analysis_concurrency_is_bounded(monkeypatch) -> None:
 
 
 def test_visual_analysis_rejects_a_result_for_another_image(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED", "true")
     content = b"\x89PNG\r\n\x1a\nvisual"
     evidence, asset = _visual(1, content)
     requirement = build_requirements("Visual analysis")

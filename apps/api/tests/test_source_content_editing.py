@@ -21,6 +21,7 @@ def _service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SourceIngestion
     database_path = tmp_path / "openclass.sqlite3"
     monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
     return SourceIngestionService(
+        source_backend="native",
         store=SourceEvidenceStore(database_path),
         job_store=SourceIngestionJobStore(database_path),
         structure_store=SourceStructureStore(database_path),

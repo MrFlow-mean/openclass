@@ -67,7 +67,10 @@ from app.services.source_grounded_board import (
     resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
-from app.services.source_visual_analysis import analyze_frozen_source_visuals
+from app.services.source_visual_analysis import (
+    analyze_frozen_source_visuals,
+    source_visual_analysis_enabled,
+)
 from app.services.source_visual_region_resolution import resolve_visual_clues_for_requirement
 
 
@@ -857,6 +860,8 @@ def _prepare_source_generation_inputs(
             )
         grounding.frozen_evidence = summaries
 
+    if not source_visual_analysis_enabled():
+        return prepared, []
     try:
         prepared = analyze_frozen_source_visuals(
             adapter=adapter,

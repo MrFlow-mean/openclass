@@ -42,6 +42,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(workspace_state, "EXPORT_DIR", export_dir)
     monkeypatch.setattr(documents_router, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(documents_router, "EXPORT_DIR", export_dir)
+    monkeypatch.setattr(source_ingestion_service, "source_backend", "native")
     workspace_state.ensure_data_dirs()
 
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER

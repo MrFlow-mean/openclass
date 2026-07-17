@@ -96,6 +96,7 @@ def test_concurrent_file_ingestion_finishes_without_locked_database(tmp_path, mo
     structure_store = SourceStructureStore(database, coordinator=coordinator)
     job_store = SourceIngestionJobStore(database, coordinator=coordinator)
     service = SourceIngestionService(
+        source_backend="native",
         store=source_store,
         job_store=job_store,
         structure_store=structure_store,
@@ -174,6 +175,7 @@ def test_file_ingestion_exposes_durable_progress_while_indexing(tmp_path, monkey
 
     monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
     service = SourceIngestionService(
+        source_backend="native",
         store=source_store,
         job_store=job_store,
         structure_store=structure_store,

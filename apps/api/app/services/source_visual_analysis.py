@@ -53,6 +53,20 @@ class SourceVisualAnalysisResponse(BaseModel):
     visuals: list[SourceVisualAnalysisItem] = Field(default_factory=list)
 
 
+def source_visual_analysis_enabled() -> bool:
+    default_enabled = (
+        "0"
+        if os.getenv("OPENCLASS_SOURCE_BACKEND", "open_notebook").strip().lower()
+        == "open_notebook"
+        else "1"
+    )
+    value = os.getenv(
+        "OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED",
+        default_enabled,
+    ).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
 def analyze_frozen_source_visuals(
     *,
     adapter: SourceVisualAnalysisAdapter,
@@ -64,6 +78,8 @@ def analyze_frozen_source_visuals(
 ) -> LearningRequirementSheet:
     """Ensure every frozen raster visual has one persisted Codex analysis."""
     prepared = requirement.model_copy(deep=True)
+    if not source_visual_analysis_enabled():
+        return prepared
     visuals = prepared.source_grounding.frozen_visual_evidence
     raster_visuals = [item for item in visuals if not _is_structured_table(item)]
     analyzed: dict[str, SourceVisualEvidence] = {}
