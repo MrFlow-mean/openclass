@@ -598,7 +598,7 @@ function SourceRow({
           <UploadCloud className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
+          <div className="space-y-2">
             {isEditingTitle ? (
               <div className="flex min-w-0 flex-1 items-center gap-1">
                 <input
@@ -619,14 +619,14 @@ function SourceRow({
                 </button>
               </div>
             ) : (
-              <div className="flex min-w-0 flex-1 items-center gap-1">
-                <p className="truncate text-sm font-semibold text-gray-900">{source.title}</p>
-                <button type="button" onClick={() => setIsEditingTitle(true)} className="rounded p-1 text-gray-400 hover:text-black" aria-label={`重命名资料 ${source.title}`}>
+              <div className="flex min-w-0 items-start gap-1">
+                <p className="min-w-0 flex-1 break-words text-sm font-semibold leading-5 text-gray-900">{source.title}</p>
+                <button type="button" onClick={() => setIsEditingTitle(true)} className="shrink-0 rounded p-1 text-gray-400 hover:text-black" aria-label={`重命名资料 ${source.title}`}>
                   <Pencil className="h-3 w-3" />
                 </button>
               </div>
             )}
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <span
                 className={clsx(
                   "rounded-full px-2 py-0.5 text-[11px] font-semibold",
@@ -716,7 +716,7 @@ function SourceRow({
               </button>
             </div>
           </div>
-          <p className="mt-1 truncate text-xs text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
+          <p className="mt-2 break-all text-xs leading-5 text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
           {processingState ? (
             <SourceProcessingProgress className="mt-2" label={processingState.label} value={processingState.value} />
           ) : null}
