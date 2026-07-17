@@ -240,7 +240,7 @@ test("adds images and files from the chat plus menu and includes them in the tur
   });
 });
 
-test("orders lesson tabs from newest to oldest", async ({ page }) => {
+test("places the create control first and orders lesson tabs from newest to oldest", async ({ page }) => {
   const unique = Date.now();
   const firstTitle = `较早课程 ${unique}`;
   const secondTitle = `最近课程 ${unique}`;
@@ -257,8 +257,9 @@ test("orders lesson tabs from newest to oldest", async ({ page }) => {
     .getByRole("navigation")
     .filter({ has: page.getByRole("button", { name: `${secondTitle} main` }) });
   const lessonTabs = lessonTabList.locator(":scope > button");
-  await expect(lessonTabs.nth(0)).toHaveAccessibleName(`${secondTitle} main`);
-  await expect(lessonTabs.nth(1)).toHaveAccessibleName(`${firstTitle} main`);
+  await expect(lessonTabs.nth(0)).toHaveAccessibleName("新建页面");
+  await expect(lessonTabs.nth(1)).toHaveAccessibleName(`${secondTitle} main`);
+  await expect(lessonTabs.nth(2)).toHaveAccessibleName(`${firstTitle} main`);
 });
 
 test("uses the top-right profile avatar as the only account menu on the home page", async ({ page }) => {

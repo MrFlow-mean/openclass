@@ -34,6 +34,27 @@ export function LessonTabs({
 }: LessonTabsProps) {
   return (
     <nav className="flex min-w-0 items-center overflow-x-auto custom-scrollbar">
+      <button
+        type="button"
+        onClick={onStartCreateLesson}
+        className="p-3 text-gray-300 transition-colors hover:text-black"
+        title={texts.createPageTitle}
+        aria-label={texts.createPageTitle}
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+      {isCreatingLessonInline && lessons.length > 0 ? (
+        <InlineNameForm
+          label={texts.newPageNameLabel}
+          placeholder={texts.lessonNamePlaceholder}
+          confirmLabel={texts.confirm}
+          cancelLabel={texts.cancel}
+          variant="tab"
+          isBusy={isBusyCreating}
+          onCancel={onCancelCreateLesson}
+          onSubmit={onCreateLesson}
+        />
+      ) : null}
       {lessons.map((lesson) => (
         <button
           key={lesson.id}
@@ -61,27 +82,6 @@ export function LessonTabs({
           </span>
         </button>
       ))}
-      {isCreatingLessonInline && lessons.length > 0 ? (
-        <InlineNameForm
-          label={texts.newPageNameLabel}
-          placeholder={texts.lessonNamePlaceholder}
-          confirmLabel={texts.confirm}
-          cancelLabel={texts.cancel}
-          variant="tab"
-          isBusy={isBusyCreating}
-          onCancel={onCancelCreateLesson}
-          onSubmit={onCreateLesson}
-        />
-      ) : null}
-      <button
-        type="button"
-        onClick={onStartCreateLesson}
-        className="p-3 text-gray-300 transition-colors hover:text-black"
-        title={texts.createPageTitle}
-        aria-label={texts.createPageTitle}
-      >
-        <Plus className="h-4 w-4" />
-      </button>
     </nav>
   );
 }
