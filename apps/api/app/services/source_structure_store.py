@@ -14,6 +14,7 @@ from app.models import (
     SourceChunk,
     SourceIngestionRecord,
     SourceStructure,
+    SourceStructureQuality,
     SourceStructureView,
     SourceVisualAsset,
     SourceVisualEvidence,
@@ -113,6 +114,7 @@ class SourceStructureStore:
                     visual_index_status TEXT NOT NULL DEFAULT 'pending',
                     visual_index_version INTEGER NOT NULL DEFAULT 0,
                     confidence REAL NOT NULL,
+                    quality_json TEXT NOT NULL DEFAULT '{}',
                     error TEXT NOT NULL,
                     warnings_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
@@ -225,6 +227,7 @@ class SourceStructureStore:
                     "visual_count": "INTEGER NOT NULL DEFAULT 0",
                     "visual_index_status": "TEXT NOT NULL DEFAULT 'pending'",
                     "visual_index_version": "INTEGER NOT NULL DEFAULT 0",
+                    "quality_json": "TEXT NOT NULL DEFAULT '{}'",
                 },
             )
             _ensure_columns(
@@ -269,6 +272,7 @@ class SourceStructureStore:
                 "structure_status": structure.status,
                 "structure_strategy": structure.strategy,
                 "structure_has_verified_toc": structure.has_verified_toc,
+                "structure_quality": structure.quality,
                 "structure_error": structure.error,
                 "structure_updated_at": structure.updated_at,
             }
@@ -393,9 +397,9 @@ class SourceStructureStore:
                         INSERT INTO source_structures(
                             id, owner_user_id, package_id, source_ingestion_id, status, strategy, has_verified_toc,
                             chapter_count, chunk_count, visual_count, visual_index_status,
-                            visual_index_version, confidence, error, warnings_json, created_at, updated_at,
+                            visual_index_version, confidence, quality_json, error, warnings_json, created_at, updated_at,
                             metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(owner_user_id, package_id, source_ingestion_id) DO UPDATE SET
                             id = excluded.id,
                             status = excluded.status,
@@ -407,6 +411,7 @@ class SourceStructureStore:
                             visual_index_status = excluded.visual_index_status,
                             visual_index_version = excluded.visual_index_version,
                             confidence = excluded.confidence,
+                            quality_json = excluded.quality_json,
                             error = excluded.error,
                             warnings_json = excluded.warnings_json,
                             updated_at = excluded.updated_at,
@@ -426,6 +431,7 @@ class SourceStructureStore:
                             structure.visual_index_status,
                             structure.visual_index_version,
                             structure.confidence,
+                            _dumps(structure.quality.model_dump(mode="json")),
                             structure.error,
                             _dumps(structure.warnings),
                             structure.created_at,
@@ -1447,6 +1453,7 @@ class SourceStructureStore:
             visual_index_status=row["visual_index_status"],
             visual_index_version=row["visual_index_version"],
             confidence=row["confidence"],
+            quality=SourceStructureQuality.model_validate(_loads(row["quality_json"], {})),
             error=row["error"],
             warnings=_loads(row["warnings_json"], []),
             created_at=row["created_at"],

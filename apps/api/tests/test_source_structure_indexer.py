@@ -14,8 +14,8 @@ from app.models import (
     SourceStructure,
     SourceVisualAsset,
 )
-from app.services import pdf_toc_parser
-from app.services.image_ocr import OCRLineLayout, OCRPageLayout
+from app.services import pdf_toc_parser, source_structure_indexer as indexer_module
+from app.services.image_ocr import OCRLineLayout, OCRPageLayout, ordered_ocr_lines
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_indexer import (
     CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
@@ -23,7 +23,9 @@ from app.services.source_structure_indexer import (
     PageText,
     ParsedSourceDocument,
     SourceStructureIndexer,
+    _EpubNavigationItem,
     _canonical_structural_title_from_body,
+    _chapters_from_epub_nav,
     _chapter_for_chunk,
     _close_chapter_ranges,
     _detected_pdf_toc_pages,
@@ -31,6 +33,7 @@ from app.services.source_structure_indexer import (
     _pdf_toc_chapters,
     _looks_like_toc_page,
     _parse_toc_line,
+    _reanchor_existing_visuals,
     _verify_pdf_toc_nodes,
 )
 from app.services.source_structure_store import SourceStructureStore
@@ -111,6 +114,53 @@ def test_epub_ncx_preserves_native_parent_child_hierarchy(tmp_path: Path) -> Non
     assert chapters[1].source_locator == "epub:OEBPS/overview.xhtml#overview"
     assert chapters[0].body_start_offset == chapters[1].body_start_offset
     assert chapters[0].body_end_offset == chapters[3].body_start_offset
+
+
+def test_epub_target_file_without_fragment_or_title_remains_unverified() -> None:
+    chapters = _chapters_from_epub_nav(
+        [
+            _EpubNavigationItem(
+                target="OEBPS/chapter.xhtml",
+                fragment="",
+                label="Missing navigation label",
+                order=0,
+                level=1,
+            )
+        ],
+        [("OEBPS/chapter.xhtml", "Actual body text", [], {})],
+        {"OEBPS/chapter.xhtml": 100},
+    )
+
+    assert chapters[0].verified is False
+    assert chapters[0].start_offset is None
+    assert chapters[0].metadata["anchor_source"] == "target_file_only"
+
+
+def test_epub_fragment_can_ground_a_navigation_label_that_differs_from_body_text() -> None:
+    chapters = _chapters_from_epub_nav(
+        [
+            _EpubNavigationItem(
+                target="OEBPS/chapter.xhtml",
+                fragment="section-anchor",
+                label="Display label",
+                order=0,
+                level=1,
+            )
+        ],
+        [
+            (
+                "OEBPS/chapter.xhtml",
+                "Actual body text",
+                [],
+                {"section-anchor": 7},
+            )
+        ],
+        {"OEBPS/chapter.xhtml": 100},
+    )
+
+    assert chapters[0].verified is True
+    assert chapters[0].start_offset == 107
+    assert chapters[0].metadata["anchor_source"] == "epub_fragment"
 
 
 def test_failed_visual_rebuild_still_persists_new_epub_structure(tmp_path: Path) -> None:
@@ -294,6 +344,34 @@ def test_layout_toc_splits_columns_before_grouping_rows() -> None:
     ]
     assert [row.printed_page for row in rows] == [1, 3, 20, 20]
     assert [row.level for row in rows] == [1, 2, 1, 2]
+
+
+def test_ocr_page_lines_follow_deterministic_column_reading_order() -> None:
+    lines = [
+        *[
+            OCRLineLayout(f"R{index}", x=0.72, y=1 - index * 0.1)
+            for index in range(1, 6)
+        ],
+        *[
+            OCRLineLayout(f"L{index}", x=0.10, y=1 - index * 0.1)
+            for index in range(1, 6)
+        ],
+    ]
+
+    ordered = ordered_ocr_lines(list(reversed(lines)))
+
+    assert [line.text for line in ordered] == [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+    ]
 
 
 def test_layout_toc_keeps_same_title_at_chapter_and_section_levels() -> None:
@@ -489,6 +567,40 @@ def test_pdf_outline_merges_with_structured_toc_rows(tmp_path: Path, monkeypatch
     assert all(not path.exists() for path in visual_paths)
 
 
+def test_large_blank_pdf_ocr_ignores_synthetic_page_markers_and_keeps_all_pages(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pdf_path = tmp_path / "blank-scan.pdf"
+    document = canvas.Canvas(str(pdf_path))
+    for _ in range(205):
+        document.showPage()
+    document.save()
+    calls: list[dict[str, int]] = []
+
+    def fake_layouts(_path: Path, **kwargs: int) -> list[OCRPageLayout]:
+        calls.append(kwargs)
+        return [
+            OCRPageLayout(
+                page_no=1,
+                lines=[OCRLineLayout("Recovered scan text", x=0.1, y=0.9)],
+            )
+        ]
+
+    monkeypatch.setattr(indexer_module, "extract_pdf_pages_layout", fake_layouts)
+
+    parsed = indexer_module._parse_pdf(pdf_path)
+
+    assert calls == [{"page_start": 1, "page_end": 205, "max_pages": 200}]
+    assert parsed.metadata["ocr_attempted"] is True
+    assert parsed.metadata["ocr"] is True
+    assert parsed.metadata["ocr_replaced_page_count"] == 1
+    assert len(parsed.pages) == 205
+    assert parsed.pages[-1].page_no == 205
+    assert parsed.pages[0].text == "Recovered scan text"
+    assert "其余页面保留原文字层" in " ".join(parsed.warnings)
+
+
 def test_unresolved_pdf_outline_destination_is_not_verified_from_toc_text() -> None:
     class OutlineItem:
         title = "6.6.2 Binary heap implementation"
@@ -608,6 +720,243 @@ def test_chunk_uses_physical_pages_instead_of_chapter_page_metadata(tmp_path: Pa
     )
     assert evidence
     assert evidence[0].expanded_text == "A" * 200
+
+
+def test_semantic_visual_reanchor_survives_chapter_id_upgrade() -> None:
+    old_chapter = SourceChapter(
+        id="sourcechapter_v1_old",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        title="Grounded section",
+        path=["Part I", "Grounded section"],
+        level=2,
+        source_locator="epub:OEBPS/chapter.xhtml#old",
+        body_start_offset=0,
+        body_end_offset=100,
+        anchor_status="verified",
+    )
+    new_chapter = old_chapter.model_copy(
+        update={
+            "id": "sourcechapter_v2_new",
+            "source_locator": "epub:OEBPS/chapter.xhtml#new",
+        }
+    )
+    chunk = SourceChunk(
+        id="sourcechunk_new",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=new_chapter.id,
+        source_locator="",
+        text="Grounded section body",
+        start_offset=0,
+        end_offset=23,
+    )
+    visual = SourceVisualAsset(
+        id="sourcevisual_1",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=old_chapter.id,
+        source_locator="epub:OEBPS/chapter.xhtml:image:0",
+        anchor_status="verified",
+    )
+
+    [reanchored] = _reanchor_existing_visuals(
+        [visual],
+        structure=SourceStructure(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            source_ingestion_id="source_1",
+        ),
+        chapters=[new_chapter],
+        chunks=[chunk],
+        previous_chapters=[old_chapter],
+    )
+
+    assert reanchored.chapter_id == new_chapter.id
+    assert reanchored.before_chunk_id == chunk.id
+    assert reanchored.after_chunk_id == chunk.id
+    assert reanchored.anchor_status == "verified"
+    assert reanchored.metadata["structure_reanchor_method"] == "semantic_chapter"
+
+
+def test_semantic_visual_reanchor_uses_chapter_number_for_repeated_titles() -> None:
+    common = {
+        "owner_user_id": "user_1",
+        "package_id": "pkg_1",
+        "source_ingestion_id": "source_1",
+        "title": "Repeated section",
+        "path": ["Part I", "Repeated section"],
+        "level": 2,
+        "source_locator": "epub:OEBPS/shared.xhtml",
+        "body_start_offset": 0,
+        "body_end_offset": 100,
+        "anchor_status": "verified",
+    }
+    old_first = SourceChapter(
+        id="sourcechapter_v1_first",
+        number="1",
+        normalized_number="1",
+        order_index=0,
+        **common,
+    )
+    old_second = SourceChapter(
+        id="sourcechapter_v1_second",
+        number="2",
+        normalized_number="2",
+        order_index=1,
+        **common,
+    )
+    new_first = old_first.model_copy(
+        update={"id": "sourcechapter_v2_first", "order_index": 1}
+    )
+    new_second = old_second.model_copy(
+        update={"id": "sourcechapter_v2_second", "order_index": 0}
+    )
+    chunk = SourceChunk(
+        id="sourcechunk_second",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=new_second.id,
+        source_locator="",
+        text="Second repeated section body",
+        start_offset=0,
+        end_offset=28,
+    )
+    visual = SourceVisualAsset(
+        id="sourcevisual_second",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=old_second.id,
+        source_locator="epub:OEBPS/shared.xhtml:image:0",
+        anchor_status="verified",
+    )
+
+    [reanchored] = _reanchor_existing_visuals(
+        [visual],
+        structure=SourceStructure(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            source_ingestion_id="source_1",
+        ),
+        chapters=[new_first, new_second],
+        chunks=[chunk],
+        previous_chapters=[old_first, old_second],
+    )
+
+    assert reanchored.chapter_id == new_second.id
+    assert reanchored.before_chunk_id == chunk.id
+    assert reanchored.anchor_status == "verified"
+    assert reanchored.metadata["structure_reanchor_method"] == "semantic_chapter"
+
+
+def test_visual_direct_id_cannot_bypass_demoted_chapter_anchor() -> None:
+    chapter = SourceChapter(
+        id="sourcechapter_demoted",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        title="Unverified section",
+        path=["Unverified section"],
+        level=1,
+        source_locator="epub:OEBPS/chapter.xhtml",
+        body_start_offset=0,
+        body_end_offset=100,
+        anchor_status="unverified",
+    )
+    visual = SourceVisualAsset(
+        id="sourcevisual_1",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=chapter.id,
+        source_locator="epub:OEBPS/chapter.xhtml:image:0",
+        anchor_status="verified",
+    )
+
+    [reanchored] = _reanchor_existing_visuals(
+        [visual],
+        structure=SourceStructure(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            source_ingestion_id="source_1",
+        ),
+        chapters=[chapter],
+        chunks=[],
+        previous_chapters=[chapter],
+    )
+
+    assert reanchored.chapter_id is None
+    assert reanchored.anchor_status == "unverified"
+    assert reanchored.metadata["structure_reanchor_method"] == "unresolved"
+
+
+def test_semantic_visual_reanchor_uses_occurrence_for_identical_chapters() -> None:
+    common = {
+        "owner_user_id": "user_1",
+        "package_id": "pkg_1",
+        "source_ingestion_id": "source_1",
+        "title": "Repeated section",
+        "path": ["Part I", "Repeated section"],
+        "level": 2,
+        "source_locator": "epub:OEBPS/shared.xhtml",
+        "body_start_offset": 0,
+        "body_end_offset": 100,
+        "anchor_status": "verified",
+    }
+    old_first = SourceChapter(
+        id="sourcechapter_v1_first",
+        order_index=0,
+        **common,
+    )
+    old_second = SourceChapter(
+        id="sourcechapter_v1_second",
+        order_index=1,
+        **common,
+    )
+    new_first = old_first.model_copy(update={"id": "sourcechapter_v2_first"})
+    new_second = old_second.model_copy(update={"id": "sourcechapter_v2_second"})
+    chunk = SourceChunk(
+        id="sourcechunk_second",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=new_second.id,
+        source_locator="",
+        text="Second repeated section body",
+        start_offset=0,
+        end_offset=28,
+    )
+    visual = SourceVisualAsset(
+        id="sourcevisual_second",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        source_ingestion_id="source_1",
+        chapter_id=old_second.id,
+        source_locator="epub:OEBPS/shared.xhtml:image:0",
+        anchor_status="verified",
+    )
+
+    [reanchored] = _reanchor_existing_visuals(
+        [visual],
+        structure=SourceStructure(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            source_ingestion_id="source_1",
+        ),
+        chapters=[new_first, new_second],
+        chunks=[chunk],
+        previous_chapters=[old_first, old_second],
+    )
+
+    assert reanchored.chapter_id == new_second.id
+    assert reanchored.before_chunk_id == chunk.id
+    assert reanchored.anchor_status == "verified"
+    assert reanchored.metadata["structure_reanchor_method"] == "semantic_occurrence"
 
 
 def test_chunk_prefers_nearest_containing_chapter_over_broad_range() -> None:
@@ -896,10 +1245,12 @@ def _write_pdf_with_outline(path: Path) -> None:
     pdf.line(82, 440, 300, 570)
     pdf.showPage()
     pdf.drawString(72, 720, "1.2 More")
+    pdf.drawString(72, 690, "More section body text.")
     pdf.showPage()
     pdf.bookmarkPage("chapter-2")
     pdf.addOutlineEntry("2 Next", "chapter-2", level=0)
     pdf.drawString(72, 720, "2 Next")
+    pdf.drawString(72, 690, "Next section body text.")
     pdf.save()
 
 

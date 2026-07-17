@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass, field
+from functools import cmp_to_key
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,50 @@ class OCRLineLayout:
 class OCRPageLayout:
     page_no: int
     lines: list[OCRLineLayout] = field(default_factory=list)
+
+
+def ordered_ocr_lines(lines: list[OCRLineLayout]) -> list[OCRLineLayout]:
+    """Return OCR lines in deterministic human reading order.
+
+    The Vision adapter may append a right-side recognition pass after the main
+    pass, so payload order is not a reliable reading order. This mirrors the
+    native adapter's column-aware ordering while retaining every line's layout.
+    """
+
+    def compare_left_to_right(left: OCRLineLayout, right: OCRLineLayout) -> int:
+        if abs(left.x - right.x) > 0.001:
+            return -1 if left.x < right.x else 1
+        if left.y == right.y:
+            return 0
+        return -1 if left.y > right.y else 1
+
+    x_sorted = sorted(lines, key=cmp_to_key(compare_left_to_right))
+    largest_gap = 0.0
+    split_x: float | None = None
+    if len(x_sorted) >= 10:
+        for previous, current in zip(x_sorted, x_sorted[1:]):
+            gap = current.x - previous.x
+            if gap > largest_gap:
+                largest_gap = gap
+                split_x = (current.x + previous.x) / 2
+
+    def top_to_bottom(column: list[OCRLineLayout]) -> list[OCRLineLayout]:
+        def compare(left: OCRLineLayout, right: OCRLineLayout) -> int:
+            if abs(left.y - right.y) > 0.012:
+                return -1 if left.y > right.y else 1
+            if left.x == right.x:
+                return 0
+            return -1 if left.x < right.x else 1
+
+        return sorted(column, key=cmp_to_key(compare))
+
+    if split_x is not None and largest_gap >= 0.18:
+        left_column = [line for line in lines if line.x <= split_x]
+        right_column = [line for line in lines if line.x > split_x]
+        if len(left_column) >= 4 and len(right_column) >= 4:
+            return [*top_to_bottom(left_column), *top_to_bottom(right_column)]
+
+    return top_to_bottom(lines)
 
 
 def _run_vision_ocr_payload(args: list[str], *, timeout: int) -> dict[str, Any] | None:

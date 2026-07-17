@@ -273,6 +273,13 @@ export type SourceIngestionStatus = "queued" | "fetching" | "parsing" | "indexin
 export type EvidenceBundleStatus = "candidate" | "confirmed" | "consumed" | "archived";
 export type EvidencePurpose = "chat" | "board_generation" | "board_edit" | "board_explain" | "board_chat";
 export type SourceStructureStatus = "pending" | "building" | "ready" | "linear_only" | "failed";
+export type SourceStructureQualityLevel =
+  | "unassessed"
+  | "fully_verified"
+  | "partially_verified"
+  | "unverified"
+  | "search_only";
+export type SourceTextReadiness = "unknown" | "ready" | "sparse" | "very_sparse" | "empty";
 export type SourceStructureStrategy =
   | "epub_navigation"
   | "epub_heading"
@@ -282,7 +289,32 @@ export type SourceStructureStrategy =
   | "pdf_layout_toc"
   | "docx_heading"
   | "markdown_heading"
-  | "linear_text";
+  | "linear_text"
+  | "open_notebook_search_only";
+
+export interface SourceStructureQuality {
+  evaluator_version: number;
+  level: SourceStructureQualityLevel;
+  text_readiness: SourceTextReadiness;
+  confidence: number;
+  total_chapter_count: number;
+  verified_chapter_count: number;
+  unverified_chapter_count: number;
+  demoted_chapter_count: number;
+  verified_leaf_count: number;
+  expected_leaf_count: number;
+  verified_ratio: number;
+  boundary_valid_ratio: number;
+  body_coverage_ratio: number;
+  independent_anchor_ratio: number;
+  meaningful_characters_per_page: number;
+  duplicate_locator_ratio: number;
+  duplicate_range_count: number;
+  overlap_ratio: number;
+  non_monotonic_count: number;
+  oversized_leaf_count: number;
+  diagnostics: string[];
+}
 
 export interface SourceIngestionJob {
   id: string;
@@ -313,6 +345,7 @@ export interface SourceIngestionRecord {
   structure_status: SourceStructureStatus;
   structure_strategy?: SourceStructureStrategy | null;
   structure_has_verified_toc: boolean;
+  structure_quality?: SourceStructureQuality | null;
   structure_error: string;
   structure_updated_at?: string | null;
   ingestion_job?: SourceIngestionJob | null;
@@ -346,6 +379,7 @@ export interface SourceStructure {
   status: SourceStructureStatus;
   strategy: SourceStructureStrategy;
   has_verified_toc: boolean;
+  quality?: SourceStructureQuality | null;
   chapter_count: number;
   chunk_count: number;
   confidence: number;

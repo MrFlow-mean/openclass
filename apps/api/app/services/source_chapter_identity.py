@@ -30,16 +30,22 @@ def stable_source_chapter_id(
     source_locator: str,
     order_index: int,
 ) -> str:
-    """Return a stable ID for one chapter in one ingested source structure."""
+    """Return a semantic ID that survives parser strategy and unrelated order changes.
+
+    ``order_index`` is the occurrence number among otherwise identical semantic
+    siblings. The caller no longer passes the chapter's global list position.
+    ``source_locator`` stays in the signature for compatibility, but locators are
+    deliberately excluded because a structure rebuild may replace a PDF outline
+    locator with an equivalent printed-TOC or body-heading locator.
+    """
     identity = "\x1f".join(
         [
-            "v1",
+            "v2",
             source_ingestion_id.strip(),
             ">".join(_normalize_text(part) for part in parent_path if part.strip()),
             _normalize_number(normalized_number),
             _normalize_text(title),
             str(max(1, level)),
-            _normalize_text(source_locator),
             str(max(0, order_index)),
         ]
     )
@@ -65,26 +71,20 @@ def rebind_stale_source_chapter_selection(
     if not verified:
         return SourceChapterRebinding()
 
+    anchors: list[tuple[str, list[SourceChapter]]] = []
     locator = _normalize_text(selection.source_locator)
     if locator:
         locator_matches = [
             chapter for chapter in verified if _normalize_text(chapter.source_locator) == locator
         ]
-        if len(locator_matches) == 1:
-            return SourceChapterRebinding(
-                chapter=locator_matches[0],
-                matched_anchors=("source_locator",),
-                candidate_ids=(locator_matches[0].id,),
-            )
-        if len(locator_matches) > 1:
-            return SourceChapterRebinding(candidate_ids=tuple(chapter.id for chapter in locator_matches))
+        if locator_matches:
+            anchors.append(("source_locator", locator_matches))
 
     expected_number = _normalize_number(selection.source_chapter_number)
     expected_title = _normalize_text(selection.source_chapter_title)
     expected_path = tuple(_normalize_text(part) for part in selection.heading_path if part.strip())
     has_page_bounds = selection.source_page_start is not None or selection.source_page_end is not None
 
-    anchors: list[tuple[str, list[SourceChapter]]] = []
     if expected_number:
         anchors.append(
             (
@@ -127,18 +127,30 @@ def rebind_stale_source_chapter_selection(
             )
         )
 
-    # A stale ID is safe to rebind only when two or more independent structural
-    # anchors agree on exactly one currently verified chapter.
-    if len(anchors) < 2:
+    # A stale ID is safe to rebind only when two or more non-empty structural
+    # anchors agree. One corrected or missing volatile anchor (for example a page
+    # boundary) must not veto title + path consensus, while a tied consensus
+    # remains ambiguous.
+    non_empty_anchors = [anchor for anchor in anchors if anchor[1]]
+    if not non_empty_anchors:
         return SourceChapterRebinding()
-    matching_ids = set(chapter.id for chapter in anchors[0][1])
-    for _anchor_name, candidates in anchors[1:]:
-        matching_ids.intersection_update(chapter.id for chapter in candidates)
-    candidates = [chapter for chapter in verified if chapter.id in matching_ids]
-    if len(candidates) == 1:
+
+    votes: dict[str, list[str]] = {}
+    for anchor_name, candidates in non_empty_anchors:
+        for chapter in candidates:
+            votes.setdefault(chapter.id, []).append(anchor_name)
+    max_votes = max((len(anchor_names) for anchor_names in votes.values()), default=0)
+    winning_ids = {
+        chapter_id
+        for chapter_id, anchor_names in votes.items()
+        if len(anchor_names) == max_votes
+    }
+    candidates = [chapter for chapter in verified if chapter.id in winning_ids]
+    if max_votes >= 2 and len(candidates) == 1:
+        matched_anchors = tuple(votes[candidates[0].id])
         return SourceChapterRebinding(
             chapter=candidates[0],
-            matched_anchors=tuple(anchor_name for anchor_name, _candidates in anchors),
+            matched_anchors=matched_anchors,
             candidate_ids=(candidates[0].id,),
         )
     return SourceChapterRebinding(candidate_ids=tuple(chapter.id for chapter in candidates))

@@ -20,7 +20,12 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
-from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
+from app.services.image_ocr import (
+    extract_image_text,
+    extract_pdf_pages_layout,
+    extract_pdf_pages_text,
+    ordered_ocr_lines,
+)
 from app.services.pdf_toc_parser import (
     PdfOutlineAnchor,
     PdfTocNode,
@@ -35,6 +40,10 @@ from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_archive import SafeSourceArchive
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
+from app.services.source_structure_quality import (
+    evaluate_source_structure_quality,
+    meaningful_text_character_count,
+)
 from app.services.source_visual_extraction import (
     CURRENT_SOURCE_VISUAL_INDEX_VERSION,
     SourceVisualExtractionResult,
@@ -46,7 +55,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 7
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 8
 SourceIndexProgressCallback = Callable[[str, int], None]
 
 
@@ -65,6 +74,7 @@ class PageText:
     text: str
     start_offset: int = 0
     end_offset: int = 0
+    content_start_offset: int | None = None
 
 
 @dataclass
@@ -188,10 +198,12 @@ class SourceStructureIndexer:
         progress_callback: SourceIndexProgressCallback | None = None,
     ) -> SourceStructure:
         previous_visuals: list[SourceVisualAsset] = []
+        previous_chapters: list[SourceChapter] = []
         if preserve_existing_visuals:
             previous_view = self.store.get_structure_view(source=record, chunk_limit=0)
             previous = previous_view.structure
             previous_visuals = previous_view.visuals
+            previous_chapters = previous_view.chapters
         else:
             previous = self.store.get_structure(
                 owner_user_id=record.owner_user_id,
@@ -219,6 +231,7 @@ class SourceStructureIndexer:
                 building=building,
                 preserve_existing_visuals=preserve_existing_visuals,
                 previous_visuals=previous_visuals,
+                previous_chapters=previous_chapters,
                 progress_callback=progress_callback,
             )
 
@@ -230,6 +243,7 @@ class SourceStructureIndexer:
         building: SourceStructure,
         preserve_existing_visuals: bool = False,
         previous_visuals: list[SourceVisualAsset] | None = None,
+        previous_chapters: list[SourceChapter] | None = None,
         progress_callback: SourceIndexProgressCallback | None = None,
     ) -> SourceStructure:
         extracted_storage_keys: list[str] = []
@@ -242,6 +256,13 @@ class SourceStructureIndexer:
             )
             _report_progress(progress_callback, "mapping_structure", 58)
             chapters = self._chapters_for_record(record, parsed)
+            quality_result = evaluate_source_structure_quality(
+                chapters=chapters,
+                text=parsed.text,
+                strategy=parsed.strategy,
+                metadata=parsed.metadata,
+            )
+            chapters = quality_result.chapters
             _report_progress(progress_callback, "building_chunks", 63)
             chunks = self._chunks_for_record(record, parsed, chapters)
             _report_progress(progress_callback, "extracting_visuals", 70)
@@ -257,6 +278,7 @@ class SourceStructureIndexer:
                         structure=building,
                         chapters=chapters,
                         chunks=chunks,
+                        previous_chapters=previous_chapters or [],
                     ),
                 )
             else:
@@ -292,6 +314,7 @@ class SourceStructureIndexer:
                                 structure=building,
                                 chapters=chapters,
                                 chunks=chunks,
+                                previous_chapters=previous_view.chapters,
                             ),
                             warnings=list(
                                 dict.fromkeys(
@@ -324,14 +347,21 @@ class SourceStructureIndexer:
             ]
             has_verified_toc = any(chapter.anchor_status == "verified" for chapter in chapters)
             status = "ready" if has_verified_toc else "linear_only"
-            confidence = max((chapter.confidence for chapter in chapters), default=0.0)
+            confidence = quality_result.quality.confidence
             structure = building.model_copy(
                 update={
                     "status": status,
                     "strategy": parsed.strategy,
                     "confidence": confidence,
+                    "quality": quality_result.quality,
                     "warnings": list(
-                        dict.fromkeys([*parsed.warnings, *visual_result.warnings])
+                        dict.fromkeys(
+                            [
+                                *parsed.warnings,
+                                *quality_result.warnings,
+                                *visual_result.warnings,
+                            ]
+                        )
                     ),
                     "visual_count": len(visual_result.visuals),
                     "visual_index_status": visual_result.status,
@@ -415,6 +445,7 @@ class SourceStructureIndexer:
     def _chapters_for_record(self, record: SourceIngestionRecord, parsed: ParsedSourceDocument) -> list[SourceChapter]:
         chapters: list[SourceChapter] = []
         level_stack: list[SourceChapter] = []
+        semantic_occurrences: Counter[tuple[tuple[str, ...], str, str, int]] = Counter()
         for index, chapter in enumerate(parsed.chapters):
             is_verified = chapter.verified and chapter.start_offset is not None
             end_offset = chapter.end_offset
@@ -440,6 +471,14 @@ class SourceStructureIndexer:
                 level_stack.pop()
             parent = level_stack[-1] if level_stack else None
             normalized_number = _normalize_chapter_number(number)
+            semantic_key = (
+                tuple(parent.path if parent else ()),
+                normalized_number,
+                _normalize_for_match(title),
+                level,
+            )
+            semantic_occurrence = semantic_occurrences[semantic_key]
+            semantic_occurrences[semantic_key] += 1
             source_chapter = SourceChapter(
                 id=stable_source_chapter_id(
                     source_ingestion_id=record.id,
@@ -448,7 +487,7 @@ class SourceStructureIndexer:
                     title=title,
                     level=level,
                     source_locator=chapter.source_locator,
-                    order_index=index,
+                    order_index=semantic_occurrence,
                 ),
                 owner_user_id=record.owner_user_id,
                 package_id=record.package_id,
@@ -468,7 +507,11 @@ class SourceStructureIndexer:
                 anchor_status="verified" if is_verified else "unverified",
                 confidence=chapter.confidence,
                 excerpt=excerpt,
-                metadata=chapter.metadata,
+                metadata={
+                    **chapter.metadata,
+                    "semantic_identity_version": 2,
+                    "semantic_occurrence": semantic_occurrence,
+                },
             )
             chapters.append(source_chapter)
             level_stack.append(source_chapter)
@@ -772,7 +815,15 @@ def _parse_pptx(path: Path) -> ParsedSourceDocument:
             start = offset
             parts.append(prefix + slide_text)
             offset += len(prefix) + len(slide_text)
-            pages.append(PageText(page_no=slide_no, text=slide_text, start_offset=start, end_offset=offset))
+            pages.append(
+                PageText(
+                    page_no=slide_no,
+                    text=slide_text,
+                    start_offset=start,
+                    end_offset=offset,
+                    content_start_offset=start + len(prefix),
+                )
+            )
             chapters.append(
                 DetectedChapter(
                     title=texts[0],
@@ -786,7 +837,9 @@ def _parse_pptx(path: Path) -> ParsedSourceDocument:
                     metadata={"source": "pptx_slide", "slide": slide_no},
                 )
             )
-    full_text = "".join(parts).strip()
+    # Keep the exact assembled coordinate space. Trimming here would shift every
+    # slide offset away from the text persisted in the index.
+    full_text = "".join(parts)
     _close_chapter_ranges(chapters, len(full_text))
     return ParsedSourceDocument(
         text=full_text,
@@ -849,7 +902,9 @@ def _parse_xlsx(path: Path) -> ParsedSourceDocument:
                     metadata={"source": "xlsx_sheet", "sheet": sheet_no},
                 )
             )
-    full_text = "".join(parts).strip()
+    # Keep the exact assembled coordinate space; chapter offsets above include
+    # the synthetic sheet prefix.
+    full_text = "".join(parts)
     _close_chapter_ranges(chapters, len(full_text))
     return ParsedSourceDocument(
         text=full_text,
@@ -857,6 +912,28 @@ def _parse_xlsx(path: Path) -> ParsedSourceDocument:
         strategy="linear_text",
         metadata={"parser": "xlsx", "sheet_count": len(chapters)},
     )
+
+
+def _assemble_pdf_pages(page_texts: list[tuple[int, str]]) -> tuple[str, list[PageText]]:
+    parts: list[str] = []
+    pages: list[PageText] = []
+    offset = 0
+    for page_no, text in page_texts:
+        prefix = f"\n\n[Page {page_no}]\n"
+        page_text = f"{prefix}{text}"
+        start = offset
+        parts.append(page_text)
+        offset += len(page_text)
+        pages.append(
+            PageText(
+                page_no=page_no,
+                text=text,
+                start_offset=start,
+                end_offset=offset,
+                content_start_offset=start + len(prefix),
+            )
+        )
+    return "".join(parts), pages
 
 
 def _parse_pdf(
@@ -880,30 +957,95 @@ def _parse_pdf(
         start = offset
         parts.append(page_text)
         offset += len(page_text)
-        pages.append(PageText(page_no=page_index + 1, text=text, start_offset=start, end_offset=offset))
+        pages.append(
+            PageText(
+                page_no=page_index + 1,
+                text=text,
+                start_offset=start,
+                end_offset=offset,
+                content_start_offset=start + len(f"\n\n[Page {page_index + 1}]\n"),
+            )
+        )
         page_progress = 25 + round(30 * (page_index + 1) / max(1, page_count))
         if page_progress != last_progress:
             _report_progress(progress_callback, "reading_pages", page_progress)
             last_progress = page_progress
     full_text = "".join(parts)
+    native_meaningful_character_count = sum(
+        meaningful_text_character_count(page.text) for page in pages
+    )
+    ocr_attempted = False
     ocr_used = False
-    if len(re.sub(r"\s+", "", full_text)) < max(40, len(pages) * 8) and pages:
-        ocr_text = extract_pdf_pages_text(
+    ocr_page_count = 0
+    ocr_replaced_page_count = 0
+    ocr_page_mapping_preserved = True
+    warnings: list[str] = []
+    if native_meaningful_character_count < max(40, len(pages) * 8) and pages:
+        ocr_attempted = True
+        ocr_page_limit = min(len(pages), 200)
+        ocr_layouts = extract_pdf_pages_layout(
             path,
             page_start=1,
             page_end=len(pages),
-            max_pages=min(len(pages), 200),
+            max_pages=ocr_page_limit,
         )
-        if ocr_text:
-            full_text = ocr_text.strip()
-            pages = [PageText(page_no=1, text=full_text, start_offset=0, end_offset=len(full_text))]
+        if ocr_layouts:
+            ocr_page_count = len(ocr_layouts)
+            ocr_text_by_page = {
+                layout.page_no: "\n".join(
+                    line.text
+                    for line in ordered_ocr_lines(layout.lines)
+                    if line.text.strip()
+                ).strip()
+                for layout in ocr_layouts
+            }
+            merged_page_texts: list[tuple[int, str]] = []
+            for page in pages:
+                ocr_page_text = ocr_text_by_page.get(page.page_no, "")
+                if meaningful_text_character_count(
+                    ocr_page_text
+                ) > meaningful_text_character_count(page.text):
+                    merged_page_texts.append((page.page_no, ocr_page_text))
+                    ocr_replaced_page_count += 1
+                else:
+                    merged_page_texts.append((page.page_no, page.text))
+            if ocr_replaced_page_count:
+                full_text, pages = _assemble_pdf_pages(merged_page_texts)
+                ocr_used = True
+            if len(reader.pages) > ocr_page_limit:
+                warnings.append(
+                    f"扫描 PDF 仅尝试前 {ocr_page_limit} 页的 OCR；"
+                    "其余页面保留原文字层。"
+                )
+        else:
+            ocr_text = extract_pdf_pages_text(
+                path,
+                page_start=1,
+                page_end=len(pages),
+                max_pages=ocr_page_limit,
+            )
+        if not ocr_layouts and ocr_text:
+            fallback_ocr_text = ocr_text.strip()
+            if native_meaningful_character_count:
+                full_text = (
+                    f"{full_text}\n\n[OCR text without page mapping]\n"
+                    f"{fallback_ocr_text}"
+                )
+            else:
+                full_text = fallback_ocr_text
+                pages = []
             ocr_used = True
+            ocr_page_count = ocr_page_limit
+            ocr_page_mapping_preserved = False
+            warnings.append(
+                "扫描 PDF 已提取文字，但 OCR 未返回逐页坐标；"
+                "目录节点不会据此冒充精确页段。"
+            )
     outline_chapters = _pdf_outline_chapters(reader, pages, full_text)
     chapters = outline_chapters
     strategy = "pdf_outline" if outline_chapters else "linear_text"
-    warnings: list[str] = []
     toc_metadata: dict[str, Any] = {}
-    if outline_chapters and not any(chapter.level > 1 for chapter in outline_chapters):
+    if outline_chapters:
         extraction = extract_pdf_toc(
             path,
             outline=[
@@ -973,7 +1115,16 @@ def _parse_pdf(
         pages=pages,
         strategy=strategy,
         warnings=warnings,
-        metadata={"parser": "pdf", "page_count": len(reader.pages), "ocr": ocr_used, **toc_metadata},
+        metadata={
+            "parser": "pdf",
+            "page_count": len(reader.pages),
+            "ocr_attempted": ocr_attempted,
+            "ocr": ocr_used,
+            "ocr_page_count": ocr_page_count,
+            "ocr_replaced_page_count": ocr_replaced_page_count,
+            "ocr_page_mapping_preserved": ocr_page_mapping_preserved,
+            **toc_metadata,
+        },
     )
 
 
@@ -984,7 +1135,7 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         html_names = spine_items or sorted(
             name for name in names if name.lower().endswith((".xhtml", ".html", ".htm"))
         )
-        docs: list[tuple[str, str, list[DetectedChapter]]] = []
+        docs: list[tuple[str, str, list[DetectedChapter], dict[str, int]]] = []
         parts: list[str] = []
         offset_by_name: dict[str, int] = {}
         offset = 0
@@ -994,7 +1145,7 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
                 raw = archive.read(name)
             except KeyError:
                 continue
-            text, headings, _visual_refs = _html_text_headings_and_visuals(
+            text, headings, _visual_refs, anchors = _html_text_headings_and_visuals(
                 raw.decode("utf-8", errors="replace"),
                 source_name=name,
             )
@@ -1010,9 +1161,11 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
                 heading.confidence = 0.82
                 heading.metadata = {"source": "epub_heading", "file": name}
                 heading_chapters.append(heading)
-            docs.append((name, text, headings))
+            docs.append((name, text, headings, anchors))
             offset += len(prefix) + len(text)
-        full_text = "".join(parts).strip()
+        # EPUB navigation and fragment offsets use the assembled document
+        # coordinate space, including each file prefix.
+        full_text = "".join(parts)
         nav_items = _epub_navigation_items(archive, names)
         nav_chapters = _chapters_from_epub_nav(nav_items, docs, offset_by_name)
         if nav_chapters:
@@ -1156,26 +1309,36 @@ def _epub_navigation_items(
 
 def _chapters_from_epub_nav(
     nav_items: list[_EpubNavigationItem],
-    docs: list[tuple[str, str, list[DetectedChapter]]],
+    docs: list[tuple[str, str, list[DetectedChapter], dict[str, int]]],
     offset_by_name: dict[str, int],
 ) -> list[DetectedChapter]:
-    docs_by_name = {name: text for name, text, _headings in docs}
+    docs_by_name = {name: text for name, text, _headings, _anchors in docs}
+    anchors_by_name = {name: anchors for name, _text, _headings, anchors in docs}
     chapters: list[DetectedChapter] = []
     for item in nav_items:
         text = docs_by_name.get(item.target, "")
         base_offset = offset_by_name.get(item.target)
         local_index = _find_title_offset(text, item.label)
+        fragment_offset = anchors_by_name.get(item.target, {}).get(item.fragment)
         start_offset = (
-            base_offset + max(local_index, 0)
-            if base_offset is not None
+            base_offset + fragment_offset
+            if base_offset is not None and fragment_offset is not None
+            else base_offset + local_index
+            if base_offset is not None and local_index >= 0
             else None
         )
-        if local_index >= 0:
+        if fragment_offset is not None:
+            confidence = 0.98
+            anchor_source = "epub_fragment"
+        elif local_index >= 0:
             confidence = 0.95
+            anchor_source = "body_title_match"
         elif base_offset is not None:
-            confidence = 0.78
+            confidence = 0.62
+            anchor_source = "target_file_only"
         else:
             confidence = 0.5
+            anchor_source = "target_missing"
         number = _number_from_title(item.label)
         numbered_level = len(number.split(".")) if number else 1
         chapters.append(
@@ -1186,14 +1349,15 @@ def _chapters_from_epub_nav(
                 source_locator=item.source_locator,
                 start_offset=start_offset,
                 confidence=confidence,
-                verified=base_offset is not None,
+                verified=start_offset is not None,
                 metadata={
                     "source": "epub_navigation",
                     "file": item.target,
                     "fragment": item.fragment,
                     "nav_order": item.order,
                     "navigation_level": item.level,
-                    "direct_anchor_verified": base_offset is not None,
+                    "direct_anchor_verified": start_offset is not None,
+                    "anchor_source": anchor_source,
                 },
             )
         )
@@ -1233,12 +1397,17 @@ class _TextHeadingParser(HTMLParser):
         self._figure_visual_start: int | None = None
         self._figcaption_text: list[str] | None = None
         self._paragraph_index = 0
+        self.anchors: dict[str, int] = {}
 
     @property
     def text_offset(self) -> int:
         return sum(len(part) for part in self.parts)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key: value or "" for key, value in attrs}
+        for anchor in (attrs_dict.get("id", ""), attrs_dict.get("name", "")):
+            if anchor.strip() and anchor.strip() not in self.anchors:
+                self.anchors[anchor.strip()] = self.text_offset
         if tag in {"p", "div", "section", "article", "br", "li", "tr"}:
             self.parts.append("\n")
         if tag in {"p", "div", "section", "article", "li"}:
@@ -1248,7 +1417,6 @@ class _TextHeadingParser(HTMLParser):
         if tag == "figcaption":
             self._figcaption_text = []
         if tag == "img":
-            attrs_dict = {key: value or "" for key, value in attrs}
             src = attrs_dict.get("src", "").strip()
             if src:
                 self.visuals.append(
@@ -1338,7 +1506,10 @@ class _NavLinkParser(HTMLParser):
 
 
 def _html_text_and_headings(content: str, *, source_name: str) -> tuple[str, list[DetectedChapter]]:
-    text, headings, _visuals = _html_text_headings_and_visuals(content, source_name=source_name)
+    text, headings, _visuals, _anchors = _html_text_headings_and_visuals(
+        content,
+        source_name=source_name,
+    )
     return text, headings
 
 
@@ -1346,13 +1517,25 @@ def _html_text_headings_and_visuals(
     content: str,
     *,
     source_name: str,
-) -> tuple[str, list[DetectedChapter], list[_HTMLVisualRef]]:
+) -> tuple[str, list[DetectedChapter], list[_HTMLVisualRef], dict[str, int]]:
     parser = _TextHeadingParser()
     parser.feed(content)
-    text = _normalize_text("".join(parser.parts))
+    raw_text = "".join(parser.parts)
+    text = _normalize_text(raw_text)
+
+    def normalized_offset(raw_offset: int) -> int:
+        return len(_normalize_text(raw_text[: max(0, raw_offset)]))
+
     for heading in parser.headings:
         heading.source_locator = f"html:{source_name}"
-    return text, parser.headings, parser.visuals
+        heading.start_offset = normalized_offset(heading.start_offset or 0)
+    for visual in parser.visuals:
+        visual.text_offset = normalized_offset(visual.text_offset)
+    anchors = {
+        anchor: normalized_offset(raw_offset)
+        for anchor, raw_offset in parser.anchors.items()
+    }
+    return text, parser.headings, parser.visuals, anchors
 
 
 def _headings_from_markdown(text: str) -> list[DetectedChapter]:
@@ -1412,9 +1595,11 @@ def _pdf_outline_chapters(reader: Any, pages: list[PageText], full_text: str) ->
         # a physical page destination is available.
         verified = page is not None
         start_offset = None
+        title_match_verified = False
         if page is not None:
             local_title_offset = _find_title_offset(page.text, title)
-            page_content_offset = page.start_offset + len(f"\n\n[Page {page.page_no}]\n")
+            title_match_verified = local_title_offset >= 0
+            page_content_offset = _page_content_start_offset(page, full_text=full_text)
             start_offset = (
                 page_content_offset + local_title_offset
                 if local_title_offset >= 0
@@ -1428,11 +1613,17 @@ def _pdf_outline_chapters(reader: Any, pages: list[PageText], full_text: str) ->
                 source_locator=f"pdf:outline:{page.page_no if page else ''}",
                 start_offset=start_offset,
                 page_start=page.page_no if page else None,
-                confidence=0.93 if verified else 0.55,
+                confidence=0.93 if title_match_verified else 0.76 if verified else 0.55,
                 verified=verified,
                 metadata={
                     "source": "pdf_outline",
                     "verification": "destination_page" if verified else "destination_unresolved",
+                    "anchor_source": (
+                        "pdf_destination_title"
+                        if title_match_verified
+                        else "pdf_destination_page" if verified else "destination_unresolved"
+                    ),
+                    "title_match_verified": title_match_verified,
                 },
             )
         )
@@ -1456,14 +1647,27 @@ def _chapters_from_pdf_toc(nodes: list[PdfTocNode], pages: list[PageText]) -> li
                 level=node.level,
                 source_locator=f"pdf:toc-page:{node.toc_page}:printed:{node.printed_page}",
                 start_offset=(
-                    page.start_offset + local_offset
+                    (page.content_start_offset if page.content_start_offset is not None else page.start_offset)
+                    + local_offset
                     if verified and page and local_offset >= 0
-                    else page.start_offset if verified and page else None
+                    else (
+                        page.content_start_offset
+                        if verified and page and page.content_start_offset is not None
+                        else page.start_offset if verified and page else None
+                    )
                 ),
                 page_start=page.page_no if verified and page else None,
                 confidence=node.confidence,
                 verified=verified,
-                metadata=node.metadata,
+                metadata={
+                    **node.metadata,
+                    "anchor_source": (
+                        "pdf_toc_body_title"
+                        if local_offset >= 0
+                        else "pdf_toc_page_mapping" if verified else "toc_candidate"
+                    ),
+                    "title_match_verified": local_offset >= 0,
+                },
             )
         )
     return chapters
@@ -1669,9 +1873,18 @@ def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedCha
         if local_offset < 0 and direct_match and matched_page is direct_match[0]:
             local_offset = direct_match[1]
         title_offset = (
-            matched_page.start_offset + local_offset
+            (
+                matched_page.content_start_offset
+                if matched_page.content_start_offset is not None
+                else matched_page.start_offset
+            )
+            + local_offset
             if matched_page and local_offset >= 0
-            else matched_page.start_offset if matched_page else None
+            else (
+                matched_page.content_start_offset
+                if matched_page and matched_page.content_start_offset is not None
+                else matched_page.start_offset if matched_page else None
+            )
         )
         verified_by_mapping = mapped_page is not None and printed_page_offset is not None
         verified = verified_by_mapping or direct_match is not None
@@ -1695,6 +1908,12 @@ def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedCha
                     ),
                     "printed_page_offset": printed_page_offset,
                     "printed_page_mapping_support": mapping_support,
+                    "anchor_source": (
+                        "pdf_toc_body_title"
+                        if local_offset >= 0
+                        else "pdf_toc_page_mapping" if verified else "toc_candidate"
+                    ),
+                    "title_match_verified": local_offset >= 0,
                 },
             )
         )
@@ -1819,7 +2038,15 @@ def _close_chapter_ranges(chapters: list[DetectedChapter], text_length: int) -> 
         if chapter.end_offset is None:
             chapter.end_offset = next_chapter.start_offset if next_chapter else text_length
         if chapter.page_start is not None and chapter.page_end is None:
-            chapter.page_end = next_chapter.page_start if next_chapter and next_chapter.page_start else chapter.page_start
+            next_page_start = (
+                next_chapter.page_start
+                if next_chapter and next_chapter.page_start is not None
+                else None
+            )
+            chapter.page_end = max(
+                chapter.page_start + 1,
+                next_page_start or chapter.page_start + 1,
+            )
 
 
 def _close_epub_navigation_ranges(
@@ -1940,19 +2167,74 @@ def _reanchor_existing_visuals(
     structure: SourceStructure,
     chapters: list[SourceChapter],
     chunks: list[SourceChunk],
+    previous_chapters: list[SourceChapter] | None = None,
 ) -> list[SourceVisualAsset]:
-    chapter_by_id = {chapter.id: chapter for chapter in chapters}
+    verified_chapters = [
+        chapter for chapter in chapters if chapter.anchor_status == "verified"
+    ]
+    chapter_by_id = {chapter.id: chapter for chapter in verified_chapters}
+    previous_chapter_by_id = {
+        chapter.id: chapter for chapter in (previous_chapters or [])
+    }
     ordered_chunks = sorted(chunks, key=lambda chunk: chunk.order_index)
     reanchored: list[SourceVisualAsset] = []
     for visual in visuals:
         chapter = chapter_by_id.get(visual.chapter_id or "")
+        reanchor_method = "chapter_id" if chapter is not None else ""
+        old_chapter = previous_chapter_by_id.get(visual.chapter_id or "")
+        if chapter is None and old_chapter is not None:
+            semantic_signature = _chapter_semantic_signature(old_chapter)
+            semantic_candidates = [
+                candidate
+                for candidate in verified_chapters
+                if _chapter_semantic_signature(candidate) == semantic_signature
+            ]
+            if len(semantic_candidates) == 1:
+                chapter = semantic_candidates[0]
+                reanchor_method = "semantic_chapter"
+            elif len(semantic_candidates) > 1:
+                old_semantic_siblings = sorted(
+                    (
+                        candidate
+                        for candidate in (previous_chapters or [])
+                        if _chapter_semantic_signature(candidate)
+                        == semantic_signature
+                    ),
+                    key=lambda candidate: candidate.order_index,
+                )
+                old_occurrence = next(
+                    (
+                        index
+                        for index, candidate in enumerate(old_semantic_siblings)
+                        if candidate.id == old_chapter.id
+                    ),
+                    -1,
+                )
+                ordered_candidates = sorted(
+                    semantic_candidates,
+                    key=lambda candidate: candidate.order_index,
+                )
+                if 0 <= old_occurrence < len(ordered_candidates):
+                    chapter = ordered_candidates[old_occurrence]
+                    reanchor_method = "semantic_occurrence"
+        if chapter is None and visual.source_locator:
+            locator_candidates = [
+                candidate
+                for candidate in verified_chapters
+                if _source_locator_prefix_matches(
+                    visual.source_locator,
+                    candidate.source_locator,
+                )
+            ]
+            if len(locator_candidates) == 1:
+                chapter = locator_candidates[0]
+                reanchor_method = "source_locator"
         page_no = visual.slide_no or visual.page_start
         if chapter is None and page_no is not None:
             page_chapters = [
                 candidate
-                for candidate in chapters
-                if candidate.anchor_status == "verified"
-                and candidate.page_start is not None
+                for candidate in verified_chapters
+                if candidate.page_start is not None
                 and candidate.page_start <= page_no
                 and (candidate.page_end or candidate.page_start + 1) > page_no
             ]
@@ -1961,6 +2243,7 @@ def _reanchor_existing_visuals(
                     page_chapters,
                     key=lambda candidate: (candidate.level, candidate.order_index),
                 )
+                reanchor_method = "physical_page"
         page_chunks = []
         if page_no is not None:
             page_chunks = [
@@ -1972,10 +2255,13 @@ def _reanchor_existing_visuals(
             ]
         if chapter is not None:
             chapter_chunks = [
-                chunk for chunk in page_chunks if chunk.chapter_id == chapter.id
+                chunk for chunk in ordered_chunks if chunk.chapter_id == chapter.id
             ]
             if chapter_chunks:
-                page_chunks = chapter_chunks
+                chapter_page_chunks = [
+                    chunk for chunk in page_chunks if chunk.chapter_id == chapter.id
+                ]
+                page_chunks = chapter_page_chunks or chapter_chunks
         before_chunk_id = page_chunks[0].id if page_chunks else None
         after_chunk_id = page_chunks[-1].id if page_chunks else None
         surrounding_text = "\n\n".join(
@@ -2002,6 +2288,7 @@ def _reanchor_existing_visuals(
                     "metadata": {
                         **visual.metadata,
                         "reanchored_after_structure_upgrade": True,
+                        "structure_reanchor_method": reanchor_method or "unresolved",
                     },
                 }
             )
@@ -2009,11 +2296,46 @@ def _reanchor_existing_visuals(
     return reanchored
 
 
+def _chapter_semantic_signature(
+    chapter: SourceChapter,
+) -> tuple[tuple[str, ...], str, str, int]:
+    path = tuple(
+        _normalize_for_match(part) for part in chapter.path if part.strip()
+    )
+    return (
+        path,
+        _normalize_chapter_number(chapter.normalized_number or chapter.number),
+        _normalize_for_match(chapter.title),
+        chapter.level,
+    )
+
+
+def _source_locator_prefix_matches(first: str, second: str) -> bool:
+    return bool(
+        first
+        and second
+        and (
+            first == second
+            or first.startswith(f"{second}:")
+            or second.startswith(f"{first}:")
+        )
+    )
+
+
 def _locator_for_offset(pages: list[PageText], offset: int) -> str:
     for page in pages:
         if page.start_offset <= offset <= page.end_offset:
             return f"page:{page.page_no}"
     return ""
+
+
+def _page_content_start_offset(page: PageText, *, full_text: str | None = None) -> int:
+    if page.content_start_offset is not None:
+        return page.content_start_offset
+    marker = f"\n\n[Page {page.page_no}]\n"
+    if full_text is not None and full_text.startswith(marker, page.start_offset):
+        return page.start_offset + len(marker)
+    return page.start_offset
 
 
 def _find_title_offset(text: str, title: str) -> int:

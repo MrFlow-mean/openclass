@@ -44,6 +44,11 @@ def test_native_pptx_parser_indexes_slide_text(tmp_path: Path) -> None:
     assert structure.status == "ready"
     assert [chapter.title for chapter in view.chapters] == ["Overview", "Details"]
     assert "Second slide evidence" in "\n".join(chunk.text for chunk in view.chunks)
+    parsed = indexer_module._parse_pptx(path)
+    assert [
+        parsed.text[chapter.start_offset : chapter.start_offset + len(chapter.title)]
+        for chapter in parsed.chapters
+    ] == ["Overview", "Details"]
 
 
 def test_native_xlsx_parser_indexes_sheet_cells(tmp_path: Path) -> None:
@@ -67,6 +72,9 @@ def test_native_xlsx_parser_indexes_sheet_cells(tmp_path: Path) -> None:
     assert structure.status == "ready"
     assert view.chapters[0].title == "Sheet 1"
     assert "Retention\t0.82" in "\n".join(chunk.text for chunk in view.chunks)
+    parsed = indexer_module._parse_xlsx(path)
+    chapter = parsed.chapters[0]
+    assert parsed.text[chapter.start_offset : chapter.start_offset + len("Metric")] == "Metric"
 
 
 def test_native_html_and_image_parsers_preserve_searchable_text(

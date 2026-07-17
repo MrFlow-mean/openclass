@@ -608,6 +608,14 @@ SourceIngestionStatus = Literal["queued", "fetching", "parsing", "indexing", "re
 EvidenceBundleStatus = Literal["candidate", "confirmed", "consumed", "archived"]
 EvidencePurpose = Literal["chat", "board_generation", "board_edit", "board_explain", "board_chat"]
 SourceStructureStatus = Literal["pending", "building", "ready", "linear_only", "failed"]
+SourceStructureQualityLevel = Literal[
+    "unassessed",
+    "fully_verified",
+    "partially_verified",
+    "unverified",
+    "search_only",
+]
+SourceTextReadiness = Literal["unknown", "ready", "sparse", "very_sparse", "empty"]
 SourceStructureStrategy = Literal[
     "epub_navigation",
     "epub_heading",
@@ -627,6 +635,30 @@ SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"
 SourceScopeKind = Literal["chapter", "page_range"]
 PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
 AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
+
+
+class SourceStructureQuality(BaseModel):
+    evaluator_version: int = 1
+    level: SourceStructureQualityLevel = "unassessed"
+    text_readiness: SourceTextReadiness = "unknown"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    total_chapter_count: int = 0
+    verified_chapter_count: int = 0
+    unverified_chapter_count: int = 0
+    demoted_chapter_count: int = 0
+    verified_leaf_count: int = 0
+    expected_leaf_count: int = 0
+    verified_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    boundary_valid_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    body_coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    independent_anchor_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    meaningful_characters_per_page: float = Field(default=0.0, ge=0.0)
+    duplicate_locator_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    duplicate_range_count: int = 0
+    overlap_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    non_monotonic_count: int = 0
+    oversized_leaf_count: int = 0
+    diagnostics: list[str] = Field(default_factory=list)
 
 
 class SourceIngestionJob(BaseModel):
@@ -732,6 +764,7 @@ class SourceIngestionRecord(BaseModel):
     structure_status: SourceStructureStatus = "pending"
     structure_strategy: SourceStructureStrategy | None = None
     structure_has_verified_toc: bool = False
+    structure_quality: SourceStructureQuality = Field(default_factory=SourceStructureQuality)
     structure_error: str = ""
     structure_updated_at: str | None = None
     ingestion_job: SourceIngestionJob | None = None
@@ -771,6 +804,7 @@ class SourceStructure(BaseModel):
     status: SourceStructureStatus = "pending"
     strategy: SourceStructureStrategy = "linear_text"
     has_verified_toc: bool = False
+    quality: SourceStructureQuality = Field(default_factory=SourceStructureQuality)
     chapter_count: int = 0
     chunk_count: int = 0
     visual_count: int = 0

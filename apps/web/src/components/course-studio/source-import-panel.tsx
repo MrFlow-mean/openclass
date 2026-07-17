@@ -9,6 +9,13 @@ import {
   getSourceProcessingState,
   SourceProcessingProgress,
 } from "@/components/course-studio/source-processing-progress";
+import {
+  SourceStructureQualitySummary,
+  sourceStructureBadgeClass,
+  sourceStructureBadgeLabel,
+  sourceStructureQualityLevel,
+  sourceStructureQualityNote,
+} from "@/components/course-studio/source-structure-quality";
 import { api } from "@/lib/api";
 import type { SelectionRef, SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
 
@@ -31,14 +38,6 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
   indexing: "索引",
   ready: "就绪",
   failed: "失败",
-};
-
-const STRUCTURE_STATUS_LABELS: Record<SourceIngestionRecord["structure_status"], string> = {
-  pending: "待建索引",
-  building: "结构索引",
-  ready: "有可信目录",
-  linear_only: "仅全文检索",
-  failed: "结构失败",
 };
 
 const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
@@ -433,9 +432,23 @@ function SourceRow({
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
-  const structureLabel = structureStatusLabel(source);
-  const structureIsGood = source.structure_status === "ready";
-  const structureIsFailed = source.structure_status === "failed";
+  const sourceQuality = source.structure_quality;
+  const viewQuality = structureView?.structure?.quality;
+  const structureQuality =
+    viewQuality?.level && viewQuality.level !== "unassessed"
+      ? viewQuality
+      : sourceQuality;
+  const structureQualityLevel = sourceStructureQualityLevel(source, structureQuality);
+  const structureLabel = sourceStructureBadgeLabel(
+    source,
+    structureQualityLevel,
+    structureQuality
+  );
+  const structureNote = sourceStructureQualityNote(
+    source,
+    structureQuality,
+    structureQualityLevel
+  );
   const processingState = getSourceProcessingState(source);
 
   async function toggleStructure() {
@@ -452,6 +465,7 @@ function SourceRow({
       const view = await api.getPackageSourceStructure(packageId, source.id);
       setStructureView(view);
       setExpandedChapterIds(new Set());
+      onSourceUpdate(view.source);
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料结构读取失败");
     } finally {
@@ -629,13 +643,11 @@ function SourceRow({
                 <span
                   className={clsx(
                     "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                    structureIsGood
-                      ? "bg-blue-50 text-blue-700"
-                      : structureIsFailed
-                      ? "bg-amber-50 text-amber-700"
-                      : source.structure_status === "linear_only"
-                      ? "bg-gray-100 text-gray-600"
-                      : "bg-sky-50 text-sky-700"
+                    sourceStructureBadgeClass(
+                      source,
+                      structureQualityLevel,
+                      structureQuality
+                    )
                   )}
                 >
                   {structureLabel}
@@ -708,13 +720,8 @@ function SourceRow({
           {processingState ? (
             <SourceProcessingProgress className="mt-2" label={processingState.label} value={processingState.value} />
           ) : null}
-          {isReady && source.structure_status === "linear_only" ? (
-            <p className="mt-2 text-xs leading-5 text-gray-500">未发现可验证目录，本资料将按全文片段检索。</p>
-          ) : null}
-          {isReady && source.structure_has_verified_toc ? (
-            <p className="mt-2 text-xs leading-5 text-gray-500">
-              已建立可验证目录；引用时会检查正文，扫描文件将自动尝试 OCR。
-            </p>
+          {isReady ? (
+            <p className="mt-2 text-xs leading-5 text-gray-500">{structureNote}</p>
           ) : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
@@ -777,7 +784,12 @@ function SourceRow({
           ) : null}
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
-              <div className="mb-1 flex justify-end">
+              <SourceStructureQualitySummary
+                source={source}
+                quality={structureQuality}
+                warnings={structureView?.structure?.warnings}
+              />
+              <div className="mb-1 mt-2 flex justify-end">
                 <button
                   type="button"
                   onClick={() => void rebuildStructure()}
@@ -821,28 +833,21 @@ function SourceStructureEmptyState({
   const isWebUrl = source.source_type === "web_url";
   const hasLocalSnapshot = Boolean(metadataString(source, "local_source_path"));
   const isRemoteOnlyWebUrl = isWebUrl && !hasLocalSnapshot;
+  const quality = structure?.quality ?? source.structure_quality;
+  const hasNoIndexedBody =
+    source.structure_status === "linear_only" && structure?.chunk_count === 0;
   const message =
-    source.structure_status === "failed"
+    quality?.text_readiness === "empty" || hasNoIndexedBody
+      ? "这份资料没有提取到可检索正文，目录引用和全文检索当前都不可用。请检查文件文字层或 OCR 结果后重建。"
+      : source.structure_status === "failed"
       ? source.structure_error || structure?.error || "目录结构索引失败。"
       : source.structure_status === "linear_only"
       ? isRemoteOnlyWebUrl
         ? "这份 URL 资料未形成可验证目录，当前使用 OpenClass 原生全文片段检索。"
         : "未发现可验证目录，本资料当前只能按全文片段检索。旧上传资料如果没有保存本地原文件，需要重新上传后才能尝试建立目录。"
       : "目录结构还没有完成，稍后刷新资料状态。";
-  const visibleWarnings = structure?.warnings ?? [];
   return (
-    <div className="space-y-2">
-      <p className="text-xs leading-5 text-gray-600">{message}</p>
-      {visibleWarnings.length ? (
-        <div className="space-y-1">
-          {visibleWarnings.slice(0, 2).map((warning) => (
-            <p key={warning} className="text-[11px] leading-4 text-amber-700">
-              {warning}
-            </p>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <p className="text-xs leading-5 text-gray-600">{message}</p>
   );
 }
 
@@ -996,13 +1001,6 @@ function sourceNeedsRefresh(source: SourceIngestionRecord) {
     return true;
   }
   return source.status === "ready" && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status);
-}
-
-function structureStatusLabel(source: SourceIngestionRecord) {
-  if (source.structure_has_verified_toc) {
-    return "有可信目录";
-  }
-  return STRUCTURE_STATUS_LABELS[source.structure_status] ?? "结构状态";
 }
 
 function metadataString(source: SourceIngestionRecord, key: string) {
