@@ -1,6 +1,6 @@
 "use client";
 
-import { TextQuote } from "lucide-react";
+import { Box, TextQuote } from "lucide-react";
 
 import type { SelectionRef } from "@/types";
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
@@ -9,12 +9,14 @@ type SelectionPopoverProps = {
   selection: SelectionRef | null;
   position: SelectionPopoverPosition | null;
   onFocusComposerWithSelection: () => void;
+  onOpenGeometryWithSelection: () => void;
 };
 
 export function SelectionPopover({
   selection,
   position,
   onFocusComposerWithSelection,
+  onOpenGeometryWithSelection,
 }: SelectionPopoverProps) {
   if (!selection || !position) {
     return null;
@@ -33,6 +35,15 @@ export function SelectionPopover({
       >
         <TextQuote className="h-4 w-4" />
         引用到输入框
+      </button>
+      <span className="h-5 w-px bg-gray-200" aria-hidden="true" />
+      <button
+        type="button"
+        onClick={onOpenGeometryWithSelection}
+        className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
+      >
+        <Box className="h-4 w-4" />
+        引用到图形
       </button>
     </div>
   );

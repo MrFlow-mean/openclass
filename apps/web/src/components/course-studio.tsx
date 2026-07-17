@@ -83,6 +83,7 @@ export function CourseStudio() {
   } = modelSelection;
   const textModelReady = modelCatalog.text.some((option) => option.enabled);
   const [selection, setSelection] = useState<SelectionRef | null>(null);
+  const [geometryReference, setGeometryReference] = useState<SelectionRef | null>(null);
   const [selectionPopover, setSelectionPopover] = useState<SelectionPopoverPosition | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [topCollapsed, setTopCollapsed] = useState(true);
@@ -325,6 +326,22 @@ export function CourseStudio() {
     });
   }
 
+  function openGeometryWithSelection(explicitSelection?: SelectionRef) {
+    const selectionToOpen = explicitSelection ?? selection;
+    if (!selectionToOpen || selectionToOpen.kind !== "board") {
+      return;
+    }
+    const normalizedSelection: SelectionRef = {
+      ...selectionToOpen,
+      location_kind: selectionToOpen.location_kind === "insertion_anchor" ? "insertion_anchor" : "target_range",
+    };
+    setSelection(normalizedSelection);
+    setSelectionPopover(null);
+    setGeometryReference({ ...normalizedSelection });
+    setSidebarTab("geometry");
+    setRightSidebarOpen(true);
+  }
+
   function applySourceReference(sourceReference: SelectionRef) {
     if (sourceReference.kind !== "source" || !sourceReference.source_chapter_id) {
       return;
@@ -483,6 +500,7 @@ export function CourseStudio() {
       selection={selection}
       position={selectionPopover}
       onFocusComposerWithSelection={() => focusComposerWithSelection("ask")}
+      onOpenGeometryWithSelection={() => openGeometryWithSelection()}
     />
   );
 
@@ -636,6 +654,7 @@ export function CourseStudio() {
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}
           onReferenceFormula={(formulaSelection) => focusComposerWithSelection("ask", formulaSelection)}
+          onReferenceFormulaToGeometry={(formulaSelection) => openGeometryWithSelection(formulaSelection)}
           onFormulaInkSubmit={handleFormulaInkSubmit}
         />
 
@@ -662,6 +681,9 @@ export function CourseStudio() {
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onError={setError}
           onSourceReference={applySourceReference}
+          geometryReference={geometryReference}
+          onGeometryReferenceClear={() => setGeometryReference(null)}
+          textModel={selectedTextModel}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsLoading={chatSpeech.isSpeechLoading}
           speechIsPlaying={chatSpeech.isSpeechPlaying}

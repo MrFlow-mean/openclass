@@ -1,6 +1,6 @@
 "use client";
 
-import { Eraser, PenLine, RefreshCcw, Send, TextQuote, X } from "lucide-react";
+import { Box, Eraser, PenLine, RefreshCcw, Send, TextQuote, X } from "lucide-react";
 import { useState } from "react";
 
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
@@ -18,6 +18,7 @@ type FormulaInkPopoverProps = {
   sourceLatex: string;
   disabled?: boolean;
   onReference: () => void;
+  onGeometryReference: () => void;
   onSubmit: (payload: FormulaInkSubmitPayload) => boolean;
 };
 
@@ -26,6 +27,7 @@ export function FormulaInkPopover({
   sourceLatex,
   disabled = false,
   onReference,
+  onGeometryReference,
   onSubmit,
 }: FormulaInkPopoverProps) {
   const [expandedSourceLatex, setExpandedSourceLatex] = useState<string | null>(null);
@@ -83,6 +85,17 @@ export function FormulaInkPopover({
         >
           <TextQuote className="h-4 w-4" />
           引用
+        </button>
+        <span className="h-5 w-px bg-gray-200" aria-hidden="true" />
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onGeometryReference}
+          className="inline-flex h-10 items-center gap-2 px-3.5 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          title="引用公式到图形生成"
+        >
+          <Box className="h-4 w-4" />
+          引用到图形
         </button>
       </div>
     );

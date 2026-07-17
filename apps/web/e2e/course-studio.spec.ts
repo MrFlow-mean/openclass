@@ -233,6 +233,63 @@ test("restores each lesson's attached composer reference after switching tabs", 
   await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
 });
 
+test("references board content into the geometry workspace and renders a generated scene", async ({ page }) => {
+  const unique = Date.now();
+  const referencedText = `在四边形 ABCD 中，AB 平行于 CD，连接 AC 与 BD ${unique}`;
+  let generationPayload: Record<string, unknown> | null = null;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `图形生成课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `图形生成页面 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, referencedText);
+
+  await page.route("**/api/lessons/*/geometry/generate", async (route) => {
+    generationPayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: "1.0",
+        title: "平行边四边形",
+        summary: "用一组代表性坐标呈现题目中的平行关系。",
+        dimension: "3d",
+        show_axes: true,
+        show_grid: true,
+        viewport: { x_min: -4, x_max: 4, y_min: -3, y_max: 3 },
+        points: [
+          { id: "A", label: "A", x: -2, y: 1, z: 0, color: "#38bdf8", hidden: false },
+          { id: "B", label: "B", x: 2, y: 1, z: 0, color: "#38bdf8", hidden: false },
+          { id: "C", label: "C", x: 1.5, y: -1, z: 1, color: "#f59e0b", hidden: false },
+          { id: "D", label: "D", x: -1.5, y: -1, z: 1, color: "#f59e0b", hidden: false },
+        ],
+        primitives: [
+          { id: "AB", kind: "segment", label: "AB", point_ids: ["A", "B"], center_id: "", radius: null, radius_y: null, text: "", color: "#38bdf8", fill: "none", opacity: 1, stroke_width: 3, dashed: false },
+          { id: "CD", kind: "segment", label: "CD", point_ids: ["D", "C"], center_id: "", radius: null, radius_y: null, text: "", color: "#f59e0b", fill: "none", opacity: 1, stroke_width: 3, dashed: false },
+          { id: "ABCD", kind: "polygon", label: "ABCD", point_ids: ["A", "B", "C", "D"], center_id: "", radius: null, radius_y: null, text: "", color: "#94a3b8", fill: "rgba(56,189,248,0.12)", opacity: 1, stroke_width: 1.5, dashed: false },
+        ],
+        steps: ["AB 与 CD 使用相同方向的线段表示。"],
+        source_excerpt: referencedText,
+      }),
+    });
+  });
+
+  const editor = page.locator(".ProseMirror").first();
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.getByRole("button", { name: "引用到图形" }).click();
+
+  const geometryPanel = page.locator("[data-geometry-generation-panel]");
+  await expect(page.getByRole("button", { name: "Geometry" })).toBeVisible();
+  await expect(geometryPanel.getByText("几何图形生成")).toBeVisible();
+  await expect(geometryPanel.getByText(referencedText, { exact: true })).toBeVisible();
+  await geometryPanel.getByRole("button", { name: "生成图形" }).click();
+
+  await expect(page.getByRole("img", { name: "平行边四边形交互图形" })).toBeVisible();
+  await expect(page.getByText("3D · 拖动旋转")).toBeVisible();
+  const submittedPayload = generationPayload as Record<string, unknown> | null;
+  expect((submittedPayload?.["selection"] as { excerpt?: string } | undefined)?.excerpt).toBe(referencedText);
+});
+
 test("adds images and files from the chat plus menu and includes them in the turn", async ({ page }) => {
   const unique = Date.now();
   const sourceId = `source_chat_attachment_${unique}`;

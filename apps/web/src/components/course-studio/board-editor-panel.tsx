@@ -26,6 +26,7 @@ type BoardEditorPanelProps = {
   onExportDocx: () => void;
   onExportHtml: () => void;
   onReferenceFormula: (selection: SelectionRef) => void;
+  onReferenceFormulaToGeometry: (selection: SelectionRef) => void;
   onFormulaInkSubmit: (payload: FormulaInkEditorSubmitPayload) => boolean;
 };
 
@@ -112,6 +113,7 @@ export function BoardEditorPanel({
   onExportDocx,
   onExportHtml,
   onReferenceFormula,
+  onReferenceFormulaToGeometry,
   onFormulaInkSubmit,
 }: BoardEditorPanelProps) {
   const teachingFocus = currentTeachingFocus(activeLesson, previewCommit);
@@ -173,6 +175,17 @@ export function BoardEditorPanel({
         onExportHtml={onExportHtml}
         onFormulaReference={(selection) =>
           onReferenceFormula({
+            kind: "board",
+            location_kind: selection.locationKind,
+            lesson_id: activeLesson.id,
+            document_id: selection.documentId,
+            excerpt: selection.excerpt,
+            before_text: selection.beforeText,
+            after_text: selection.afterText,
+          })
+        }
+        onFormulaGeometryReference={(selection) =>
+          onReferenceFormulaToGeometry({
             kind: "board",
             location_kind: selection.locationKind,
             lesson_id: activeLesson.id,
