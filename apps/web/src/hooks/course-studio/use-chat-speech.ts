@@ -22,7 +22,7 @@ const DEFAULT_SPEECH_OPTIONS: SpeechOptionsResponse = {
   voices: [
     {
       id: "zh_female_vv_uranus_bigtts",
-      label: "Vivi 2.0",
+      label: "豆包同款 Vivi 2.0",
       description: "通用场景女声",
     },
   ],

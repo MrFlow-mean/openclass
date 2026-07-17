@@ -37,7 +37,7 @@ FINISHED_FRAME_CODE = 20_000_000
 VOLCENGINE_VOICE_OPTIONS = (
     SpeechVoiceOption(
         id="zh_female_vv_uranus_bigtts",
-        label="Vivi 2.0",
+        label="豆包同款 Vivi 2.0",
         description="通用场景女声",
     ),
     SpeechVoiceOption(
