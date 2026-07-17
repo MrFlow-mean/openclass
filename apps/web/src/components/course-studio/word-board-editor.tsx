@@ -614,7 +614,8 @@ function applyTeachingFocus(
   editor: TiptapEditor,
   documentId: string,
   focus: BoardFocusRef | null | undefined,
-  pageScroll: HTMLDivElement | null
+  pageScroll: HTMLDivElement | null,
+  shouldScrollIntoView: boolean
 ) {
   if (
     !focus ||
@@ -627,10 +628,13 @@ function applyTeachingFocus(
   const range = findTeachingFocusRange(editor, focus);
   if (!range) {
     editor.commands.clearTeachingFocusHighlight();
-    return;
+    return false;
   }
   editor.commands.setTeachingFocusHighlight(range);
-  scrollTeachingFocusIntoView(editor, pageScroll, range);
+  if (shouldScrollIntoView) {
+    scrollTeachingFocusIntoView(editor, pageScroll, range);
+  }
+  return true;
 }
 
 function compactAnchorContext(value: string, maxLength = 90) {
@@ -754,6 +758,7 @@ export function WordBoardEditor({
   const latestOnDocumentChangeRef = useRef(onDocumentChange);
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
   const latestTeachingFocusRef = useRef(teachingFocus);
+  const lastAutoScrolledTeachingFocusKeyRef = useRef("");
   const pageSettings = normalizePageSettings(document.page_settings);
   const pageMetrics = pagePreviewMetrics(pageSettings);
   const pageZoomScale = pageZoom / 100;
@@ -896,12 +901,20 @@ export function WordBoardEditor({
         }
         editor.commands.setContent(content, { emitUpdate: false });
         normalizeEditorMath(editor);
-        applyTeachingFocus(
+        const focus = latestTeachingFocusRef.current;
+        const focusKey = teachingFocusKey(focus);
+        const shouldScrollIntoView =
+          Boolean(focusKey) && lastAutoScrolledTeachingFocusKeyRef.current !== focusKey;
+        const didApplyFocus = applyTeachingFocus(
           editor,
           docId,
-          latestTeachingFocusRef.current,
-          pageScrollRef.current
+          focus,
+          pageScrollRef.current,
+          shouldScrollIntoView
         );
+        if (didApplyFocus && shouldScrollIntoView) {
+          lastAutoScrolledTeachingFocusKeyRef.current = focusKey;
+        }
       });
       return () => {
         cancelled = true;
@@ -915,8 +928,23 @@ export function WordBoardEditor({
     if (!editor) {
       return;
     }
-    applyTeachingFocus(editor, document.id, teachingFocus, pageScrollRef.current);
-  }, [currentTeachingFocusKey, document.content_text, document.id, editor, teachingFocus]);
+    const focus = latestTeachingFocusRef.current;
+    const shouldScrollIntoView =
+      Boolean(currentTeachingFocusKey) &&
+      lastAutoScrolledTeachingFocusKeyRef.current !== currentTeachingFocusKey;
+    const didApplyFocus = applyTeachingFocus(
+      editor,
+      document.id,
+      focus,
+      pageScrollRef.current,
+      shouldScrollIntoView
+    );
+    if (!currentTeachingFocusKey) {
+      lastAutoScrolledTeachingFocusKeyRef.current = "";
+    } else if (didApplyFocus && shouldScrollIntoView) {
+      lastAutoScrolledTeachingFocusKeyRef.current = currentTeachingFocusKey;
+    }
+  }, [currentTeachingFocusKey, document.id, editor]);
 
   const currentFontSize =
     ((editor?.getAttributes("textStyle").fontSize as string | null) ?? "14px").replace("px", "");
@@ -1848,6 +1876,7 @@ export function WordBoardEditor({
 
       <div
         ref={pageScrollRef}
+        data-board-scroll-container="true"
         className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]"
       >
         <div className="mx-auto flex w-max min-w-full justify-center px-6 py-10 md:px-10">

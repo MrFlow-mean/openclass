@@ -551,6 +551,16 @@ test("scrolls to and highlights the Board AI-authorized section being explained"
   await expect(highlightedHeading).toBeInViewport();
   await expect(highlightedSentence).toBeInViewport();
   await expect(teachingFocus.filter({ hasText: nextSentence })).toHaveCount(0);
+
+  const boardScroll = page.locator('[data-board-scroll-container="true"]');
+  await expect.poll(() => boardScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(100);
+  await boardScroll.evaluate((element) => element.scrollTo({ top: 0, behavior: "auto" }));
+  await expect.poll(() => boardScroll.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+
+  await page.getByRole("button", { name: /展开.*工具栏/ }).click();
+  await expect.poll(() => boardScroll.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+  await expect(highlightedHeading).toBeAttached();
+  await expect(highlightedSentence).toBeAttached();
 });
 
 test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {
