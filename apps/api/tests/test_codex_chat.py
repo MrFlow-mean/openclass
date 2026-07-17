@@ -623,6 +623,57 @@ def test_zero_baseline_does_not_replace_a_confirmed_target_scenario() -> None:
     assert outcome.requirement.target_scenario == "A concrete learner-stated purpose"
 
 
+def test_requirement_refinement_preserves_confirmed_source_context() -> None:
+    previous = build_requirements("Selected source scope")
+    previous.teaching_type = "knowledge_point"
+    previous.learning_content = "Selected source scope"
+    previous.boundary = "Verified source / selected section / pp. 10-12"
+    previous.board_scope = [previous.boundary]
+    previous.target_depth = "Follow the selected source structure."
+    previous.output_preference = "Structured Markdown board"
+    previous.success_criteria = "Cover the selected source scope."
+    previous.work_mode = "knowledge_board"
+    previous.granularity = "source_chapter"
+    previous.source_grounding = LearningSourceGrounding(
+        requested_by_user=True,
+        confirmation_status="confirmed",
+        confirmed_bundle_id="bundle_selected_scope",
+        confirmed_references=[
+            LearningSourceReference(
+                evidence_bundle_id="bundle_selected_scope",
+                source_ingestion_id="source_selected_scope",
+                source_chapter_id="chapter_selected_scope",
+                chapter_title="Selected section",
+                page_range="pp. 10-12",
+            )
+        ],
+    )
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="knowledge_point",
+        learning_content="Selected source scope",
+        content_is_specific=True,
+        current_level="Can distinguish the main cases but cannot apply the rules",
+        target_scenario="Practice applying the selected rules",
+        chatbot_message="The refined requirement is ready.",
+        teaching_plan="Build the board from the verified source scope.",
+        reason="The learner added level and use-context details.",
+    )
+
+    outcome = evaluate_blank_board_decision(
+        decision,
+        previous_requirement=previous,
+        previous_phase="frozen",
+    )
+
+    assert outcome.requirement is not None
+    assert outcome.requirement.current_level == decision.current_level
+    assert outcome.requirement.source_grounding == previous.source_grounding
+    assert outcome.requirement.boundary == previous.boundary
+    assert outcome.requirement.board_scope == previous.board_scope
+    assert outcome.requirement.granularity == "source_chapter"
+
+
 def test_unclear_turn_does_not_persist_an_unconfirmed_learning_topic() -> None:
     decision = BlankBoardTurnDecision(
         intent="unclear",
@@ -1921,7 +1972,7 @@ def test_source_text_quality_rejects_page_markers_without_rejecting_real_text() 
     assert source_scope_ocr.has_usable_source_text("page four evidence") is True
 
 
-def test_legacy_pdf_source_rebuilds_visual_index_on_first_reference(
+def test_legacy_pdf_source_defers_index_upgrade_during_chat_reference(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
     tmp_path: Path,
@@ -1999,7 +2050,7 @@ def test_legacy_pdf_source_rebuilds_visual_index_on_first_reference(
         user_id=TEST_USER_ID,
     )
 
-    assert rebuild_calls == [source.id]
+    assert rebuild_calls == []
     assert response.board_document_operation_status == "none"
 
 
@@ -2192,6 +2243,12 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
             OrdinaryChatTurnResponse(
                 chatbot_message="A separate live conversational reply."
             ),
+            BlankBoardTurnDecision(
+                intent="learning_need",
+                requested_action="generate_board",
+                chatbot_message="Retry the frozen board generation.",
+                reason="The learner explicitly asked to continue the frozen board task.",
+            ),
         ]
     )
 
@@ -2199,10 +2256,12 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
         return SimpleNamespace(output_parsed=next(decisions))
 
     generation_calls = 0
+    generation_timeouts: list[float] = []
 
     def generate_with_one_failure(**kwargs):
         nonlocal generation_calls
         generation_calls += 1
+        generation_timeouts.append(kwargs["timeout_seconds"])
         if generation_calls == 1:
             raise CodexAppServerError("generation failed")
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
@@ -2259,7 +2318,6 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
         lesson.id,
         ChatRequest(
             message="Start board generation again.",
-            board_generation_action="start",
             post_generation_action="stop_after_generation",
         ),
         user_id=TEST_USER_ID,
@@ -2268,6 +2326,10 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     retry_commit = current_head_commit(saved_lesson)
     assert generation_calls == 2
+    assert generation_timeouts == [
+        codex_chat.CODEX_BOARD_GENERATION_TIMEOUT_SECONDS,
+        codex_chat.CODEX_BOARD_GENERATION_TIMEOUT_SECONDS,
+    ]
     assert retried.chatbot_message == "The board is ready after the retry."
     assert retry_commit.metadata["kind"] == "board_document_generation"
     assert retry_commit.metadata["requirement_retry"] is True

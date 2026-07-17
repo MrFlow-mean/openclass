@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Callable, Literal, Protocol
 
@@ -21,14 +22,16 @@ from app.models import (
     Lesson,
     new_id,
 )
-from app.services.codex_app_server import CodexAppServerError, CodexAppServerTextClient
 from app.services.ai_execution_adapter import CodexAIExecutionAdapter
+from app.services.ai_logging import ai_usage_logger
+from app.services.codex_app_server import CodexAppServerError, CodexAppServerTextClient
 from app.services.follow_up_suggestions import generate_follow_up_suggestions
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
 
 
 BlankBoardIntent = Literal["ordinary_chat", "learning_need", "unclear"]
+BlankBoardRequestedAction = Literal["none", "generate_board"]
 BlankBoardIntakeRoute = Literal[
     "ordinary_chat",
     "guided_discovery",
@@ -53,6 +56,14 @@ When the board state is EMPTY, classify and handle the turn using this contract:
     All three factors are mandatory.
   - `knowledge_point` also requires `learning_content` to be specific enough for one focused
     teaching board.
+
+Also classify `requested_action` independently from requirement completeness:
+- Use `generate_board` only when the supplied active requirement phase is `frozen` and the learner
+  explicitly asks to start, retry, continue, explain, or teach the already selected learning scope.
+  The board is still empty in this state, so this action means retry the same frozen board generation;
+  do not replace the frozen requirement or ask for optional learner-profile details first.
+- Use `none` for ordinary conversation, requirement corrections, new constraints, or answers to a
+  clarification question. Never infer a generation request from topic discussion alone.
 
 Auxiliary factors may preserve useful constraints or preferences, but they never compensate for a
 missing core factor. If a learning need is incomplete or too broad, offer contextual
@@ -196,6 +207,7 @@ class BlankBoardAuxiliaryFactor(BaseModel):
 
 class BlankBoardTurnDecision(BaseModel):
     intent: BlankBoardIntent
+    requested_action: BlankBoardRequestedAction = "none"
     teaching_type: LearningTeachingType | None = None
     learning_content: str = ""
     content_is_specific: bool = False
@@ -514,6 +526,7 @@ def process_blank_board_turn(
             user_prompt=_intake_user_prompt(
                 request,
                 active_requirement=active_requirement,
+                active_phase=active_state.phase,
                 conversation_text=conversation_text,
             ),
             schema=BlankBoardTurnDecision,
@@ -521,12 +534,33 @@ def process_blank_board_turn(
         )
         merge_unreported_activity(getattr(parsed, "activity", []))
         decision = BlankBoardTurnDecision.model_validate(parsed.output_parsed)
-        outcome = evaluate_blank_board_decision(
-            decision,
-            previous_requirement=active_requirement,
-            previous_clarification=active_state.clarification,
-            previous_phase=active_state.phase,
-        )
+        if (
+            decision.intent == "learning_need"
+            and decision.requested_action == "generate_board"
+            and active_state.phase == "frozen"
+            and active_state.requirement is not None
+            and active_state.clarification is not None
+            and active_state.run_id
+            and active_state.version_id
+            and active_state.teaching_plan
+        ):
+            frozen_retry = True
+            outcome = BlankBoardIntakeOutcome(
+                route="generate_board",
+                requirement=active_state.requirement,
+                clarification=active_state.clarification,
+                ready_for_board=True,
+                chatbot_message=active_state.assistant_message,
+                teaching_plan=active_state.teaching_plan,
+                requirement_phase="frozen",
+            )
+        else:
+            outcome = evaluate_blank_board_decision(
+                decision,
+                previous_requirement=active_requirement,
+                previous_clarification=active_state.clarification,
+                previous_phase=active_state.phase,
+            )
         if outcome.route == "ordinary_chat":
             ordinary_parsed = CodexAppServerTextClient(user_id).parse(
                 model=model,
@@ -712,6 +746,18 @@ def process_blank_board_turn(
         "board_visual_asset_ids": [],
         "skipped_visual_placements": [],
     }
+    generation_started_at = time.monotonic()
+    codex_generation_finished = False
+    ai_usage_logger.log_event(
+        "blank_board_generation_started",
+        lesson_id=lesson.id,
+        requirement_run_id=run_id,
+        requirement_version_id=frozen_version_id,
+        requirement_retry=frozen_retry,
+        source_reference_count=len(
+            outcome.requirement.source_grounding.confirmed_references
+        ),
+    )
     try:
         generation_result, generated_content = generate_board(
             user_id,
@@ -720,6 +766,15 @@ def process_blank_board_turn(
             outcome.teaching_plan,
             is_cancelled,
             record_activity,
+        )
+        codex_generation_finished = True
+        ai_usage_logger.log_event(
+            "blank_board_codex_generation_completed",
+            lesson_id=lesson.id,
+            requirement_run_id=run_id,
+            requirement_version_id=frozen_version_id,
+            elapsed_ms=round((time.monotonic() - generation_started_at) * 1000),
+            generated_character_count=len(generated_content),
         )
         merge_unreported_activity(getattr(generation_result, "activity", []))
         final_chatbot_message = (
@@ -862,7 +917,27 @@ def process_blank_board_turn(
             raise CodexAppServerError(
                 "The lesson changed while Codex was saving the board"
             )
+        ai_usage_logger.log_event(
+            "blank_board_generation_completed",
+            lesson_id=lesson.id,
+            requirement_run_id=run_id,
+            requirement_version_id=frozen_version_id,
+            elapsed_ms=round((time.monotonic() - generation_started_at) * 1000),
+            requirement_retry=frozen_retry,
+        )
     except Exception as exc:
+        ai_usage_logger.log_event(
+            "blank_board_generation_failed",
+            lesson_id=lesson.id,
+            requirement_run_id=run_id,
+            requirement_version_id=frozen_version_id,
+            elapsed_ms=round((time.monotonic() - generation_started_at) * 1000),
+            failure_stage=(
+                "persistence" if codex_generation_finished else "codex_generation"
+            ),
+            error=str(exc)[:500],
+            requirement_retry=frozen_retry,
+        )
         if generation_result is not None:
             try:
                 discard_generated_thread(generation_result.thread_id)
@@ -1000,9 +1075,13 @@ def _intake_user_prompt(
     request: ChatRequest,
     *,
     active_requirement: LearningRequirementSheet | None,
+    active_phase: Literal["collecting", "ready", "frozen"] | None,
     conversation_text: str,
 ) -> str:
-    sections = [active_requirement_prompt_context(active_requirement)]
+    sections = [
+        active_requirement_prompt_context(active_requirement),
+        f"Active requirement phase: {active_phase or 'none'}.",
+    ]
     if conversation_text:
         sections.append(f"Recent conversation:\n{conversation_text}")
     sections.append(f"Current user message:\n{request.message}")
@@ -1286,7 +1365,10 @@ def evaluate_blank_board_decision(
             guidance=decision.guidance,
         )
 
-    requirement = _requirement_from_decision(decision)
+    requirement = _requirement_from_decision(
+        decision,
+        previous_requirement=previous_requirement,
+    )
     missing_items = _missing_core_factors(decision)
     ready_for_board = not missing_items
     if ready_for_board and not decision.teaching_plan.strip():
@@ -1312,6 +1394,8 @@ def evaluate_blank_board_decision(
 
 def _requirement_from_decision(
     decision: BlankBoardTurnDecision,
+    *,
+    previous_requirement: LearningRequirementSheet | None,
 ) -> LearningRequirementSheet:
     teaching_type = decision.teaching_type
     learning_content = decision.learning_content.strip()
@@ -1330,7 +1414,7 @@ def _requirement_from_decision(
         if factor.label.strip() and factor.value.strip()
     ]
     is_knowledge = teaching_type == "knowledge_point"
-    return LearningRequirementSheet(
+    requirement = LearningRequirementSheet(
         teaching_type=teaching_type,
         learning_content=learning_content,
         current_level=current_level,
@@ -1356,6 +1440,51 @@ def _requirement_from_decision(
             if is_knowledge
             else "practice_artifact"
         ),
+    )
+    return _preserve_confirmed_source_context(
+        requirement,
+        previous_requirement=previous_requirement,
+    )
+
+
+def _preserve_confirmed_source_context(
+    requirement: LearningRequirementSheet,
+    *,
+    previous_requirement: LearningRequirementSheet | None,
+) -> LearningRequirementSheet:
+    if (
+        previous_requirement is None
+        or previous_requirement.source_grounding.confirmation_status != "confirmed"
+        or not previous_requirement.source_grounding.confirmed_references
+    ):
+        return requirement
+    merged_factors = list(requirement.auxiliary_factors)
+    seen_factors = {
+        (factor.label.strip(), factor.value.strip()) for factor in merged_factors
+    }
+    for factor in previous_requirement.auxiliary_factors:
+        key = (factor.label.strip(), factor.value.strip())
+        if key not in seen_factors:
+            merged_factors.append(factor.model_copy(deep=True))
+            seen_factors.add(key)
+    return requirement.model_copy(
+        deep=True,
+        update={
+            "auxiliary_factors": merged_factors,
+            "source_grounding": previous_requirement.source_grounding.model_copy(
+                deep=True
+            ),
+            "boundary": previous_requirement.boundary,
+            "board_scope": list(previous_requirement.board_scope),
+            "learning_need_checklist": list(
+                previous_requirement.learning_need_checklist
+            ),
+            "target_depth": previous_requirement.target_depth,
+            "output_preference": previous_requirement.output_preference,
+            "success_criteria": previous_requirement.success_criteria,
+            "work_mode": previous_requirement.work_mode,
+            "granularity": previous_requirement.granularity,
+        },
     )
 
 

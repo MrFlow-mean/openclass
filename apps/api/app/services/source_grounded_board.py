@@ -18,10 +18,10 @@ from app.models import (
     now_iso,
 )
 from app.services import workspace_state
+from app.services.ai_logging import ai_usage_logger
 from app.services.source_chapter_identity import rebind_stale_source_chapter_selection
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_structure_indexer import (
-    SourceStructureIndexer,
     source_structure_needs_upgrade,
 )
 from app.services.source_scope_ocr import (
@@ -92,15 +92,30 @@ def resolve_source_grounded_board_plan(
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
-    if source_structure_needs_upgrade(view.structure) or _needs_visual_index_upgrade(
+    structure_upgrade_deferred = source_structure_needs_upgrade(view.structure)
+    visual_upgrade_deferred = _needs_visual_index_upgrade(
         source.mime_type,
         source.file_name,
         view.structure.metadata,
-    ):
-        SourceStructureIndexer(store=source_structure_store).ensure_structure(source)
-        view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
-        if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
-            raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
+    )
+    if structure_upgrade_deferred or visual_upgrade_deferred:
+        # A verified, usable index is sufficient to honor the learner's selected
+        # source boundary. Rebuilding a large source belongs to the ingestion or
+        # explicit rebuild workflow; doing it synchronously here can make one
+        # chat turn scan the entire file before board generation even starts.
+        ai_usage_logger.log_event(
+            "source_structure_upgrade_deferred",
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            source_ingestion_id=source.id,
+            structure_status=view.structure.status,
+            structure_upgrade_deferred=structure_upgrade_deferred,
+            visual_upgrade_deferred=visual_upgrade_deferred,
+            structure_index_version=view.structure.metadata.get(
+                "structure_index_version"
+            ),
+            visual_index_version=view.structure.metadata.get("visual_index_version"),
+        )
     chapter = None if is_page_range else next(
         (
             candidate

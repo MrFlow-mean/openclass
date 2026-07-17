@@ -73,6 +73,7 @@ from app.services.source_visual_region_resolution import resolve_visual_clues_fo
 BOARD_FILE_NAME = "board.md"
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_BOARD_MAX_BYTES = 2 * 1024 * 1024
+CODEX_BOARD_GENERATION_TIMEOUT_SECONDS = 300
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
 MAX_SOURCE_VISUAL_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_VISUALS_PER_BATCH = 8
@@ -688,6 +689,7 @@ def _run_frozen_board_generation(
                 developer_instructions=BOARD_GENERATION_DEVELOPER_INSTRUCTIONS,
                 thread_id=None,
                 image_urls=image_inputs,
+                timeout_seconds=CODEX_BOARD_GENERATION_TIMEOUT_SECONDS,
                 on_delta=None,
                 on_activity=on_activity,
                 is_cancelled=turn_is_cancelled,
