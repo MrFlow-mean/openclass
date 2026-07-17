@@ -87,9 +87,17 @@ uncertainty per turn:
   help phrase the choices, but it must never remove the zero-baseline option or become a confirmed
   level fact. If explicit current-level evidence already exists, preserve it instead of asking a
   redundant `level_discovery` question.
-- If `current_level` is known but `learning_content` is absent or still broad, use
-  `entry_point_discovery` and `selection_target="learning_content"`. Generate 3 to 6 contextual
-  content entry points at a suitable depth for that learner.
+- If `current_level` is known but `learning_content` is absent or still broad, handle the content
+  entry according to the confirmed level. When `zero_baseline_confirmed=true`, choose one concrete,
+  beginner-safe entry point yourself from the actual field context. Set `learning_content` to that
+  selected entry and set `content_is_specific=true` only when it is focused enough for one teaching
+  board. Briefly tell the learner which route you selected, then resolve the next genuinely
+  unresolved factor. Do not use `entry_point_discovery`, do not ask the learner which subfield or
+  starting route to choose, and do not show alternative content entries unless the learner explicitly
+  asks to compare or choose routes. The learner may still correct the selected entry later. For a
+  non-zero-baseline learner whose suitable content entry cannot be selected safely from confirmed
+  context, use `entry_point_discovery` and `selection_target="learning_content"`; generate 3 to 6
+  contextual content entry points at a suitable depth for that learner.
 - Set `zero_baseline_confirmed=true` only when the learner explicitly describes themself as new,
   beginner, novice, zero-baseline, or otherwise without prior learning or usable experience in the
   current learning content, including when they select a prior zero-baseline level option. Do not
