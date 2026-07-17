@@ -191,6 +191,7 @@ class SourceEvidenceStore:
                         size_bytes = excluded.size_bytes,
                         status = excluded.status,
                         error = excluded.error,
+                        open_notebook_notebook_id = excluded.open_notebook_notebook_id,
                         open_notebook_source_id = excluded.open_notebook_source_id,
                         open_notebook_command_id = excluded.open_notebook_command_id,
                         updated_at = excluded.updated_at,

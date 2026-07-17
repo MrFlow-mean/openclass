@@ -55,11 +55,19 @@ def test_open_notebook_backend_syncs_refreshes_and_searches(tmp_path: Path) -> N
         store=store,
         local_path=lambda _record: source_path,
     )
+    store.save_source(record)
 
     synced = backend.sync_file(record)
     assert synced.open_notebook_notebook_id == "notebook:test"
     assert synced.open_notebook_source_id == "source:remote"
     assert synced.metadata["open_notebook_sync_status"] == "parsing"
+    persisted = store.get_source(
+        owner_user_id="user",
+        package_id="package",
+        source_id=record.id,
+    )
+    assert persisted is not None
+    assert persisted.open_notebook_notebook_id == "notebook:test"
 
     ready = backend.refresh(synced)
     assert ready.metadata["open_notebook_sync_status"] == "ready"
