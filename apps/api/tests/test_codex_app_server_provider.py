@@ -4,6 +4,8 @@ import queue
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel, Field
@@ -24,6 +26,20 @@ class _NestedPayload(BaseModel):
 class _StructuredPayload(BaseModel):
     value: str = ""
     nested: _NestedPayload = Field(default_factory=_NestedPayload)
+
+
+def _source_thread_result(cwd: Path) -> dict:
+    return {
+        "thread": {"id": "source-thread"},
+        "activePermissionProfile": {"id": "openclass_source"},
+        "sandbox": {
+            "type": "workspaceWrite",
+            "writableRoots": [str((cwd / "scratch").resolve())],
+            "networkAccess": False,
+            "excludeTmpdirEnvVar": True,
+            "excludeSlashTmp": True,
+        },
+    }
 
 
 def test_managed_codex_session_inherits_active_absolute_deadline(monkeypatch) -> None:
@@ -179,6 +195,305 @@ def test_structured_turn_sends_provider_strict_output_schema(
     assert session.thread_params["serviceTier"] == service_tier
     assert "built-in web search" in session.thread_params["developerInstructions"]
     assert "Role instructions:\nsystem" in session.thread_params["developerInstructions"]
+
+
+def test_codex_command_defines_an_isolated_source_permission_profile() -> None:
+    rendered = "\n".join(
+        codex_app_server._codex_app_server_command("/usr/local/bin/codex")
+    )
+
+    assert (
+        'permissions.openclass_source.filesystem={":minimal"="read",'
+        '":workspace_roots"={"."="read","scratch"="write"}}'
+    ) in rendered
+    assert "permissions.openclass_source.network.enabled=false" in rendered
+
+
+def test_effective_source_permission_config_must_be_exact() -> None:
+    valid = {
+        "config": {
+            "permissions": {
+                "openclass_source": {
+                    "filesystem": {
+                        "glob_scan_max_depth": None,
+                        ":minimal": "read",
+                        ":workspace_roots": {".": "read", "scratch": "write"},
+                    },
+                    "network": {"enabled": False, "domains": None},
+                }
+            }
+        }
+    }
+    codex_app_server._validate_effective_source_permission_config(valid)
+
+    for source_profile in (
+        {
+            "filesystem": {
+                ":minimal": "read",
+                ":workspace_roots": {".": "write", "scratch": "write"},
+            },
+            "network": {"enabled": False},
+        },
+        {
+            "filesystem": {
+                ":minimal": "read",
+                ":workspace_roots": {".": "read", "scratch": "write"},
+            },
+            "network": {"enabled": True},
+        },
+        {
+            "filesystem": {
+                ":minimal": "read",
+                ":workspace_roots": {".": "read", "scratch": "write"},
+            },
+            "network": {"enabled": False, "domains": ["example.com"]},
+        },
+    ):
+        invalid = {
+            "config": {"permissions": {"openclass_source": source_profile}}
+        }
+        with pytest.raises(
+            codex_app_server.CodexAppServerError,
+            match="exact isolated Source Codex profile",
+        ):
+            codex_app_server._validate_effective_source_permission_config(invalid)
+
+
+def test_source_thread_permission_response_rejects_any_broader_access(
+    tmp_path: Path,
+) -> None:
+    safe = _source_thread_result(tmp_path)
+    codex_app_server._validate_source_thread_permission_response(safe, cwd=tmp_path)
+
+    unsafe_results = []
+    for key, value in (
+        ("type", "dangerFullAccess"),
+        ("networkAccess", True),
+        ("writableRoots", [str(tmp_path.resolve())]),
+        ("excludeTmpdirEnvVar", False),
+        ("excludeSlashTmp", False),
+    ):
+        unsafe_results.append(
+            {**safe, "sandbox": {**safe["sandbox"], key: value}}
+        )
+    unsafe_results.append(
+        {**safe, "activePermissionProfile": {"id": "openclass_board"}}
+    )
+
+    for unsafe in unsafe_results:
+        with pytest.raises(
+            codex_app_server.CodexAppServerError,
+            match="exact source-file sandbox",
+        ):
+            codex_app_server._validate_source_thread_permission_response(
+                unsafe,
+                cwd=tmp_path,
+            )
+
+
+def test_source_structured_turn_stages_an_independent_read_only_copy(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "private original name.PDF"
+    source_bytes = b"%PDF-1.7\nsource bytes\x00\xff"
+    source_path.write_bytes(source_bytes)
+    captured: dict[str, object] = {}
+
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+
+        def validate_source_permission_config(self, cwd: Path) -> None:
+            captured["validated_cwd"] = cwd
+
+        def request(self, method, params, *, timeout_seconds):
+            assert method == "thread/start"
+            assert timeout_seconds > 0
+            cwd = Path(params["cwd"])
+            staged_path = cwd / "source.pdf"
+            captured["cwd"] = cwd
+            captured["staged_path"] = staged_path
+            captured["staged_bytes"] = staged_path.read_bytes()
+            captured["same_file"] = staged_path.samefile(source_path)
+            captured["is_symlink"] = staged_path.is_symlink()
+            captured["source_mode"] = staged_path.stat().st_mode & 0o777
+            captured["thread_params"] = params
+            assert sorted(path.name for path in cwd.iterdir()) == ["scratch", "source.pdf"]
+            return _source_thread_result(cwd)
+
+        def _write(self, payload):
+            captured["turn_payload"] = payload
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": '{"value":"catalog","nested":{"note":""}}',
+                        }
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    output_text, _usage, _activity = (
+        codex_app_server._run_source_file_structured_turn(
+            session=_Session(),  # type: ignore[arg-type]
+            source_path=source_path,
+            model="gpt-5.5",
+            system_prompt="return a directory",
+            user_prompt="inspect the source",
+            schema=_StructuredPayload,
+        )
+    )
+
+    assert output_text.startswith('{"value":"catalog"')
+    assert captured["staged_bytes"] == source_bytes
+    assert captured["same_file"] is False
+    assert captured["is_symlink"] is False
+    assert captured["source_mode"] & 0o222 == 0
+    assert captured["validated_cwd"] == captured["cwd"]
+    assert Path(captured["cwd"]).exists() is False
+    thread_params = captured["thread_params"]
+    assert thread_params["config"]["default_permissions"] == "openclass_source"
+    assert thread_params["config"]["web_search"] == "disabled"
+    assert "source.pdf" in thread_params["developerInstructions"]
+    assert "scratch" in thread_params["developerInstructions"]
+    assert source_path.name not in thread_params["developerInstructions"]
+    turn_payload = captured["turn_payload"]
+    assert turn_payload["params"]["outputSchema"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("tamper_target", ["staged", "original"])
+def test_source_structured_turn_detects_file_mutation(
+    tmp_path: Path,
+    tamper_target: str,
+) -> None:
+    source_path = tmp_path / "source.pdf"
+    source_path.write_bytes(b"original")
+
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+            self.cwd: Path | None = None
+
+        def validate_source_permission_config(self, cwd: Path) -> None:
+            pass
+
+        def request(self, method, params, *, timeout_seconds):
+            self.cwd = Path(params["cwd"])
+            return _source_thread_result(self.cwd)
+
+        def _write(self, payload):
+            assert self.cwd is not None
+            target = self.cwd / "source.pdf" if tamper_target == "staged" else source_path
+            target.chmod(0o600)
+            target.write_bytes(b"tampered")
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {"type": "agentMessage", "text": '{"value":"x"}'},
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    with pytest.raises(
+        codex_app_server.CodexAppServerError,
+        match="source-file integrity",
+    ):
+        codex_app_server._run_source_file_structured_turn(
+            session=_Session(),  # type: ignore[arg-type]
+            source_path=source_path,
+            model="gpt-5.5",
+            system_prompt="system",
+            user_prompt="user",
+            schema=_Payload,
+        )
+
+
+def test_source_structured_turn_rejects_a_symbolic_link(tmp_path: Path) -> None:
+    original = tmp_path / "original.pdf"
+    original.write_bytes(b"original")
+    source_path = tmp_path / "linked.pdf"
+    source_path.symlink_to(original)
+
+    with pytest.raises(
+        codex_app_server.CodexAppServerError,
+        match="symbolic-link",
+    ):
+        codex_app_server._run_source_file_structured_turn(
+            session=SimpleNamespace(deadline_monotonic=time.monotonic() + 5),
+            source_path=source_path,
+            model="gpt-5.5",
+            system_prompt="system",
+            user_prompt="user",
+            schema=_Payload,
+        )
+
+
+def test_text_client_parse_source_file_validates_schema(monkeypatch, tmp_path: Path) -> None:
+    source_path = tmp_path / "book.epub"
+    source_path.write_bytes(b"epub")
+    captured: dict[str, object] = {}
+
+    class _Managed:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(
+        codex_app_server,
+        "codex_provider_status",
+        lambda *_args, **_kwargs: SimpleNamespace(configured=True, message=""),
+    )
+    monkeypatch.setattr(codex_app_server, "_managed_session", lambda **_kwargs: _Managed())
+
+    def run_source(**kwargs):
+        captured.update(kwargs)
+        return '{"value":"ok"}', None, []
+
+    monkeypatch.setattr(
+        codex_app_server,
+        "_run_source_file_structured_turn",
+        run_source,
+    )
+
+    result = codex_app_server.CodexAppServerTextClient("user_a").parse_source_file(
+        source_path=source_path,
+        model="gpt-5.5",
+        system_prompt="system",
+        user_prompt="user",
+        schema=_Payload,
+    )
+
+    assert result.output_parsed.value == "ok"
+    assert captured["source_path"] == source_path
 
 
 def test_codex_home_is_isolated_per_openclass_user(monkeypatch, tmp_path) -> None:
