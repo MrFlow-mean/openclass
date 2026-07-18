@@ -35,6 +35,7 @@ from app.services.source_xml import parse_untrusted_xml
 MAX_DIRECTORY_NODES = 5_000
 MAX_PDF_TOC_PROBE_PAGES = 48
 MAX_PDF_TOC_PAGES = 24
+MAX_PDF_OUTLINE_COLLISION_PAGES = 64
 PDF_HEADING_REGION_RATIO = 0.28
 CatalogProgressCallback = Callable[[str, int], None]
 MappingStatus = Literal["verified", "partial", "unverified", "unmapped"]
@@ -167,20 +168,35 @@ def _extract_pdf(
 
     outline_candidates = _pdf_outline_candidates(reader, page_count=page_count)
     if outline_candidates:
+        outline_candidates, inspected_outline_pages = _validate_pdf_outline_destination_collisions(
+            path,
+            outline_candidates,
+        )
         closed = _close_numeric_ranges(outline_candidates, maximum=page_count, kind="pdf_pages")
+        warnings = ()
+        if any(candidate.mapping_status != "verified" for candidate in closed):
+            warnings = (
+                "Some native PDF outline destinations conflict and cannot be safely cited.",
+            )
         return DirectoryExtraction(
             candidates=tuple(closed),
+            warnings=warnings,
             page_count=page_count,
-            inspected_page_count=0,
+            inspected_page_count=len(inspected_outline_pages),
             ocr_page_count=0,
             metadata={
                 "format": "pdf",
                 "directory_source": "native_outline",
                 "body_text_extracted": False,
-                "heading_region_scan": False,
+                "heading_region_scan": bool(inspected_outline_pages),
+                "outline_collision_validation": bool(inspected_outline_pages),
             },
         )
 
+    toc_outline_range = _pdf_outline_toc_range(reader, page_count=page_count)
+    toc_outline_page = toc_outline_range[0] if toc_outline_range is not None else None
+    toc_outline_page_end = toc_outline_range[1] if toc_outline_range is not None else None
+    printed_page_map = _pdf_printed_page_navigation(reader, page_count=page_count)
     document = fitz.open(str(path))
     inspected_pages: set[int] = set()
     ocr_pages: set[int] = set()
@@ -222,12 +238,13 @@ def _extract_pdf(
     try:
         _report(progress_callback, "locating_toc_pages", 38)
         probe_end = min(page_count, MAX_PDF_TOC_PROBE_PAGES)
-        toc_start: int | None = None
-        for page_no in range(1, probe_end + 1):
-            lines = page_headings(page_no)
-            if _pdf_page_has_toc_heading(lines):
-                toc_start = page_no
-                break
+        toc_start: int | None = toc_outline_page
+        if toc_start is None:
+            for page_no in range(1, probe_end + 1):
+                lines = page_headings(page_no)
+                if _pdf_page_has_toc_heading(lines):
+                    toc_start = page_no
+                    break
 
         toc_nodes: list[_PdfTocCandidate] = []
         toc_end: int | None = None
@@ -238,28 +255,35 @@ def _extract_pdf(
                 page_start=toc_start,
                 page_count=page_count,
                 inspected_pages=inspected_pages,
+                page_end_limit=toc_outline_page_end,
             )
             ocr_pages.update(toc_ocr_pages)
 
         _report(progress_callback, "mapping_directory_to_pages", 48)
         # TOC page numbers are print coordinates. The only safe way to publish
-        # physical PDF ranges is to match them against page heading regions.
+        # physical PDF ranges is to match them against verified navigation or
+        # page heading regions. Numeric page-label bookmarks are not chapters,
+        # but a consistent sequence is authoritative mapping evidence.
         if toc_nodes:
-            for page_no in range(1, page_count + 1):
-                page_headings(page_no)
-            body_heading_cache = {
-                page_no: lines
-                for page_no, lines in heading_cache.items()
-                if not (
-                    toc_start is not None
-                    and toc_end is not None
-                    and toc_start <= page_no <= toc_end
-                )
-            }
+            if printed_page_map:
+                body_heading_cache: dict[int, list[_PdfHeadingLine]] = {}
+            else:
+                for page_no in range(1, page_count + 1):
+                    page_headings(page_no)
+                body_heading_cache = {
+                    page_no: lines
+                    for page_no, lines in heading_cache.items()
+                    if not (
+                        toc_start is not None
+                        and toc_end is not None
+                        and toc_start <= page_no <= toc_end
+                    )
+                }
             mapped = _map_pdf_toc_nodes(
                 toc_nodes,
                 body_heading_cache,
                 page_count=page_count,
+                printed_page_map=printed_page_map,
             )
             closed = _close_numeric_ranges(mapped, maximum=page_count, kind="pdf_pages")
             warnings = []
@@ -279,7 +303,8 @@ def _extract_pdf(
                     "toc_page_start": toc_start,
                     "toc_page_end": toc_end,
                     "body_text_extracted": False,
-                    "heading_region_scan": True,
+                    "heading_region_scan": not bool(printed_page_map),
+                    "printed_page_navigation": bool(printed_page_map),
                 },
             )
 
@@ -312,34 +337,22 @@ def _extract_pdf(
 
 
 def _pdf_outline_candidates(reader: object, *, page_count: int) -> list[DirectoryCandidate]:
-    try:
-        outline = reader.outline  # type: ignore[attr-defined]
-    except Exception:
-        return []
-    flattened: list[tuple[object, int]] = []
-
-    def visit(items: object, level: int = 1) -> None:
-        if isinstance(items, list):
-            for item in items:
-                if isinstance(item, list):
-                    visit(item, level + 1)
-                else:
-                    flattened.append((item, level))
-            return
-        flattened.append((items, level))
-
-    visit(outline)
+    flattened = _pdf_outline_items(reader)
     candidates: list[DirectoryCandidate] = []
+    navigable_count = 0
+    meaningful_count = 0
     for item, level in flattened:
         title = _clean_title(getattr(item, "title", "") or str(item))
-        if not title or is_toc_heading(title):
-            continue
         try:
             page_index = reader.get_destination_page_number(item)  # type: ignore[attr-defined]
         except Exception:
             page_index = None
         if not isinstance(page_index, int) or not 0 <= page_index < page_count:
             continue
+        navigable_count += 1
+        if not _is_meaningful_pdf_outline_title(title) or is_toc_heading(title):
+            continue
+        meaningful_count += 1
         page_no = page_index + 1
         number, inferred_level = _heading_number_and_level(title)
         resolved_level = max(1, level, inferred_level)
@@ -370,13 +383,299 @@ def _pdf_outline_candidates(reader: object, *, page_count: int) -> list[Director
                         confidence=0.98,
                     ),
                 ),
-                metadata={"navigation_provenance": "native"},
+                metadata={
+                    "navigation_provenance": "native",
+                    "destination_fingerprint": _pdf_outline_destination_fingerprint(
+                        item,
+                        page_index=page_index,
+                    ),
+                },
             )
         )
-    return candidates
+    # Some scanned books contain one bookmark per physical page whose label is
+    # only the page number. A handful of cover/front-matter labels must not make
+    # that page index look like a semantic chapter outline and suppress TOC OCR.
+    if navigable_count >= 8 and meaningful_count / navigable_count < 0.25:
+        return []
+    return _mark_pdf_outline_destination_collisions(candidates)
 
 
-def _native_pdf_heading_lines(page: object, *, clip: object, page_no: int) -> list[_PdfHeadingLine]:
+def _pdf_outline_items(reader: object) -> list[tuple[object, int]]:
+    try:
+        outline = reader.outline  # type: ignore[attr-defined]
+    except Exception:
+        return []
+    flattened: list[tuple[object, int]] = []
+
+    def visit(items: object, level: int = 1) -> None:
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, list):
+                    visit(item, level + 1)
+                else:
+                    flattened.append((item, level))
+            return
+        flattened.append((items, level))
+
+    visit(outline)
+    return flattened
+
+
+def _pdf_outline_toc_range(
+    reader: object,
+    *,
+    page_count: int,
+) -> tuple[int, int] | None:
+    """Return a conservative physical-page range for an outlined TOC.
+
+    A semantic TOC bookmark identifies the first candidate page. The first
+    later outline destination that advances to a larger physical page is a
+    navigation boundary, so it cannot itself still be part of the TOC range.
+    The normal TOC page budget remains a hard upper bound when outline
+    navigation is sparse or malformed.
+    """
+
+    items = _pdf_outline_items(reader)
+    for index, (item, _level) in enumerate(items):
+        title = _clean_title(getattr(item, "title", "") or str(item))
+        if not is_toc_heading(title):
+            continue
+        try:
+            page_index = reader.get_destination_page_number(item)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if not isinstance(page_index, int) or not 0 <= page_index < page_count:
+            continue
+        page_start = page_index + 1
+        page_end = min(page_count, page_start + MAX_PDF_TOC_PAGES - 1)
+        for candidate, _candidate_level in items[index + 1 :]:
+            try:
+                candidate_index = reader.get_destination_page_number(candidate)  # type: ignore[attr-defined]
+            except Exception:
+                continue
+            if not isinstance(candidate_index, int) or not 0 <= candidate_index < page_count:
+                continue
+            candidate_page = candidate_index + 1
+            if candidate_page <= page_start:
+                continue
+            page_end = min(page_end, candidate_page - 1)
+            break
+        return page_start, max(page_start, page_end)
+    return None
+
+
+def _pdf_printed_page_navigation(
+    reader: object,
+    *,
+    page_count: int,
+) -> dict[int, int]:
+    physical_by_printed: dict[int, int] = {}
+    conflicting_printed_pages: set[int] = set()
+    for item, _level in _pdf_outline_items(reader):
+        title = _clean_title(getattr(item, "title", "") or str(item))
+        if not re.fullmatch(r"\d{1,7}", title):
+            continue
+        printed_page = int(title)
+        if printed_page < 1:
+            continue
+        try:
+            page_index = reader.get_destination_page_number(item)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if isinstance(page_index, int) and 0 <= page_index < page_count:
+            physical_page = page_index + 1
+            previous = physical_by_printed.get(printed_page)
+            if previous is not None and previous != physical_page:
+                conflicting_printed_pages.add(printed_page)
+                continue
+            physical_by_printed[printed_page] = physical_page
+    pairs = [
+        pair
+        for pair in physical_by_printed.items()
+        if pair[0] not in conflicting_printed_pages
+    ]
+    if len(pairs) < 4:
+        return {}
+
+    offset_counts = Counter(physical - printed for printed, physical in pairs)
+    page_offset, support = offset_counts.most_common(1)[0]
+    if support < 4 or support / len(pairs) < 0.8:
+        return {}
+    consistent = {
+        printed: physical
+        for printed, physical in pairs
+        if physical - printed == page_offset
+    }
+    ordered = sorted(consistent.items())
+    if any(
+        printed <= previous_printed or physical <= previous_physical
+        for (previous_printed, previous_physical), (printed, physical) in zip(ordered, ordered[1:])
+    ):
+        return {}
+    return consistent
+
+
+def _is_meaningful_pdf_outline_title(value: str) -> bool:
+    title = _clean_title(value)
+    if not title or len(title) > 240:
+        return False
+    if re.fullmatch(r"(?:\d+|[ivxlcdm]+)", title, flags=re.I):
+        return False
+    return sum(unicodedata.category(character).startswith("L") for character in title) >= 2
+
+
+def _pdf_outline_destination_fingerprint(item: object, *, page_index: int) -> str:
+    def coordinate(name: str) -> str:
+        value = getattr(item, name, None)
+        if isinstance(value, (int, float)):
+            return f"{float(value):.4f}"
+        return str(value or "")
+
+    return "|".join(
+        [
+            str(page_index + 1),
+            str(getattr(item, "typ", "") or ""),
+            coordinate("left"),
+            coordinate("top"),
+            coordinate("zoom"),
+        ]
+    )
+
+
+def _mark_pdf_outline_destination_collisions(
+    candidates: list[DirectoryCandidate],
+) -> list[DirectoryCandidate]:
+    groups: dict[tuple[int, str], list[int]] = {}
+    for index, candidate in enumerate(candidates):
+        fingerprint = str(candidate.metadata.get("destination_fingerprint") or "")
+        if not fingerprint:
+            continue
+        groups.setdefault((candidate.level, fingerprint), []).append(index)
+
+    collision_indexes = {
+        index
+        for indexes in groups.values()
+        if len({_normalize_title(candidates[index].title) for index in indexes}) > 1
+        for index in indexes
+    }
+    if not collision_indexes:
+        return candidates
+    return [
+        replace(
+            candidate,
+            metadata={**candidate.metadata, "destination_collision": True},
+        )
+        if index in collision_indexes
+        else candidate
+        for index, candidate in enumerate(candidates)
+    ]
+
+
+def _validate_pdf_outline_destination_collisions(
+    path: Path,
+    candidates: list[DirectoryCandidate],
+) -> tuple[list[DirectoryCandidate], set[int]]:
+    collision_pages = {
+        candidate.source_range.start
+        for candidate in candidates
+        if candidate.metadata.get("destination_collision") is True
+        and candidate.source_range is not None
+        and isinstance(candidate.source_range.start, int)
+    }
+    if not collision_pages:
+        return candidates, set()
+
+    try:
+        import fitz
+    except Exception:  # pragma: no cover - dependency guard
+        fitz = None
+
+    inspected_pages: set[int] = set()
+    page_lines: dict[int, list[_PdfHeadingLine]] = {}
+    if fitz is not None:
+        document = fitz.open(str(path))
+        try:
+            for page_no in sorted(collision_pages)[:MAX_PDF_OUTLINE_COLLISION_PAGES]:
+                if not 1 <= page_no <= len(document):
+                    continue
+                page = document.load_page(page_no - 1)
+                inspected_pages.add(page_no)
+                page_lines[page_no] = _native_pdf_heading_lines(
+                    page,
+                    clip=page.rect,
+                    page_no=page_no,
+                    limit=None,
+                )
+        finally:
+            document.close()
+
+    validated: list[DirectoryCandidate] = []
+    for candidate in candidates:
+        if candidate.metadata.get("destination_collision") is not True:
+            validated.append(candidate)
+            continue
+        source_range = candidate.source_range
+        page_no = source_range.start if source_range is not None else None
+        if isinstance(page_no, int) and _pdf_page_contains_outline_heading(
+            candidate.title,
+            page_lines.get(page_no, []),
+        ):
+            validated.append(
+                replace(
+                    candidate,
+                    metadata={
+                        **candidate.metadata,
+                        "destination_collision_validation": "title_matched",
+                    },
+                )
+            )
+            continue
+        validated.append(
+            replace(
+                candidate,
+                source_range=None,
+                mapping_status="unmapped",
+                confidence=min(candidate.confidence, 0.64),
+                metadata={
+                    **candidate.metadata,
+                    "reported_destination_page": page_no,
+                    "destination_collision_validation": "title_mismatch",
+                },
+            )
+        )
+    return validated, inspected_pages
+
+
+def _pdf_page_contains_outline_heading(
+    title: str,
+    lines: list[_PdfHeadingLine],
+) -> bool:
+    target = _normalize_title(title)
+    if not target or not lines:
+        return False
+    positive_sizes = sorted(line.font_size for line in lines if line.font_size > 0)
+    baseline = positive_sizes[len(positive_sizes) // 2] if positive_sizes else 0.0
+    for line in lines:
+        candidate = _normalize_title(line.text)
+        if not candidate:
+            continue
+        prominent = (
+            line.y_ratio <= 0.32
+            or (line.font_size > 0 and line.font_size >= max(10.0, baseline * 1.16))
+            or parse_structural_heading(line.text) is not None
+        )
+        if prominent and (candidate == target or _title_similarity(target, candidate) >= 0.9):
+            return True
+    return False
+
+
+def _native_pdf_heading_lines(
+    page: object,
+    *,
+    clip: object,
+    page_no: int,
+    limit: int | None = 24,
+) -> list[_PdfHeadingLine]:
     try:
         payload = page.get_text("dict", clip=clip)  # type: ignore[attr-defined]
     except Exception:
@@ -405,7 +704,7 @@ def _native_pdf_heading_lines(page: object, *, clip: object, page_no: int) -> li
                     source="pdf_heading_region_text",
                 )
             )
-    return result[:24]
+    return result if limit is None else result[:limit]
 
 
 def _read_pdf_toc_pages(
@@ -415,9 +714,12 @@ def _read_pdf_toc_pages(
     page_start: int,
     page_count: int,
     inspected_pages: set[int],
+    page_end_limit: int | None = None,
 ) -> tuple[list[_PdfTocCandidate], int, set[int]]:
     native_nodes: list[_PdfTocCandidate] = []
     page_end = min(page_count, page_start + MAX_PDF_TOC_PAGES - 1)
+    if page_end_limit is not None:
+        page_end = min(page_end, max(page_start, page_end_limit))
     last_useful_page = page_start
     empty_after_content = 0
     for page_no in range(page_start, page_end + 1):
@@ -564,39 +866,74 @@ def _map_pdf_toc_nodes(
     heading_cache: dict[int, list[_PdfHeadingLine]],
     *,
     page_count: int,
+    printed_page_map: dict[int, int] | None = None,
 ) -> list[DirectoryCandidate]:
     direct_matches: dict[int, int] = {}
     offset_votes: Counter[int] = Counter()
+    offset_printed_pages: dict[int, set[int]] = {}
+    printed_page_map = printed_page_map or {}
+    for printed_page, physical_page in printed_page_map.items():
+        offset = physical_page - printed_page
+        offset_votes[offset] += 1
+        offset_printed_pages.setdefault(offset, set()).add(printed_page)
     for node_index, node in enumerate(nodes):
+        if node.printed_page is not None and node.printed_page in printed_page_map:
+            direct_matches[node_index] = printed_page_map[node.printed_page]
+            continue
         page_no = _best_heading_page(node, heading_cache)
         if page_no is None:
             continue
         direct_matches[node_index] = page_no
         if node.printed_page is not None:
-            offset_votes[page_no - node.printed_page] += 1
+            offset = page_no - node.printed_page
+            offset_votes[offset] += 1
+            offset_printed_pages.setdefault(offset, set()).add(node.printed_page)
     page_offset: int | None = None
     offset_support = 0
+    offset_printed_page_start: int | None = None
+    offset_printed_page_end: int | None = None
     if offset_votes:
         page_offset, offset_support = offset_votes.most_common(1)[0]
         if offset_support < 2:
             page_offset = None
+        else:
+            observed_printed_pages = offset_printed_pages.get(page_offset, set())
+            if observed_printed_pages:
+                offset_printed_page_start = min(observed_printed_pages)
+                offset_printed_page_end = max(observed_printed_pages)
 
     candidates: list[DirectoryCandidate] = []
     for index, node in enumerate(nodes):
         mapped_page = direct_matches.get(index)
-        mapping_method = "body_heading_region_match"
-        confidence = max(0.76, node.confidence)
-        if page_offset is not None and node.printed_page is not None:
+        mapped_from_printed_navigation = (
+            node.printed_page is not None
+            and node.printed_page in printed_page_map
+            and printed_page_map[node.printed_page] == mapped_page
+        )
+        mapping_method = (
+            "native_printed_page_navigation"
+            if mapped_from_printed_navigation
+            else "body_heading_region_match"
+        )
+        confidence = max(0.94 if mapped_from_printed_navigation else 0.76, node.confidence)
+        if (
+            page_offset is not None
+            and node.printed_page is not None
+            and offset_printed_page_start is not None
+            and offset_printed_page_end is not None
+            and offset_printed_page_start <= node.printed_page <= offset_printed_page_end
+        ):
             proposed = node.printed_page + page_offset
             if 1 <= proposed <= page_count:
                 direct_match = mapped_page
                 mapped_page = proposed
-                mapping_method = (
-                    "heading_region_and_printed_offset"
-                    if direct_match == proposed
-                    else "verified_printed_to_physical_offset"
-                )
-                confidence = max(0.9 if direct_match == proposed else 0.84, node.confidence)
+                if not mapped_from_printed_navigation:
+                    mapping_method = (
+                        "heading_region_and_printed_offset"
+                        if direct_match == proposed
+                        else "verified_printed_to_physical_offset"
+                    )
+                    confidence = max(0.9 if direct_match == proposed else 0.84, node.confidence)
         source_range = (
             SourceRange(
                 kind="pdf_pages",
@@ -636,6 +973,8 @@ def _map_pdf_toc_nodes(
                             "physical_page": mapped_page,
                             "mapping_method": mapping_method if mapped_page is not None else "unmapped",
                             "offset_support": offset_support,
+                            "offset_printed_page_start": offset_printed_page_start,
+                            "offset_printed_page_end": offset_printed_page_end,
                         },
                     ),
                 ),
@@ -1267,46 +1606,90 @@ def _extract_text(path: Path, *, fallback_title: str, markdown: bool) -> Directo
 
 def _extract_epub(path: Path) -> DirectoryExtraction:
     candidates: list[DirectoryCandidate] = []
+    warnings: list[str] = []
     with SafeSourceArchive(path) as archive:
         names = archive.namelist()
+        name_set = set(names)
         spine = _epub_spine(archive)
         spine_index = {name: index for index, name in enumerate(spine)}
         nav_entries = _epub_nav_entries(archive, names)
-        for order_index, (target, fragment, title, level) in enumerate(nav_entries[:MAX_DIRECTORY_NODES]):
+        native_navigation_count = len(nav_entries)
+        navigation_truncated = native_navigation_count > MAX_DIRECTORY_NODES
+        if navigation_truncated:
+            warnings.append(
+                "EPUB native navigation was truncated at the structural node limit; "
+                "the published catalog is partial."
+            )
+        anchor_names_by_target: dict[str, set[str] | None] = {}
+        navigation_resolution_limit = (
+            MAX_DIRECTORY_NODES + 1 if navigation_truncated else MAX_DIRECTORY_NODES
+        )
+        for order_index, (target, fragment, title, level) in enumerate(
+            nav_entries[:navigation_resolution_limit]
+        ):
             index = spine_index.get(target)
+            decoded_fragment = unquote(fragment)
+            target_exists = target in name_set
+            anchor_verified = not decoded_fragment
+            if decoded_fragment and target_exists:
+                if target not in anchor_names_by_target:
+                    anchor_names_by_target[target] = _epub_xhtml_anchor_names(archive, target)
+                anchor_names = anchor_names_by_target[target]
+                anchor_verified = anchor_names is not None and decoded_fragment in anchor_names
+            range_verified = index is not None and target_exists and anchor_verified
             source_range = (
                 SourceRange(
                     kind="epub_spine",
                     start=index,
                     end=index,
                     container=target,
-                    start_anchor=fragment,
-                    display_label=f"{target}{'#' + fragment if fragment else ''}",
+                    start_anchor=decoded_fragment,
+                    display_label=f"{target}{'#' + decoded_fragment if decoded_fragment else ''}",
                     metadata={"index_base": 0, "href": target},
                 )
-                if index is not None
+                if range_verified
                 else None
             )
-            number, inferred_level = _heading_number_and_level(title)
+            number, _inferred_level = _heading_number_and_level(title)
+            native_level = max(1, min(12, level))
+            source_locator = f"epub:{target}{'#' + decoded_fragment if decoded_fragment else ''}"
             candidates.append(
                 DirectoryCandidate(
                     local_key=f"epub-{order_index}",
                     title=title,
                     number=number,
-                    level=max(level, inferred_level),
+                    level=native_level,
                     order_index=order_index,
-                    source_locator=f"epub:{target}{'#' + fragment if fragment else ''}",
+                    source_locator=source_locator,
                     source_range=source_range,
                     mapping_status="verified" if source_range is not None else "unmapped",
-                    confidence=0.98 if fragment and source_range is not None else 0.88 if source_range is not None else 0.5,
+                    confidence=(
+                        0.98
+                        if decoded_fragment and source_range is not None
+                        else 0.88
+                        if source_range is not None
+                        else 0.5
+                    ),
                     evidence=(
                         SourceCatalogEvidence(
                             method="epub_navigation",
-                            source_locator=f"epub:{target}{'#' + fragment if fragment else ''}",
+                            source_locator=source_locator,
                             excerpt=title,
-                            confidence=0.98 if fragment else 0.88,
+                            confidence=0.98 if decoded_fragment else 0.88,
                         ),
                     ),
+                    metadata={
+                        "navigation_provenance": "native",
+                        "hierarchy_locked": True,
+                        "native_level": native_level,
+                        "fragment_validation": (
+                            "verified_id_or_name"
+                            if decoded_fragment and range_verified
+                            else "missing_id_or_name"
+                            if decoded_fragment
+                            else "not_required"
+                        ),
+                    },
                 )
             )
         if not candidates:
@@ -1328,10 +1711,53 @@ def _extract_epub(path: Path) -> DirectoryExtraction:
                         method="epub_spine_item",
                     )
                 )
+    closed_candidates = _close_epub_ranges(candidates, maximum=max(0, len(spine) - 1))
+    if navigation_truncated:
+        closed_candidates = _demote_epub_ranges_open_at_truncation(
+            candidates,
+            closed_candidates,
+            published_count=MAX_DIRECTORY_NODES,
+        )
     return DirectoryExtraction(
-        candidates=tuple(_close_epub_ranges(candidates, maximum=max(0, len(spine) - 1))),
-        metadata={"format": "epub", "spine_count": len(spine), "body_text_extracted": False},
+        candidates=tuple(closed_candidates[:MAX_DIRECTORY_NODES]),
+        warnings=tuple(warnings),
+        metadata={
+            "format": "epub",
+            "spine_count": len(spine),
+            "body_text_extracted": False,
+            "native_navigation_count": native_navigation_count,
+            "published_navigation_count": min(native_navigation_count, MAX_DIRECTORY_NODES),
+            "navigation_truncated": navigation_truncated,
+            "navigation_node_limit": MAX_DIRECTORY_NODES,
+            "anchor_validation": "xhtml_id_name_attributes_only",
+            "anchor_document_count": len(anchor_names_by_target),
+        },
     )
+
+
+class _EpubAnchorHTMLParser(HTMLParser):
+    """Collect only XHTML tag anchors; discard all document text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.anchor_names: set[str] = set()
+
+    def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name.lower() in {"id", "name"} and value:
+                self.anchor_names.add(value)
+
+
+def _epub_xhtml_anchor_names(
+    archive: SafeSourceArchive,
+    target: str,
+) -> set[str] | None:
+    parser = _EpubAnchorHTMLParser()
+    try:
+        parser.feed(archive.read(target).decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+    return parser.anchor_names
 
 
 def _epub_spine(archive: SafeSourceArchive) -> list[str]:
@@ -1708,6 +2134,41 @@ def _close_epub_ranges(
                     }
                 ),
             )
+        )
+    return result
+
+
+def _demote_epub_ranges_open_at_truncation(
+    original: list[DirectoryCandidate],
+    closed: list[DirectoryCandidate],
+    *,
+    published_count: int,
+) -> list[DirectoryCandidate]:
+    """Keep truncated EPUB ranges citable only when the lookahead closes them."""
+
+    result = list(closed)
+    published_end = min(published_count, len(original), len(result))
+    for index in range(published_end):
+        if result[index].mapping_status != "verified":
+            continue
+        boundary = next(
+            (
+                following
+                for following in original[index + 1 :]
+                if following.level <= original[index].level
+            ),
+            None,
+        )
+        if boundary is not None:
+            continue
+        result[index] = replace(
+            result[index],
+            mapping_status="partial",
+            confidence=min(result[index].confidence, 0.64),
+            metadata={
+                **result[index].metadata,
+                "range_boundary_status": "navigation_truncated",
+            },
         )
     return result
 

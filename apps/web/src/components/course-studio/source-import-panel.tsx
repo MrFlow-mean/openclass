@@ -127,7 +127,7 @@ export function SourceImportPanel({
     return () => {
       active = false;
     };
-  }, [onError, packageId, prefetchPackage]);
+  }, [onError, packageId, prefetchPackage, sources]);
 
   const refreshSources = useCallback(async () => {
     if (!packageId) {
@@ -593,6 +593,10 @@ function SourceRow({
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
   const isOpenNotebookManaged = metadataString(source, "source_processing_owner") === "open_notebook";
+  const isDirectoryOnlyCatalog =
+    isDirectoryCatalogSource(source) ||
+    catalog?.strategy === "codex_directory_v1" ||
+    catalog?.catalog_schema_version === "codex_directory_v1";
   const sourceQuality = source.structure_quality;
   const viewQuality = catalog?.quality;
   const structureQuality =
@@ -828,7 +832,7 @@ function SourceRow({
                   {isOpenNotebookManaged ? "OpenNotebook" : structureLabel}
                 </span>
               ) : null}
-              {isReady && !isOpenNotebookManaged ? (
+              {isReady && !isOpenNotebookManaged && !isDirectoryOnlyCatalog ? (
                 <button
                   type="button"
                   onClick={() => void toggleContent()}

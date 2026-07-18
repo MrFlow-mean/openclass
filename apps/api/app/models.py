@@ -618,6 +618,7 @@ SourceStructureQualityLevel = Literal[
 SourceTextReadiness = Literal["unknown", "ready", "sparse", "very_sparse", "empty"]
 SourceStructureStrategy = Literal[
     "codex_directory_v1",
+    "codex_catalog",
     "epub_navigation",
     "epub_heading",
     "pdf_outline",

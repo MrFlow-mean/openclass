@@ -5,6 +5,7 @@ import {
   createSourceChapterSelection,
   sourceChapterLabel,
 } from "@/components/course-studio/source-reference";
+import { sourceRangeDisplayLabel } from "@/lib/source-range-display";
 import type {
   SelectionRef,
   SourceCatalogView,
@@ -70,6 +71,7 @@ function SourceChapterNode({
   const isExpanded = expandedIds.has(node.chapter.id);
   const isVerified = hasVerifiedChapterRange(node.chapter, catalog);
   const title = sourceChapterLabel(node.chapter);
+  const rangeLabel = sourceChapterRangeLabel(node.chapter);
   return (
     <div>
       <div
@@ -80,7 +82,7 @@ function SourceChapterNode({
           type="button"
           onClick={() => (hasChildren ? onToggle(node.chapter.id) : undefined)}
           className={clsx("flex min-w-0 flex-1 items-center gap-1 text-left", !hasChildren && "cursor-default")}
-          title={node.chapter.path.join(" > ") || title}
+          title={[node.chapter.path.join(" > ") || title, rangeLabel].filter(Boolean).join(" · ")}
         >
           {hasChildren ? (
             isExpanded ? (
@@ -92,6 +94,9 @@ function SourceChapterNode({
             <span className="h-3.5 w-3.5 shrink-0" />
           )}
           <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
+          {rangeLabel ? (
+            <span className="shrink-0 text-[10px] tabular-nums text-gray-400">{rangeLabel}</span>
+          ) : null}
         </button>
         {!isVerified ? (
           <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录条目已识别，正文范围尚未验证">
@@ -128,6 +133,23 @@ function SourceChapterNode({
       ) : null}
     </div>
   );
+}
+
+function sourceChapterRangeLabel(chapter: SourceChapter) {
+  const authoritative = sourceRangeDisplayLabel(chapter.range);
+  if (authoritative) {
+    return authoritative;
+  }
+  if (typeof chapter.page_start !== "number") {
+    return "";
+  }
+  const inclusiveEnd =
+    typeof chapter.page_end === "number"
+      ? Math.max(chapter.page_start, chapter.page_end - 1)
+      : chapter.page_start;
+  return inclusiveEnd === chapter.page_start
+    ? `PDF p. ${chapter.page_start}`
+    : `PDF pp. ${chapter.page_start}-${inclusiveEnd}`;
 }
 
 function hasVerifiedChapterRange(chapter: SourceChapter, catalog: SourceCatalogView) {

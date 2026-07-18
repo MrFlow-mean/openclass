@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import AIModelSelection, CoursePackage, SourceIngestionRecord, SourceRange
+from app.models import AIModelSelection, CoursePackage, SourceChapter, SourceIngestionRecord, SourceRange
 from app.services import workspace_state
 from app.services.source_directory_extractor import (
     DirectoryCandidate,
@@ -33,8 +33,11 @@ from app.services.source_directory_processor import (
     DirectoryNormalizationResult,
     SourceDirectoryProcessingError,
     SourceDirectoryProcessor,
+    _catalog_quality,
     _reclose_normalized_ranges,
+    _validate_chapters,
 )
+from app.services.pdf_toc_parser import PdfTocExtraction, PdfTocNode
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_ingestion_jobs import SourceIngestionJobStore
 from app.services.source_ingestion_service import SourceIngestionError, SourceIngestionService
@@ -103,6 +106,28 @@ def _write_reordered_pptx(path: Path) -> None:
         archive.writestr("ppt/slides/slide9.xml", slide("Playback first"))
         archive.writestr("ppt/slides/slide2.xml", slide("Playback second"))
         archive.writestr("ppt/slides/slide1.xml", slide("Orphan slide"))
+
+
+def _write_epub_with_navigation(
+    path: Path,
+    *,
+    navigation: str,
+    document: str,
+    document_name: str = "s1.xhtml",
+) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            "<container><rootfiles><rootfile full-path='OPS/content.opf'/></rootfiles></container>",
+        )
+        archive.writestr(
+            "OPS/content.opf",
+            "<package><manifest>"
+            f"<item id='nav' href='nav.xhtml'/><item id='s1' href='{document_name}'/>"
+            "</manifest><spine><itemref idref='s1'/></spine></package>",
+        )
+        archive.writestr("OPS/nav.xhtml", f"<nav><ol>{navigation}</ol></nav>")
+        archive.writestr(f"OPS/{document_name}", document)
 
 
 def test_markdown_extractor_keeps_only_heading_lines_and_inclusive_ranges(tmp_path: Path) -> None:
@@ -204,6 +229,402 @@ def test_pdf_outline_uses_physical_inclusive_pages_without_page_scan(tmp_path: P
     assert all(candidate.mapping_status == "verified" for candidate in extraction.candidates)
     assert extraction.metadata["directory_source"] == "native_outline"
     assert extraction.metadata["body_text_extracted"] is False
+
+
+def test_numeric_page_bookmarks_do_not_masquerade_as_chapter_outline(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "numeric-bookmarks.pdf"
+    writer = PdfWriter()
+    for page_index in range(12):
+        writer.add_blank_page(width=612, height=792)
+        writer.add_outline_item(str(page_index + 1), page_index)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert extraction.candidates == ()
+    assert extraction.metadata["directory_source"] == "heading_regions"
+    assert extraction.inspected_page_count == 12
+
+
+def test_pdf_toc_uses_numeric_page_navigation_without_body_scan(tmp_path: Path) -> None:
+    import fitz
+    from pypdf import PdfReader, PdfWriter
+
+    native_path = tmp_path / "numeric-navigation-native.pdf"
+    document = fitz.open()
+    document.new_page(width=612, height=792)
+    toc_page = document.new_page(width=612, height=792)
+    toc_page.insert_text((72, 72), "Contents", fontsize=18)
+    toc_page.insert_text((72, 110), "1 Alpha Section ........ 1", fontsize=12)
+    toc_page.insert_text((72, 135), "2 Beta Section ........ 3", fontsize=12)
+    alpha_page = document.new_page(width=612, height=792)
+    alpha_page.insert_text((72, 72), "1 Alpha Section", fontsize=18)
+    document.new_page(width=612, height=792)
+    beta_page = document.new_page(width=612, height=792)
+    beta_page.insert_text((72, 72), "2 Beta Section", fontsize=18)
+    document.new_page(width=612, height=792)
+    document.save(native_path)
+    document.close()
+
+    path = tmp_path / "numeric-navigation.pdf"
+    writer = PdfWriter()
+    for page in PdfReader(native_path).pages:
+        writer.add_page(page)
+    writer.add_outline_item("Contents", 1)
+    for printed_page, physical_index in enumerate(range(2, 6), start=1):
+        writer.add_outline_item(str(printed_page), physical_index)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert [candidate.title for candidate in extraction.candidates] == [
+        "1 Alpha Section",
+        "2 Beta Section",
+    ]
+    assert [candidate.source_range.start for candidate in extraction.candidates] == [3, 5]
+    assert [candidate.source_range.end for candidate in extraction.candidates] == [4, 6]
+    assert extraction.inspected_page_count == 1
+    assert extraction.ocr_page_count == 0
+    assert extraction.metadata["toc_page_start"] == 2
+    assert extraction.metadata["toc_page_end"] == 2
+    assert extraction.metadata["printed_page_navigation"] is True
+    assert extraction.metadata["heading_region_scan"] is False
+    assert all(candidate.mapping_status == "verified" for candidate in extraction.candidates)
+
+
+def test_image_only_pdf_outline_bounds_toc_ocr_before_numeric_page_navigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fitz
+    from PIL import Image
+    from pypdf import PdfReader, PdfWriter
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (64, 80), color="white").save(image_path)
+
+    native_path = tmp_path / "image-only-native.pdf"
+    document = fitz.open()
+    for _ in range(26):
+        page = document.new_page(width=612, height=792)
+        page.insert_image(page.rect, filename=str(image_path))
+    document.save(native_path)
+    document.close()
+
+    path = tmp_path / "image-only-navigation.pdf"
+    writer = PdfWriter()
+    for page in PdfReader(native_path).pages:
+        writer.add_page(page)
+    writer.add_outline_item("Contents", 20)
+    for printed_page, physical_index in enumerate(range(21, 25), start=1):
+        writer.add_outline_item(str(printed_page), physical_index)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    with fitz.open(path) as image_only_document:
+        assert all(not page.get_text("text").strip() for page in image_only_document)
+
+    ocr_calls: list[tuple[int, int]] = []
+
+    def fake_toc_ocr(
+        _path: Path,
+        *,
+        page_start: int,
+        page_end: int,
+    ) -> PdfTocExtraction:
+        ocr_calls.append((page_start, page_end))
+        return PdfTocExtraction(
+            nodes=[
+                PdfTocNode(
+                    title="Chapter 1 Alpha",
+                    number="1",
+                    level=1,
+                    printed_page=1,
+                    toc_page=21,
+                    confidence=0.9,
+                ),
+                PdfTocNode(
+                    title="Chapter 2 Beta",
+                    number="2",
+                    level=1,
+                    printed_page=3,
+                    toc_page=21,
+                    confidence=0.9,
+                ),
+            ],
+            toc_page_start=page_start,
+            toc_page_end=page_end,
+        )
+
+    monkeypatch.setattr(
+        "app.services.source_directory_extractor.extract_pdf_toc_from_range",
+        fake_toc_ocr,
+    )
+
+    extraction = extract_directory(_record(path), path)
+
+    assert ocr_calls == [(21, 21)]
+    assert extraction.inspected_page_count == 1
+    assert extraction.ocr_page_count == 1
+    assert extraction.metadata["toc_page_start"] == 21
+    assert extraction.metadata["toc_page_end"] == 21
+    assert extraction.metadata["printed_page_navigation"] is True
+    assert extraction.metadata["heading_region_scan"] is False
+    assert [candidate.source_range.start for candidate in extraction.candidates] == [22, 24]
+    assert all(
+        candidate.evidence[0].metadata["offset_support"] == 4
+        for candidate in extraction.candidates
+    )
+
+
+def test_pdf_printed_page_offset_does_not_extrapolate_beyond_observed_navigation() -> None:
+    nodes = [
+        _PdfTocCandidate("Observed chapter", "1", 1, 1, 2, 0.9, "toc"),
+        _PdfTocCandidate("Unobserved chapter", "", 1, 100, 2, 0.9, "toc"),
+        _PdfTocCandidate("Heading matched chapter", "", 1, 101, 2, 0.9, "toc"),
+    ]
+    heading_cache = {
+        150: [_PdfHeadingLine("Heading matched chapter", 150, 0.05, 18, "text")],
+    }
+
+    mapped = _map_pdf_toc_nodes(
+        nodes,
+        heading_cache,
+        page_count=200,
+        printed_page_map={1: 10, 2: 11, 3: 12, 4: 13},
+    )
+
+    assert mapped[0].mapping_status == "verified"
+    assert mapped[0].source_range is not None
+    assert mapped[0].source_range.start == 10
+    assert mapped[0].evidence[0].metadata["mapping_method"] == "native_printed_page_navigation"
+    assert mapped[1].mapping_status == "unmapped"
+    assert mapped[1].source_range is None
+    assert mapped[1].evidence[0].metadata["mapping_method"] == "unmapped"
+    assert mapped[2].mapping_status == "verified"
+    assert mapped[2].source_range is not None
+    assert mapped[2].source_range.start == 150
+    assert mapped[2].evidence[0].metadata["mapping_method"] == "body_heading_region_match"
+
+
+def test_toc_layout_requests_trailing_column_pass_and_parses_leading_leaders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import pdf_toc_parser
+    from app.services.image_ocr import OCRLineLayout, OCRPageLayout
+
+    calls: list[bool] = []
+
+    def fake_layouts(
+        _path: Path,
+        *,
+        page_start: int,
+        page_end: int,
+        max_pages: int,
+        trailing_column_pass: bool = False,
+    ) -> list[OCRPageLayout]:
+        assert (page_start, page_end, max_pages) == (21, 21, 24)
+        calls.append(trailing_column_pass)
+        return [
+            OCRPageLayout(
+                page_no=21,
+                lines=[
+                    OCRLineLayout(
+                        "第2章 通用目录标题",
+                        x=0.07,
+                        y=0.65,
+                        width=0.28,
+                        height=0.018,
+                    ),
+                    OCRLineLayout(
+                        "⋯143",
+                        x=0.79,
+                        y=0.65,
+                        width=0.05,
+                        height=0.012,
+                    ),
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(pdf_toc_parser, "extract_pdf_pages_layout", fake_layouts)
+
+    extraction = pdf_toc_parser.extract_pdf_toc_from_range(
+        tmp_path / "layout-contract.pdf",
+        page_start=21,
+        page_end=21,
+    )
+
+    assert calls == [True]
+    assert [(node.title, node.printed_page) for node in extraction.nodes] == [
+        ("第2章 通用目录标题", 143)
+    ]
+
+
+def test_pdf_layout_ocr_trailing_column_mode_is_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import image_ocr
+
+    path = tmp_path / "placeholder.pdf"
+    path.write_bytes(b"placeholder")
+    calls: list[list[str]] = []
+
+    def fake_vision_payload(args: list[str], *, timeout: int) -> dict[str, object]:
+        assert timeout >= 120
+        calls.append(args)
+        return {"pages": []}
+
+    monkeypatch.setattr(image_ocr, "_run_vision_ocr_payload", fake_vision_payload)
+
+    image_ocr.extract_pdf_pages_layout(
+        path,
+        page_start=1,
+        page_end=1,
+    )
+    image_ocr.extract_pdf_pages_layout(
+        path,
+        page_start=1,
+        page_end=1,
+        trailing_column_pass=True,
+    )
+
+    assert calls[0][-1] == "1"
+    assert calls[1][-1] == "trailing-column-lines"
+
+
+def test_semantic_outline_titles_may_contain_question_marks(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "semantic-bookmarks.pdf"
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=612, height=792)
+    writer.add_outline_item("Why? Motivating the API", 0)
+    writer.add_outline_item("What About Directories?", 1)
+    writer.add_outline_item("Summary!", 2)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert [candidate.title for candidate in extraction.candidates] == [
+        "Why? Motivating the API",
+        "What About Directories?",
+        "Summary!",
+    ]
+    assert extraction.metadata["directory_source"] == "native_outline"
+    assert extraction.inspected_page_count == 0
+
+
+def test_pdf_outline_collision_demotes_unmatched_destination_titles(tmp_path: Path) -> None:
+    import fitz
+    from pypdf import PdfReader, PdfWriter
+
+    native_path = tmp_path / "collision-native.pdf"
+    document = fitz.open()
+    first_page = document.new_page(width=612, height=792)
+    first_page.insert_text((72, 90), "Alpha Section", fontsize=18)
+    document.new_page(width=612, height=792)
+    document.save(native_path)
+    document.close()
+
+    path = tmp_path / "collision.pdf"
+    writer = PdfWriter()
+    for page in PdfReader(native_path).pages:
+        writer.add_page(page)
+    writer.add_outline_item("Alpha Section", 0)
+    writer.add_outline_item("Beta Section", 0)
+    writer.add_outline_item("Gamma Section", 1)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert extraction.inspected_page_count == 1
+    assert extraction.ocr_page_count == 0
+    assert [candidate.mapping_status for candidate in extraction.candidates] == [
+        "partial",
+        "unmapped",
+        "verified",
+    ]
+    assert extraction.candidates[1].source_range is None
+    assert extraction.candidates[1].metadata["reported_destination_page"] == 1
+    assert extraction.candidates[2].source_range == SourceRange(
+        kind="pdf_pages",
+        start=2,
+        end=2,
+        display_label="PDF p. 2",
+        metadata={"index_base": 1, "physical_pages": True},
+    )
+
+
+def test_pdf_outline_collision_keeps_legitimate_same_page_headings(tmp_path: Path) -> None:
+    import fitz
+    from pypdf import PdfReader, PdfWriter
+
+    native_path = tmp_path / "same-page-native.pdf"
+    document = fitz.open()
+    first_page = document.new_page(width=612, height=792)
+    first_page.insert_text((72, 90), "Alpha Section", fontsize=18)
+    first_page.insert_text((72, 180), "Beta Section", fontsize=16)
+    document.new_page(width=612, height=792)
+    document.save(native_path)
+    document.close()
+
+    path = tmp_path / "same-page.pdf"
+    writer = PdfWriter()
+    for page in PdfReader(native_path).pages:
+        writer.add_page(page)
+    writer.add_outline_item("Alpha Section", 0)
+    writer.add_outline_item("Beta Section", 0)
+    writer.add_outline_item("Gamma Section", 1)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert extraction.inspected_page_count == 1
+    assert extraction.ocr_page_count == 0
+    assert [candidate.mapping_status for candidate in extraction.candidates] == [
+        "verified",
+        "verified",
+        "verified",
+    ]
+    assert [candidate.source_range.start for candidate in extraction.candidates] == [1, 1, 2]
+    assert [candidate.source_range.end for candidate in extraction.candidates] == [1, 1, 2]
+
+
+def test_pdf_outline_collision_with_empty_text_fails_closed_without_ocr(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "empty-collision.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    writer.add_outline_item("Alpha Section", 0)
+    writer.add_outline_item("Beta Section", 0)
+    writer.add_outline_item("Gamma Section", 1)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert extraction.inspected_page_count == 1
+    assert extraction.ocr_page_count == 0
+    assert [candidate.mapping_status for candidate in extraction.candidates] == [
+        "unmapped",
+        "unmapped",
+        "verified",
+    ]
+    assert extraction.candidates[0].source_range is None
+    assert extraction.candidates[1].source_range is None
 
 
 def test_pdf_without_toc_reads_only_heading_regions(tmp_path: Path) -> None:
@@ -384,6 +805,290 @@ def test_normalized_hierarchy_recloses_ranges_after_candidate_rejection() -> Non
     assert closed[0].source_range.end == 6
     assert closed[1].source_range is not None
     assert closed[1].source_range.end == 6
+
+
+def test_verified_parent_range_encloses_descendants_on_next_peer_page() -> None:
+    def candidate(key: str, level: int, start: int) -> DirectoryCandidate:
+        return DirectoryCandidate(
+            local_key=key,
+            title=key,
+            level=level,
+            source_range=SourceRange(
+                kind="pdf_pages",
+                start=start,
+                end=start,
+                display_label=f"PDF p. {start}",
+                metadata={"index_base": 1, "physical_pages": True},
+            ),
+            mapping_status="verified",
+        )
+
+    closed = _reclose_normalized_ranges(
+        (
+            candidate("parent", 1, 70),
+            candidate("first-child", 2, 70),
+            candidate("last-child", 2, 71),
+            candidate("next-peer", 1, 71),
+        ),
+        extraction=DirectoryExtraction(
+            candidates=(),
+            page_count=80,
+            metadata={"format": "pdf"},
+        ),
+    )
+
+    assert closed[0].mapping_status == "verified"
+    assert closed[0].source_range is not None
+    assert closed[0].source_range.end == 71
+    assert closed[0].source_range.display_label == "PDF pp. 70-71"
+    assert closed[0].source_range.end == closed[3].source_range.start
+
+
+def test_verified_parent_is_demoted_instead_of_crossing_next_peer() -> None:
+    def candidate(key: str, level: int, start: int, end: int) -> DirectoryCandidate:
+        return DirectoryCandidate(
+            local_key=key,
+            title=key,
+            level=level,
+            source_range=SourceRange(
+                kind="pdf_pages",
+                start=start,
+                end=end,
+                metadata={"index_base": 1, "physical_pages": True},
+            ),
+            mapping_status="verified",
+            confidence=0.95,
+        )
+
+    enclosed = _reclose_normalized_ranges(
+        (
+            candidate("parent", 1, 70, 70),
+            candidate("child", 2, 72, 72),
+            candidate("next-peer", 1, 71, 80),
+        ),
+        extraction=DirectoryExtraction(
+            candidates=(),
+            page_count=80,
+            metadata={"format": "pdf"},
+        ),
+    )
+
+    assert enclosed[0].mapping_status == "partial"
+    assert enclosed[0].source_range is not None
+    assert enclosed[0].source_range.end == 70
+    assert enclosed[0].metadata["range_boundary_status"] == "descendant_crosses_successor"
+    assert enclosed[0].metadata["range_boundary_local_key"] == "next-peer"
+
+
+def test_chapter_validator_rejects_verified_child_outside_verified_parent() -> None:
+    parent = SourceChapter(
+        id="parent",
+        package_id="course_directory",
+        source_ingestion_id="source_directory",
+        title="Parent",
+        order_index=0,
+        range=SourceRange(kind="pdf_pages", start=70, end=70),
+        mapping_status="verified",
+    )
+    child = SourceChapter(
+        id="child",
+        package_id="course_directory",
+        source_ingestion_id="source_directory",
+        parent_id="parent",
+        title="Child",
+        level=2,
+        order_index=1,
+        range=SourceRange(kind="pdf_pages", start=71, end=71),
+        mapping_status="verified",
+    )
+
+    with pytest.raises(SourceDirectoryProcessingError, match="outside its verified parent"):
+        _validate_chapters((parent, child))
+
+
+def test_epub_anchor_ranges_are_not_subject_to_numeric_parent_enclosure() -> None:
+    parent = SourceChapter(
+        id="parent",
+        package_id="course_directory",
+        source_ingestion_id="source_directory",
+        title="Parent",
+        order_index=0,
+        range=SourceRange(
+            kind="epub_spine",
+            start=1,
+            end=1,
+            start_anchor="parent",
+            end_anchor="next",
+        ),
+        mapping_status="verified",
+    )
+    child = SourceChapter(
+        id="child",
+        package_id="course_directory",
+        source_ingestion_id="source_directory",
+        parent_id="parent",
+        title="Child",
+        level=2,
+        order_index=1,
+        range=SourceRange(
+            kind="epub_spine",
+            start=2,
+            end=2,
+            start_anchor="child",
+            end_anchor="next-child",
+        ),
+        mapping_status="verified",
+    )
+
+    _validate_chapters((parent, child))
+
+
+def test_epub_bad_fragment_is_unmapped_without_authoritative_range(tmp_path: Path) -> None:
+    path = tmp_path / "bad-fragment.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation="<li><a href='s1.xhtml#missing'>Missing anchor</a></li>",
+        document="<html><body><h1 id='present'>Present</h1></body></html>",
+    )
+
+    extraction = extract_directory(_record(path), path)
+    candidate = extraction.candidates[0]
+
+    assert candidate.mapping_status == "unmapped"
+    assert candidate.source_range is None
+    assert candidate.metadata["navigation_provenance"] == "native"
+    assert candidate.metadata["native_level"] == 1
+    assert candidate.metadata["fragment_validation"] == "missing_id_or_name"
+    assert extraction.metadata["body_text_extracted"] is False
+
+
+def test_epub_url_encoded_fragment_is_decoded_and_verified(tmp_path: Path) -> None:
+    path = tmp_path / "encoded-fragment.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation="<li><a href='s1.xhtml#section%20one'>Encoded anchor</a></li>",
+        document="<html><body><a name='section one'></a></body></html>",
+    )
+
+    extraction = extract_directory(_record(path), path)
+    candidate = extraction.candidates[0]
+
+    assert candidate.mapping_status == "verified"
+    assert candidate.source_range is not None
+    assert candidate.source_range.start_anchor == "section one"
+    assert candidate.source_locator == "epub:OPS/s1.xhtml#section one"
+    assert extraction.metadata["anchor_validation"] == "xhtml_id_name_attributes_only"
+
+
+def test_epub_extensionless_content_document_can_verify_fragment(tmp_path: Path) -> None:
+    path = tmp_path / "extensionless-content.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation="<li><a href='content#target'>Target</a></li>",
+        document="<html><body><section id='target'>Body is not retained.</section></body></html>",
+        document_name="content",
+    )
+
+    extraction = extract_directory(_record(path), path)
+
+    assert extraction.candidates[0].mapping_status == "verified"
+    assert extraction.candidates[0].source_range is not None
+    assert extraction.candidates[0].source_range.start_anchor == "target"
+    assert extraction.metadata["body_text_extracted"] is False
+
+
+def test_epub_native_navigation_truncation_is_explicit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "truncated-navigation.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation=(
+            "<li><a href='s1.xhtml#one'>One</a></li>"
+            "<li><a href='s1.xhtml#two'>Two</a></li>"
+            "<li><a href='s1.xhtml#three'>Three</a></li>"
+        ),
+        document="<html><body><i id='one'></i><i id='two'></i><i id='three'></i></body></html>",
+    )
+    monkeypatch.setattr("app.services.source_directory_extractor.MAX_DIRECTORY_NODES", 2)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert len(extraction.candidates) == 2
+    assert extraction.metadata["native_navigation_count"] == 3
+    assert extraction.metadata["published_navigation_count"] == 2
+    assert extraction.metadata["navigation_truncated"] is True
+    assert extraction.metadata["navigation_node_limit"] == 2
+    assert any("catalog is partial" in warning for warning in extraction.warnings)
+    assert extraction.candidates[1].mapping_status == "verified"
+    assert extraction.candidates[1].source_range is not None
+    assert extraction.candidates[1].source_range.end_anchor == "three"
+
+    reclosed = _reclose_normalized_ranges(
+        extraction.candidates,
+        extraction=extraction,
+    )
+    assert reclosed[1].source_range is not None
+    assert reclosed[1].source_range.end == extraction.candidates[1].source_range.end
+    assert reclosed[1].source_range.end_anchor == "three"
+
+    quality = _catalog_quality(
+        (
+            SourceChapter(
+                id="chapter-one",
+                package_id="course-directory",
+                source_ingestion_id="source-epub",
+                title="One",
+                order_index=0,
+                range=reclosed[0].source_range,
+                mapping_status="verified",
+            ),
+            SourceChapter(
+                id="chapter-two",
+                package_id="course-directory",
+                source_ingestion_id="source-epub",
+                title="Two",
+                order_index=1,
+                range=reclosed[1].source_range,
+                mapping_status="verified",
+            ),
+        ),
+        catalog_complete=False,
+    )
+    assert quality.level == "partially_verified"
+    assert quality.confidence == 0.9
+    assert any("只发布部分导航" in item for item in quality.diagnostics)
+
+
+def test_epub_navigation_truncation_demotes_ranges_left_open_by_lookahead(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "nested-truncated-navigation.epub"
+    _write_epub_with_navigation(
+        path,
+        navigation=(
+            "<li><a href='s1.xhtml#one'>One</a><ol>"
+            "<li><a href='s1.xhtml#two'>Two</a><ol>"
+            "<li><a href='s1.xhtml#three'>Three</a></li>"
+            "</ol></li></ol></li>"
+        ),
+        document="<html><body><i id='one'></i><i id='two'></i><i id='three'></i></body></html>",
+    )
+    monkeypatch.setattr("app.services.source_directory_extractor.MAX_DIRECTORY_NODES", 2)
+
+    extraction = extract_directory(_record(path), path)
+
+    assert len(extraction.candidates) == 2
+    assert [candidate.mapping_status for candidate in extraction.candidates] == [
+        "partial",
+        "partial",
+    ]
+    assert all(
+        candidate.metadata["range_boundary_status"] == "navigation_truncated"
+        for candidate in extraction.candidates
+    )
 
 
 def test_html_ranges_store_last_heading_and_next_heading_text_boundary(tmp_path: Path) -> None:
@@ -1093,6 +1798,7 @@ def test_failed_rebuild_preserves_previous_catalog_version(tmp_path: Path) -> No
 
 def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None:
     calls: list[int] = []
+    progress_updates: list[tuple[str, int]] = []
 
     def fake_parse(self, **kwargs):
         packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
@@ -1135,7 +1841,10 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
         for index in range(241)
     ]
 
-    result = CodexDirectoryNormalizer(user_id="user_directory").normalize(
+    result = CodexDirectoryNormalizer(
+        user_id="user_directory",
+        progress_callback=lambda phase, value: progress_updates.append((phase, value)),
+    ).normalize(
         record=SourceIngestionRecord(
             id="source_batches",
             owner_user_id="user_directory",
@@ -1150,5 +1859,83 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
     )
 
     assert calls == [0, 1, 2]
+    assert progress_updates == [
+        ("normalizing_directory", 69),
+        ("normalizing_directory", 75),
+        ("normalizing_directory", 80),
+    ]
     assert result.turn_count == 3
     assert len(result.candidates) == 241
+
+
+def test_codex_normalizer_preserves_native_epub_levels_across_batches(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def fake_parse(self, **kwargs):
+        packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+        calls.append(packet["batch_index"])
+        return SimpleNamespace(
+            output_parsed=DirectoryBatchDecision(
+                batch_hash=packet["batch_hash"],
+                decisions=[
+                    DirectoryNodeDecision(
+                        local_key=node["local_key"],
+                        keep=False,
+                        title=node["title"],
+                        number=node["number"],
+                        level=1,
+                    )
+                    for node in packet["nodes"]
+                ],
+            )
+        )
+
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr("app.services.source_directory_processor.MAX_CODEX_BATCH_NODES", 2)
+    candidates = [
+        DirectoryCandidate(
+            local_key=f"epub-{index}",
+            title=f"Node {index}",
+            level=native_level,
+            order_index=index,
+            source_locator=f"epub:OPS/s1.xhtml#node-{index}",
+            source_range=SourceRange(
+                kind="epub_spine",
+                start=0,
+                end=0,
+                container="OPS/s1.xhtml",
+                start_anchor=f"node-{index}",
+            ),
+            mapping_status="verified",
+            confidence=1.0,
+            metadata={
+                "navigation_provenance": "native",
+                "hierarchy_locked": True,
+                "native_level": native_level,
+            },
+        )
+        for index, native_level in enumerate((1, 2, 3))
+    ]
+
+    result = CodexDirectoryNormalizer(user_id="user_directory").normalize(
+        record=SourceIngestionRecord(
+            id="source_epub_batches",
+            owner_user_id="user_directory",
+            package_id="course_directory",
+            title="EPUB batches",
+            source_type="local_file",
+            file_name="batches.epub",
+            mime_type="application/epub+zip",
+        ),
+        candidates=candidates,
+        selection=_model(),
+    )
+
+    assert calls == [0, 1]
+    assert [candidate.level for candidate in result.candidates] == [1, 2, 3]
+    assert [candidate.source_locator for candidate in result.candidates] == [
+        candidate.source_locator for candidate in candidates
+    ]

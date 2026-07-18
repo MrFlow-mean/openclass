@@ -35,6 +35,17 @@ from app.services.source_structure_store import SourceStructureStore, source_str
 CATALOG_SCHEMA_VERSION = "codex_directory_v1"
 MAX_CODEX_BATCH_NODES = 120
 MAX_CODEX_BATCH_CHARS = 48_000
+NORMALIZATION_PROGRESS_START = 64
+NORMALIZATION_PROGRESS_END = 80
+NUMERIC_CONTAINMENT_RANGE_KINDS = frozenset(
+    {
+        "pdf_pages",
+        "docx_paragraphs",
+        "ppt_slides",
+        "sheet_rows",
+        "text_lines",
+    }
+)
 
 
 class SourceDirectoryProcessingError(RuntimeError):
@@ -79,8 +90,14 @@ class CodexDirectoryNormalizer:
     file path or extracted body text, and it cannot alter authoritative ranges.
     """
 
-    def __init__(self, *, user_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        progress_callback: CatalogProgressCallback | None = None,
+    ) -> None:
         self.user_id = user_id
+        self.progress_callback = progress_callback
 
     def normalize(
         self,
@@ -126,6 +143,13 @@ class CodexDirectoryNormalizer:
             )
             decision = DirectoryBatchDecision.model_validate(response.output_parsed)
             normalized.extend(_apply_batch_decision(batch, decision, expected_hash=batch_hash))
+            _report(
+                self.progress_callback,
+                "normalizing_directory",
+                _normalization_batch_progress(batch_index + 1, len(batches)),
+            )
+
+        _validate_locked_navigation_invariants(candidates, normalized)
 
         return DirectoryNormalizationResult(
             candidates=tuple(normalized),
@@ -146,9 +170,7 @@ class SourceDirectoryProcessor:
         normalizer_factory: Callable[[SourceIngestionRecord], DirectoryNormalizer] | None = None,
     ) -> None:
         self.store = store
-        self.normalizer_factory = normalizer_factory or (
-            lambda record: CodexDirectoryNormalizer(user_id=record.owner_user_id)
-        )
+        self.normalizer_factory = normalizer_factory
 
     def process(
         self,
@@ -201,10 +223,22 @@ class SourceDirectoryProcessor:
                 )
             )
             _report(progress_callback, "normalizing_directory", 64)
-            normalization = self.normalizer_factory(record).normalize(
+            normalizer = (
+                self.normalizer_factory(record)
+                if self.normalizer_factory is not None
+                else CodexDirectoryNormalizer(
+                    user_id=record.owner_user_id,
+                    progress_callback=progress_callback,
+                )
+            )
+            normalization = normalizer.normalize(
                 record=record,
                 candidates=extraction.candidates,
                 selection=catalog_model,
+            )
+            _validate_locked_navigation_invariants(
+                extraction.candidates,
+                normalization.candidates,
             )
             normalized_candidates = _reclose_normalized_ranges(
                 normalization.candidates,
@@ -218,7 +252,10 @@ class SourceDirectoryProcessor:
             )
             _validate_chapters(chapters)
             verified_count = sum(chapter.mapping_status == "verified" for chapter in chapters)
-            quality = _catalog_quality(chapters)
+            quality = _catalog_quality(
+                chapters,
+                catalog_complete=not bool(extraction.metadata.get("navigation_truncated")),
+            )
             status = "ready" if chapters else "linear_only"
             warnings = list(extraction.warnings)
             if not chapters:
@@ -391,20 +428,32 @@ def _reclose_normalized_ranges(
     for index, candidate in enumerate(candidates):
         source_range = candidate.source_range
         if (
+            source_range is not None
+            and source_range.kind == "epub_spine"
+            and _is_hierarchy_locked_navigation(candidate)
+        ):
+            # The extractor closes native EPUB navigation with authoritative
+            # anchor evidence, including its N+1 truncation lookahead. Codex
+            # cannot change this hierarchy or range, so a second close over
+            # only the published prefix would discard the lookahead boundary.
+            result.append(candidate)
+            continue
+        if (
             source_range is None
             or source_range.kind not in maximum_by_kind
             or not isinstance(source_range.start, int)
         ):
             result.append(candidate)
             continue
-        boundary = next(
+        boundary_index = next(
             (
-                following
-                for following in candidates[index + 1 :]
-                if following.level <= candidate.level
+                following_index
+                for following_index in range(index + 1, len(candidates))
+                if candidates[following_index].level <= candidate.level
             ),
-            None,
+            len(candidates),
         )
+        boundary = candidates[boundary_index] if boundary_index < len(candidates) else None
         boundary_range = boundary.source_range if boundary is not None else None
         if boundary is not None and (
             boundary.mapping_status != "verified"
@@ -425,11 +474,49 @@ def _reclose_normalized_ranges(
                 )
             )
             continue
+        descendant_start: int | None = None
+        descendant_end: int | None = None
+        if candidate.mapping_status == "verified" and _is_numeric_containment_range(source_range):
+            descendant_ranges = [
+                descendant.source_range
+                for descendant in candidates[index + 1 : boundary_index]
+                if descendant.mapping_status == "verified"
+                and _is_numeric_containment_range(descendant.source_range)
+                and _range_is_same_series(source_range, descendant.source_range)
+            ]
+            if descendant_ranges:
+                descendant_start = min(int(descendant.start) for descendant in descendant_ranges)
+                descendant_end = max(int(descendant.end) for descendant in descendant_ranges)
         next_start = (
-            boundary_range.start
+            int(boundary_range.start)
             if boundary_range is not None and isinstance(boundary_range.start, int)
             else None
         )
+        if descendant_start is not None and (
+            descendant_start < int(source_range.start)
+            or (next_start is not None and descendant_end is not None and descendant_end > next_start)
+        ):
+            result.append(
+                replace(
+                    candidate,
+                    mapping_status="partial",
+                    confidence=min(candidate.confidence, 0.64),
+                    metadata={
+                        **candidate.metadata,
+                        "range_boundary_status": (
+                            "descendant_precedes_parent"
+                            if descendant_start < int(source_range.start)
+                            else "descendant_crosses_successor"
+                        ),
+                        **(
+                            {"range_boundary_local_key": boundary.local_key}
+                            if boundary is not None
+                            else {}
+                        ),
+                    },
+                )
+            )
+            continue
         maximum = maximum_by_kind[source_range.kind]
         boundary_anchor = boundary_range.start_anchor if boundary_range is not None else ""
         end = (
@@ -442,6 +529,8 @@ def _reclose_normalized_ranges(
                 else next_start - 1,
             )
         )
+        if descendant_end is not None:
+            end = max(end, descendant_end)
         updates: dict[str, object] = {"end": end}
         display_label = _normalized_range_label(source_range.kind, source_range.start, end)
         if display_label:
@@ -461,6 +550,17 @@ def _reclose_normalized_ranges(
             )
         )
     return tuple(result)
+
+
+def _is_numeric_containment_range(source_range: SourceRange | None) -> bool:
+    return bool(
+        source_range is not None
+        and source_range.kind in NUMERIC_CONTAINMENT_RANGE_KINDS
+        and isinstance(source_range.start, int)
+        and not isinstance(source_range.start, bool)
+        and isinstance(source_range.end, int)
+        and not isinstance(source_range.end, bool)
+    )
 
 
 def _range_is_same_series(
@@ -516,6 +616,9 @@ def _candidate_packet(candidate: DirectoryCandidate) -> dict[str, object]:
         ),
         "mapping_status": candidate.mapping_status,
         "confidence": candidate.confidence,
+        "navigation_provenance": candidate.metadata.get("navigation_provenance"),
+        "hierarchy_locked": bool(candidate.metadata.get("hierarchy_locked")),
+        "native_level": candidate.metadata.get("native_level"),
         "evidence": [
             {
                 "method": item.method[:120],
@@ -545,11 +648,11 @@ def _apply_batch_decision(
     normalized: list[DirectoryCandidate] = []
     for candidate in candidates:
         decision = decisions_by_key[candidate.local_key]
-        # A validated native navigation node is host evidence. Codex may
-        # normalize its label and level, but cannot erase it or change its
-        # range. Inferred heading-region candidates remain rejectable even when
-        # their physical page locator is valid.
-        keep = decision.keep or not bool(candidate.metadata.get("codex_may_reject"))
+        hierarchy_locked = _is_hierarchy_locked_navigation(candidate)
+        # Native navigation hierarchy is host evidence. Codex may clean its
+        # label/number, but cannot erase it or change a native level just
+        # because a bounded packet starts in the middle of the tree.
+        keep = hierarchy_locked or decision.keep or not bool(candidate.metadata.get("codex_may_reject"))
         if not keep:
             continue
         title = " ".join((decision.title or candidate.title).split()).strip()
@@ -560,10 +663,51 @@ def _apply_batch_decision(
                 candidate,
                 title=title,
                 number=" ".join((decision.number or candidate.number).split()).strip(),
-                level=max(1, min(12, decision.level)),
+                level=(
+                    int(candidate.metadata["native_level"])
+                    if hierarchy_locked
+                    else max(1, min(12, decision.level))
+                ),
             )
         )
     return normalized
+
+
+def _is_hierarchy_locked_navigation(candidate: DirectoryCandidate) -> bool:
+    native_level = candidate.metadata.get("native_level")
+    return bool(
+        candidate.metadata.get("hierarchy_locked")
+        and candidate.metadata.get("navigation_provenance") == "native"
+        and isinstance(native_level, int)
+        and not isinstance(native_level, bool)
+    )
+
+
+def _validate_locked_navigation_invariants(
+    original: Sequence[DirectoryCandidate],
+    normalized: Sequence[DirectoryCandidate],
+) -> None:
+    expected = [candidate for candidate in original if _is_hierarchy_locked_navigation(candidate)]
+    if not expected:
+        return
+    actual = [candidate for candidate in normalized if _is_hierarchy_locked_navigation(candidate)]
+    if len(actual) != len(expected):
+        raise SourceDirectoryProcessingError(
+            "Native navigation normalization changed the number of hierarchy-locked nodes."
+        )
+    for before, after in zip(expected, actual, strict=True):
+        native_level = int(before.metadata["native_level"])
+        if (
+            after.local_key != before.local_key
+            or after.order_index != before.order_index
+            or after.source_locator != before.source_locator
+            or after.source_range != before.source_range
+            or after.metadata.get("native_level") != native_level
+            or after.level != native_level
+        ):
+            raise SourceDirectoryProcessingError(
+                "Native navigation normalization violated a hierarchy-locked host invariant."
+            )
 
 
 def _materialize_chapters(
@@ -648,12 +792,12 @@ def _materialize_chapters(
 
 def _validate_chapters(chapters: Sequence[SourceChapter]) -> None:
     seen_ids: set[str] = set()
-    known_ids: set[str] = set()
+    known_chapters: dict[str, SourceChapter] = {}
     previous_order = -1
     for chapter in chapters:
         if chapter.id in seen_ids:
             raise SourceDirectoryProcessingError("Directory chapter ids are not unique.")
-        if chapter.parent_id and chapter.parent_id not in known_ids:
+        if chapter.parent_id and chapter.parent_id not in known_chapters:
             raise SourceDirectoryProcessingError("A directory child appeared before its parent.")
         if chapter.order_index <= previous_order:
             raise SourceDirectoryProcessingError("Directory order is not strictly increasing.")
@@ -661,28 +805,53 @@ def _validate_chapters(chapters: Sequence[SourceChapter]) -> None:
             raise SourceDirectoryProcessingError("A verified directory node has no authoritative range.")
         if chapter.range is not None and not chapter.range.end_inclusive:
             raise SourceDirectoryProcessingError("Authoritative source ranges must have inclusive end bounds.")
+        parent = known_chapters.get(chapter.parent_id or "")
+        if (
+            parent is not None
+            and parent.mapping_status == "verified"
+            and chapter.mapping_status == "verified"
+            and _is_numeric_containment_range(parent.range)
+            and _is_numeric_containment_range(chapter.range)
+            and _range_is_same_series(parent.range, chapter.range)
+            and (
+                int(chapter.range.start) < int(parent.range.start)
+                or int(chapter.range.end) > int(parent.range.end)
+            )
+        ):
+            raise SourceDirectoryProcessingError(
+                "A verified directory child range falls outside its verified parent range."
+            )
         seen_ids.add(chapter.id)
-        known_ids.add(chapter.id)
+        known_chapters[chapter.id] = chapter
         previous_order = chapter.order_index
 
 
-def _catalog_quality(chapters: Sequence[SourceChapter]) -> SourceStructureQuality:
+def _catalog_quality(
+    chapters: Sequence[SourceChapter],
+    *,
+    catalog_complete: bool = True,
+) -> SourceStructureQuality:
     total = len(chapters)
     verified = sum(chapter.mapping_status == "verified" for chapter in chapters)
     unverified = total - verified
     ratio = verified / total if total else 0.0
     level = (
         "fully_verified"
-        if total and verified == total
+        if total and verified == total and catalog_complete
         else "partially_verified"
         if verified
         else "unverified"
     )
+    diagnostics = ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
+    if not catalog_complete:
+        diagnostics.append(
+            "目录超过结构节点上限，当前只发布部分导航；已验证节点仍可单独引用。"
+        )
     return SourceStructureQuality(
         evaluator_version=2,
         level=level,
         text_readiness="unknown",
-        confidence=ratio,
+        confidence=ratio if catalog_complete else min(ratio, 0.9),
         total_chapter_count=total,
         verified_chapter_count=verified,
         unverified_chapter_count=unverified,
@@ -700,7 +869,7 @@ def _catalog_quality(chapters: Sequence[SourceChapter]) -> SourceStructureQualit
         body_coverage_ratio=0.0,
         independent_anchor_ratio=ratio,
         meaningful_characters_per_page=0.0,
-        diagnostics=["Directory-only catalog; document body was not extracted."],
+        diagnostics=diagnostics,
     )
 
 
@@ -712,7 +881,9 @@ headings that are absent from the packet. Keep a node only when it is a genuine
 document navigation unit; remove repeated running headers, page numbers, and
 decorative labels. Preserve local_key exactly, return every candidate exactly
 once, preserve order, and never change source_range or locator values. You may
-clean a title, normalize its visible number, and correct its hierarchy level.
+clean a title, normalize its visible number, and correct its hierarchy level
+only when hierarchy_locked is false. For hierarchy_locked native navigation,
+preserve every node and native_level even when a packet begins below level 1.
 Verified host ranges are authoritative and must be kept. Return schema-valid
 JSON only. Do not use web search.
 """.strip()
@@ -746,6 +917,14 @@ def _file_hash(path: Path) -> str:
 def _report(callback: CatalogProgressCallback | None, phase: str, progress: int) -> None:
     if callback is not None:
         callback(phase, progress)
+
+
+def _normalization_batch_progress(completed: int, total: int) -> int:
+    if total <= 0:
+        return NORMALIZATION_PROGRESS_END
+    bounded_completed = max(0, min(completed, total))
+    span = NORMALIZATION_PROGRESS_END - NORMALIZATION_PROGRESS_START
+    return NORMALIZATION_PROGRESS_START + round(span * bounded_completed / total)
 
 
 source_directory_processor = SourceDirectoryProcessor()

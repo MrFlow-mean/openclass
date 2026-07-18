@@ -134,6 +134,7 @@ def extract_pdf_pages_layout(
     page_start: int,
     page_end: int,
     max_pages: int = 12,
+    trailing_column_pass: bool = False,
 ) -> list[OCRPageLayout]:
     if not file_path.exists() or not VISION_OCR_SCRIPT.exists():
         return []
@@ -142,10 +143,10 @@ def extract_pdf_pages_layout(
     end = max(page_end, start)
     pages = max(1, min(max_pages, end - start + 1))
     timeout = max(120, pages * 60)
-    payload = _run_vision_ocr_payload(
-        [str(file_path), str(start), str(end), str(pages)],
-        timeout=timeout,
-    )
+    args = [str(file_path), str(start), str(end), str(pages)]
+    if trailing_column_pass:
+        args.append("trailing-column-lines")
+    payload = _run_vision_ocr_payload(args, timeout=timeout)
     if not payload:
         return []
 

@@ -283,6 +283,7 @@ export type SourceStructureQualityLevel =
 export type SourceTextReadiness = "unknown" | "ready" | "sparse" | "very_sparse" | "empty";
 export type SourceStructureStrategy =
   | "codex_directory_v1"
+  | "codex_catalog"
   | "epub_navigation"
   | "epub_heading"
   | "pdf_outline"

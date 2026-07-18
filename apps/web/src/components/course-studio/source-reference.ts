@@ -5,6 +5,7 @@ import type {
   SourceIngestionRecord,
   SourceRange,
 } from "@/types";
+import { sourceRangeDisplayLabel } from "@/lib/source-range-display";
 
 export function createOpenNotebookSourceSelection(source: SourceIngestionRecord): SelectionRef {
   return {
@@ -25,7 +26,7 @@ export function createSourceChapterSelection(
   const chapterLabel = sourceChapterLabel(chapter);
   const path = chapter.path.length ? chapter.path.join(" > ") : chapterLabel;
   const sourceRange = sourceChapterRange(chapter);
-  const rangeLabel = sourceRange?.display_label || sourceChapterPageRange(chapter);
+  const rangeLabel = sourceRangeDisplayLabel(sourceRange) || sourceChapterPageRange(chapter);
   const pdfStart = sourceRange?.kind === "pdf_pages" && typeof sourceRange.start === "number"
     ? sourceRange.start
     : chapter.page_start;
@@ -94,8 +95,9 @@ export function sourceChapterLabel(chapter: SourceChapter) {
 }
 
 function sourceChapterPageRange(chapter: SourceChapter) {
-  if (chapter.range?.display_label) {
-    return chapter.range.display_label;
+  const authoritativeLabel = sourceRangeDisplayLabel(chapter.range);
+  if (authoritativeLabel) {
+    return authoritativeLabel;
   }
   if (chapter.page_start == null) {
     return "";

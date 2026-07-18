@@ -175,6 +175,7 @@ def extract_pdf_toc(
         page_start=toc_page_start,
         page_end=toc_page_end,
         max_pages=MAX_OCR_TOC_PAGES,
+        trailing_column_pass=True,
     )
     if not layouts:
         return PdfTocExtraction(
@@ -276,6 +277,7 @@ def extract_pdf_toc_from_range(
         page_start=page_start,
         page_end=page_end,
         max_pages=MAX_OCR_TOC_PAGES,
+        trailing_column_pass=True,
     )
     if not layouts:
         return PdfTocExtraction(

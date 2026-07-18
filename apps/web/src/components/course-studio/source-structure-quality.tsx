@@ -91,6 +91,9 @@ export function sourceStructureQualityNote(
     return "没有得到可验证的目录范围；请检查文件文字层或明确重建。";
   }
   if (level === "fully_verified") {
+    if (isDirectoryOnlyCatalog(source)) {
+      return "目录节点与资料范围已验证；正文将在引用章节后按需读取。";
+    }
     return "目录节点、正文边界与整体覆盖已通过验证，可以按章节引用。";
   }
   if (level === "partially_verified") {
@@ -125,6 +128,7 @@ export function SourceStructureQualitySummary({
   const showMetrics = Boolean(
     quality && quality.level !== "unassessed" && quality.total_chapter_count
   );
+  const directoryOnlyCatalog = isDirectoryOnlyCatalog(source);
   const diagnostics = Array.from(
     new Set([...(warnings ?? []), ...(quality?.diagnostics ?? [])])
   ).slice(0, 3);
@@ -148,9 +152,13 @@ export function SourceStructureQualitySummary({
           <span className="rounded bg-gray-50 px-1.5 py-1">
             边界 {formatPercent(quality.boundary_valid_ratio)}
           </span>
-          <span className="rounded bg-gray-50 px-1.5 py-1">
-            范围覆盖 {formatPercent(quality.body_coverage_ratio)}
-          </span>
+          {directoryOnlyCatalog ? (
+            <span className="rounded bg-blue-50 px-1.5 py-1 text-blue-700">正文按需读取</span>
+          ) : (
+            <span className="rounded bg-gray-50 px-1.5 py-1">
+              范围覆盖 {formatPercent(quality.body_coverage_ratio)}
+            </span>
+          )}
           {quality.text_readiness === "sparse" || quality.text_readiness === "very_sparse" ? (
             <span className="rounded bg-amber-50 px-1.5 py-1 text-amber-700">文字层稀疏</span>
           ) : null}
@@ -166,6 +174,13 @@ export function SourceStructureQualitySummary({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function isDirectoryOnlyCatalog(source: SourceIngestionRecord) {
+  return (
+    source.structure_strategy === "codex_directory_v1" ||
+    source.metadata?.catalog_pipeline === "codex_directory_v1"
   );
 }
 

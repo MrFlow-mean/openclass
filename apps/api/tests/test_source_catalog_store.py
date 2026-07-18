@@ -79,6 +79,21 @@ def test_pdf_source_range_is_one_based_and_inclusive() -> None:
         SourceRange(kind="pdf_pages", start=1, end=2, end_inclusive=False)
 
 
+def test_legacy_codex_catalog_strategy_remains_readable() -> None:
+    source = _source_record()
+
+    structure = SourceStructure(
+        id="legacy_codex_structure",
+        owner_user_id=source.owner_user_id,
+        package_id=source.package_id,
+        source_ingestion_id=source.id,
+        status="ready",
+        strategy="codex_catalog",
+    )
+
+    assert structure.strategy == "codex_catalog"
+
+
 def test_catalog_publication_is_versioned_and_directory_only(tmp_path: Path) -> None:
     store = SourceStructureStore(tmp_path / "catalog.sqlite3")
     source = _source_record()
