@@ -67,10 +67,6 @@ from app.services.source_grounded_board import (
     resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
-from app.services.source_visual_analysis import (
-    analyze_frozen_source_visuals,
-    source_visual_analysis_enabled,
-)
 from app.services.source_visual_region_resolution import resolve_visual_clues_for_requirement
 
 
@@ -186,10 +182,10 @@ The summary must remain traceable to the supplied chunk IDs and must not add out
 """.strip()
 
 SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS = """
-You are analyzing exactly one source visual for later board generation. Do not edit board.md.
-Preserve its labels, axes, table relationships, spatial relationships, and visible qualifications,
-and identify the result with the visual ID from the prompt. Do not add facts that are not visible
-in the image or its supplied metadata. Return only the requested JSON object.
+You are analyzing a bounded batch of source visuals for later board generation. Do not edit
+board.md. Describe every image in the supplied order, preserve labels, axes, table relationships,
+and visible qualifications, and identify each description with the corresponding visual ID from
+the prompt. Do not add facts that are not visible in the image or its supplied metadata.
 """.strip()
 
 
@@ -860,22 +856,6 @@ def _prepare_source_generation_inputs(
             )
         grounding.frozen_evidence = summaries
 
-    if not source_visual_analysis_enabled():
-        return prepared, []
-    try:
-        prepared = analyze_frozen_source_visuals(
-            adapter=adapter,
-            requirement=prepared,
-            owner_user_id=owner_user_id,
-            model=adapter.model,
-            is_cancelled=is_cancelled,
-            on_activity=on_activity,
-        )
-    except CodexAppServerError:
-        raise
-    except RuntimeError as exc:
-        raise CodexAppServerError(str(exc)) from exc
-    grounding = prepared.source_grounding
     visuals = grounding.frozen_visual_evidence
     raster_visuals = [item for item in visuals if not _is_structured_table_evidence(item)]
     if len(raster_visuals) <= MAX_SOURCE_VISUALS_PER_BATCH:
@@ -883,6 +863,54 @@ def _prepare_source_generation_inputs(
             user_id=owner_user_id,
             requirement=prepared,
         )
+    analyzed_visuals: dict[str, SourceVisualEvidence] = {}
+    for batch_start in range(0, len(raster_visuals), MAX_SOURCE_VISUALS_PER_BATCH):
+        visual_batch = raster_visuals[batch_start : batch_start + MAX_SOURCE_VISUALS_PER_BATCH]
+        image_inputs = [
+            _image_data_url(
+                _read_frozen_source_visual(user_id=owner_user_id, evidence=item)
+            )
+            for item in visual_batch
+        ]
+        if any(not image_input for image_input in image_inputs):
+            raise CodexAppServerError("A frozen source visual cannot be safely loaded")
+        analysis = adapter.analyze_image_batch(
+            prompt=json.dumps(
+                {
+                    "visuals": [item.model_dump(mode="json") for item in visual_batch],
+                },
+                ensure_ascii=False,
+            ),
+            image_inputs=image_inputs,
+            is_cancelled=is_cancelled,
+            on_activity=on_activity,
+        ).strip()
+        if not analysis:
+            raise CodexAppServerError("Source visual analysis returned empty content")
+        visual_ids = [item.visual_id for item in visual_batch]
+        analyzed_visuals.update(
+            {
+                item.visual_id: item.model_copy(
+                update={
+                    "extracted_text": "\n\n".join(
+                        part for part in [item.extracted_text, analysis] if part
+                    ),
+                    "surrounding_text": "\n\n".join(
+                        part
+                        for part in [
+                            item.surrounding_text,
+                            f"Analyzed visual batch: {', '.join(visual_ids)}",
+                        ]
+                        if part
+                    ),
+                }
+                )
+                for item in visual_batch
+            }
+        )
+    grounding.frozen_visual_evidence = [
+        analyzed_visuals.get(item.visual_id, item) for item in visuals
+    ]
     return prepared, []
 
 

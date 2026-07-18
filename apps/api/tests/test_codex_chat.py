@@ -1391,43 +1391,12 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         "read_visual_bytes",
         lambda **_kwargs: (stored_visual, visual_bytes),
     )
-    monkeypatch.setattr(
-        source_structure_store,
-        "save_visual_codex_analysis",
-        lambda **kwargs: stored_visual.model_copy(
-            update={
-                "metadata": {
-                    "codex_visual_analysis": kwargs["analysis"],
-                }
-            }
-        ),
-    )
 
     def fail_if_intake_runs(**_kwargs):
         raise AssertionError("a verified source selection must bypass requirement questions")
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
         prompt = kwargs["user_prompt"]
-        if kwargs["developer_instructions"] == codex_chat.SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS:
-            visual_id = json.loads(prompt)["visuals"][0]["visual_id"]
-            return CodexTurnResult(
-                thread_id="thread_source_visual_analysis",
-                turn_id="turn_source_visual_analysis",
-                final_response=json.dumps(
-                    {
-                        "visuals": [
-                            {
-                                "visual_id": visual_id,
-                                "description": "A selected source diagram.",
-                                "visible_text": "",
-                                "relationships": "",
-                                "recommended_handling": "original_asset",
-                                "confidence": 0.9,
-                            }
-                        ]
-                    }
-                ),
-            )
         assert '"granularity":"source_chapter"' in prompt
         assert "The selected source explains a durable concept" in prompt
         assert "为我讲解" not in prompt
@@ -2174,32 +2143,9 @@ def test_source_generation_batches_all_text_and_visual_evidence(
             visual_bytes,
         ),
     )
-    saved_analyses: list[str] = []
-
-    def save_analysis(**kwargs):
-        saved_analyses.append(kwargs["visual_id"])
-        return SourceVisualAsset(
-            id=kwargs["visual_id"],
-            owner_user_id=TEST_USER_ID,
-            package_id="package",
-            source_ingestion_id="source",
-            kind="diagram",
-            anchor_status="verified",
-            mime_type="image/png",
-            content_hash=kwargs["content_hash"],
-            position_hash=kwargs["position_hash"],
-            metadata={"codex_visual_analysis": kwargs["analysis"]},
-        )
-
-    monkeypatch.setattr(
-        source_structure_store,
-        "save_visual_codex_analysis",
-        save_analysis,
-    )
 
     class FakeAdapter:
         def __init__(self) -> None:
-            self.model = "test-visual-model"
             self.summary_batches: list[list[str]] = []
             self.visual_batch_sizes: list[int] = []
 
@@ -2214,21 +2160,7 @@ def test_source_generation_batches_all_text_and_visual_evidence(
 
         def analyze_image_batch(self, **kwargs):
             self.visual_batch_sizes.append(len(kwargs["image_inputs"]))
-            visual_id = json.loads(kwargs["prompt"])["visuals"][0]["visual_id"]
-            return json.dumps(
-                {
-                    "visuals": [
-                        {
-                            "visual_id": visual_id,
-                            "description": f"Analysis for {visual_id}",
-                            "visible_text": "Visible label",
-                            "relationships": "One directed relationship",
-                            "recommended_handling": "original_asset",
-                            "confidence": 0.9,
-                        }
-                    ]
-                }
-            )
+            return f"Analysis batch {len(self.visual_batch_sizes)}"
 
     adapter = FakeAdapter()
     prepared, image_inputs = codex_chat._prepare_source_generation_inputs(
@@ -2244,13 +2176,9 @@ def test_source_generation_batches_all_text_and_visual_evidence(
         [chunk_one.id],
         [chunk_two.id],
     ]
-    assert adapter.visual_batch_sizes == [1] * 9
-    assert sorted(saved_analyses) == [f"visual_{index}" for index in range(9)]
+    assert adapter.visual_batch_sizes == [8, 1]
     assert len(prepared.source_grounding.frozen_visual_evidence) == 9
-    assert all(
-        item.extracted_text.startswith(f"Analysis for {item.visual_id}")
-        for item in prepared.source_grounding.frozen_visual_evidence
-    )
+    assert all(item.extracted_text.startswith("Analysis batch") for item in prepared.source_grounding.frozen_visual_evidence)
     assert image_inputs == []
 
 
