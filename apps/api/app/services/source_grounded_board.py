@@ -121,20 +121,6 @@ def resolve_source_grounded_board_plan(
         source.file_name,
         view.structure.metadata,
     )
-    if structure_upgrade_deferred and not is_page_range:
-        ai_usage_logger.log_event(
-            "source_structure_upgrade_required",
-            owner_user_id=owner_user_id,
-            package_id=package.id,
-            source_ingestion_id=source.id,
-            structure_status=view.structure.status,
-            structure_index_version=view.structure.metadata.get(
-                "structure_index_version"
-            ),
-        )
-        raise SourceGroundedBoardError(
-            "这份资料的目录索引需要按新版规则重新构建；完成后请重新选择章节。"
-        )
     if structure_upgrade_deferred or visual_upgrade_deferred:
         # A verified, usable index is sufficient to honor the learner's selected
         # source boundary. Rebuilding a large source belongs to the ingestion or

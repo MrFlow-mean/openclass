@@ -59,33 +59,6 @@ def evaluate_source_structure_quality(
     validated, overlap_demotions = _demote_overlapping_siblings(validated)
     demoted_count += overlap_demotions
 
-    provisional_verified = [
-        chapter for chapter in validated if chapter.anchor_status == "verified"
-    ]
-    provisional_leaf_chapters = _verified_leaf_chapters(provisional_verified)
-    provisional_leaf_lengths = [
-        max(0, (chapter.body_end_offset or 0) - (chapter.body_start_offset or 0))
-        for chapter in provisional_leaf_chapters
-    ]
-    median_leaf_length = median(provisional_leaf_lengths) if provisional_leaf_lengths else 0.0
-    oversized_leaf_ids = {
-        chapter.id
-        for chapter in provisional_leaf_chapters
-        if _is_oversized_leaf(
-            chapter,
-            text_length=len(text),
-            median_leaf_length=median_leaf_length,
-        )
-    }
-    if oversized_leaf_ids:
-        validated = [
-            _demote_chapter(chapter, reasons=["oversized_leaf_scope"])
-            if chapter.id in oversized_leaf_ids
-            else chapter
-            for chapter in validated
-        ]
-        demoted_count += len(oversized_leaf_ids)
-
     verified = [chapter for chapter in validated if chapter.anchor_status == "verified"]
     total_count = len(validated)
     verified_count = len(verified)
@@ -103,7 +76,19 @@ def evaluate_source_structure_quality(
         strategy=strategy,
         parser=str((metadata or {}).get("parser") or ""),
     )
-    oversized_leaf_count = len(oversized_leaf_ids)
+    leaf_lengths = [
+        max(0, (chapter.body_end_offset or 0) - (chapter.body_start_offset or 0))
+        for chapter in leaf_chapters
+    ]
+    median_leaf_length = median(leaf_lengths) if leaf_lengths else 0.0
+    oversized_leaf_count = sum(
+        _is_oversized_leaf(
+            chapter,
+            text_length=len(text),
+            median_leaf_length=median_leaf_length,
+        )
+        for chapter in leaf_chapters
+    )
     average_anchor_confidence = (
         sum(chapter.confidence for chapter in verified) / verified_count
         if verified_count
@@ -537,7 +522,7 @@ def _quality_diagnostics(
         diagnostics.append("当前章节粒度相对资料长度过粗。")
     if oversized_leaf_count:
         diagnostics.append(
-            "部分叶子章节覆盖范围异常大，已禁止按该章节范围引用。"
+            "部分叶子章节覆盖范围异常大，引用前应进一步缩小范围。"
         )
     if duplicate_locator_ratio >= 0.5:
         diagnostics.append(

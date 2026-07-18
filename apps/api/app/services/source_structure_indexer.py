@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import html
-import os
 import posixpath
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
@@ -43,15 +41,8 @@ from app.services.source_archive import SafeSourceArchive
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 from app.services.source_structure_quality import (
-    SourceStructureQualityResult,
     evaluate_source_structure_quality,
     meaningful_text_character_count,
-)
-from app.services.source_structure_ai import (
-    MAX_TOC_EVIDENCE_PAGES,
-    SourcePageEvidence,
-    SourceStructureAnalyzer,
-    build_codex_source_structure_analyzer,
 )
 from app.services.source_visual_extraction import (
     CURRENT_SOURCE_VISUAL_INDEX_VERSION,
@@ -64,10 +55,8 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-DEFAULT_PDF_STRUCTURE_OCR_MAX_PAGES = 400
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 9
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 8
 SourceIndexProgressCallback = Callable[[str, int], None]
-SourceStructureAnalyzerFactory = Callable[[str], SourceStructureAnalyzer | None]
 
 
 def _report_progress(
@@ -135,13 +124,11 @@ class SourceStructureIndexer:
         visual_extractor: SourceVisualExtractor = source_visual_extractor,
         visual_index_enabled: bool = True,
         coordinator: SourceIngestionCoordinator | None = None,
-        structure_analyzer_factory: SourceStructureAnalyzerFactory | None = None,
     ) -> None:
         self.store = store
         self.visual_extractor = visual_extractor
         self.visual_index_enabled = visual_index_enabled
         self.coordinator = coordinator or store.coordinator
-        self.structure_analyzer_factory = structure_analyzer_factory
 
     def ensure_structure(
         self,
@@ -278,23 +265,6 @@ class SourceStructureIndexer:
                 metadata=parsed.metadata,
             )
             chapters = quality_result.chapters
-            parsed, chapters, quality_result = self._repair_pdf_structure_with_codex(
-                record=record,
-                parsed=parsed,
-                chapters=chapters,
-                quality_result=quality_result,
-            )
-            if _should_preserve_previous_structure(previous, quality_result):
-                ai_usage_logger.log_event(
-                    "source_structure_quality_regression_rejected",
-                    owner_user_id=record.owner_user_id,
-                    package_id=record.package_id,
-                    source_ingestion_id=record.id,
-                    previous_quality=previous.quality if previous is not None else None,
-                    candidate_quality=quality_result.quality,
-                )
-                assert previous is not None
-                return previous
             _report_progress(progress_callback, "building_chunks", 63)
             chunks = self._chunks_for_record(record, parsed, chapters)
             if not self.visual_index_enabled:
@@ -443,145 +413,6 @@ class SourceStructureIndexer:
                 }
             )
             return self.store.save_structure_bundle(structure=failed, chapters=[], chunks=[])
-
-    def _repair_pdf_structure_with_codex(
-        self,
-        *,
-        record: SourceIngestionRecord,
-        parsed: ParsedSourceDocument,
-        chapters: list[SourceChapter],
-        quality_result: SourceStructureQualityResult,
-    ) -> tuple[ParsedSourceDocument, list[SourceChapter], SourceStructureQualityResult]:
-        if (
-            parsed.metadata.get("parser") != "pdf"
-            or quality_result.quality.level == "fully_verified"
-            or not parsed.pages
-            or self.structure_analyzer_factory is None
-        ):
-            return parsed, chapters, quality_result
-        analyzer = self.structure_analyzer_factory(record.owner_user_id)
-        if analyzer is None:
-            return parsed, chapters, quality_result
-        evidence_pages = _pdf_toc_evidence_pages(parsed.pages)
-        if not evidence_pages:
-            return parsed, chapters, quality_result
-        try:
-            proposal = analyzer.propose_pdf_toc(
-                source_title=record.title,
-                pages=[
-                    SourcePageEvidence(page_no=page.page_no, text=page.text)
-                    for page in evidence_pages
-                ],
-                current_nodes=[
-                    {
-                        "number": chapter.number,
-                        "title": chapter.title,
-                        "level": chapter.level,
-                        "page_start": chapter.page_start,
-                        "verified": chapter.anchor_status == "verified",
-                    }
-                    for chapter in chapters[:300]
-                ],
-            )
-            if not proposal.should_replace or not proposal.nodes:
-                return _with_codex_analysis_metadata(
-                    parsed,
-                    attempted=True,
-                    accepted=False,
-                    model=analyzer.model,
-                    proposal_count=len(proposal.nodes),
-                    reason=proposal.reason,
-                ), chapters, quality_result
-            nodes = [
-                PdfTocNode(
-                    title=_proposal_node_title(node.number, node.title),
-                    number=node.number,
-                    level=node.level,
-                    toc_page=node.toc_page,
-                    printed_page=node.printed_page,
-                    confidence=node.confidence,
-                    metadata={
-                        "source": "pdf_codex_toc",
-                        "verification": "codex_toc_candidate",
-                    },
-                )
-                for node in proposal.nodes
-                if any(page.page_no == node.toc_page for page in evidence_pages)
-            ]
-            if not nodes:
-                return parsed, chapters, quality_result
-            printed_page_offset, mapping_support = _verify_pdf_toc_nodes(nodes, parsed.pages)
-            detected = _chapters_from_pdf_toc(nodes, parsed.pages)
-            _close_pdf_navigation_ranges(detected, parsed.pages, len(parsed.text))
-            candidate_parsed = ParsedSourceDocument(
-                text=parsed.text,
-                chapters=detected,
-                pages=parsed.pages,
-                strategy="pdf_codex_toc",
-                warnings=list(parsed.warnings),
-                metadata={
-                    **parsed.metadata,
-                    "toc_page_start": min(node.toc_page for node in nodes),
-                    "toc_page_end": max(node.toc_page for node in nodes),
-                    "printed_page_offset": printed_page_offset,
-                    "printed_page_mapping_support": mapping_support,
-                    "codex_toc_node_count": len(nodes),
-                },
-            )
-            candidate_chapters = self._chapters_for_record(record, candidate_parsed)
-            candidate_quality = evaluate_source_structure_quality(
-                chapters=candidate_chapters,
-                text=candidate_parsed.text,
-                strategy=candidate_parsed.strategy,
-                metadata=candidate_parsed.metadata,
-            )
-            if _source_structure_quality_rank(candidate_quality) <= _source_structure_quality_rank(
-                quality_result
-            ):
-                return _with_codex_analysis_metadata(
-                    parsed,
-                    attempted=True,
-                    accepted=False,
-                    model=analyzer.model,
-                    proposal_count=len(nodes),
-                    reason="Codex proposal did not improve deterministic quality metrics.",
-                ), chapters, quality_result
-            candidate_parsed = _with_codex_analysis_metadata(
-                candidate_parsed,
-                attempted=True,
-                accepted=True,
-                model=analyzer.model,
-                proposal_count=len(nodes),
-                reason=proposal.reason,
-            )
-            ai_usage_logger.log_event(
-                "source_structure_ai_accepted",
-                owner_user_id=record.owner_user_id,
-                package_id=record.package_id,
-                source_ingestion_id=record.id,
-                model=analyzer.model,
-                previous_quality=quality_result.quality,
-                candidate_quality=candidate_quality.quality,
-                proposal_count=len(nodes),
-            )
-            return candidate_parsed, candidate_quality.chapters, candidate_quality
-        except Exception as exc:
-            ai_usage_logger.log_event(
-                "source_structure_ai_failed",
-                owner_user_id=record.owner_user_id,
-                package_id=record.package_id,
-                source_ingestion_id=record.id,
-                model=getattr(analyzer, "model", ""),
-                error=str(exc),
-            )
-            return _with_codex_analysis_metadata(
-                parsed,
-                attempted=True,
-                accepted=False,
-                model=getattr(analyzer, "model", ""),
-                proposal_count=0,
-                reason="Codex structure analysis failed; deterministic parsing was preserved.",
-            ), chapters, quality_result
 
     def _parse_record(
         self,
@@ -1156,7 +987,7 @@ def _parse_pdf(
     warnings: list[str] = []
     if native_meaningful_character_count < max(40, len(pages) * 8) and pages:
         ocr_attempted = True
-        ocr_page_limit = _pdf_structure_ocr_page_limit(len(pages))
+        ocr_page_limit = min(len(pages), 200)
         ocr_layouts = extract_pdf_pages_layout(
             path,
             page_start=1,
@@ -1813,9 +1644,7 @@ def _chapters_from_pdf_toc(nodes: list[PdfTocNode], pages: list[PageText]) -> li
             else None
         )
         verified = node.verified and page is not None
-        local_offset = (
-            _find_pdf_toc_node_offset(page.text, node) if page is not None else -1
-        )
+        local_offset = _find_title_offset(page.text, node.title) if page is not None else -1
         chapters.append(
             DetectedChapter(
                 title=node.title,
@@ -1864,13 +1693,8 @@ def _verify_pdf_toc_nodes(nodes: list[PdfTocNode], pages: list[PageText]) -> tup
     direct_matches: dict[int, PageText] = {}
     offset_votes: Counter[int] = Counter()
     for index, node in enumerate(nodes):
-        can_use_direct_title_match = bool(
-            node.printed_page > 0 or parse_structural_heading(node.title) is not None
-        )
-        if not can_use_direct_title_match:
-            continue
         for page in body_pages:
-            if _find_pdf_toc_node_offset(page.text, node) < 0:
+            if _find_title_offset(page.text, node.title) < 0:
                 continue
             direct_matches[index] = page
             if node.printed_page > 0:
@@ -1893,10 +1717,9 @@ def _verify_pdf_toc_nodes(nodes: list[PdfTocNode], pages: list[PageText]) -> tup
             if printed_page_offset is not None and node.printed_page > 0
             else None
         )
-        page = direct_page or mapped_page
+        page = mapped_page or direct_page
         if page is None:
             continue
-        used_direct_match = direct_page is not None
         canonical_title = _canonical_structural_title_from_body(page.text, node)
         if canonical_title and canonical_title != node.title:
             node.metadata = {
@@ -1907,63 +1730,16 @@ def _verify_pdf_toc_nodes(nodes: list[PdfTocNode], pages: list[PageText]) -> tup
             node.title = canonical_title
         node.physical_page = page.page_no
         node.verified = True
-        node.confidence = 0.93 if used_direct_match else 0.9
+        node.confidence = 0.9 if mapped_page is not None else 0.82
         node.metadata = {
             **node.metadata,
             "verification": (
-                "body_title_match"
-                if used_direct_match
-                else "verified_printed_page_mapping"
+                "verified_printed_page_mapping" if mapped_page is not None else "body_title_match"
             ),
             "printed_page_offset": printed_page_offset,
             "printed_page_mapping_support": mapping_support,
         }
     return printed_page_offset, mapping_support
-
-
-def _find_pdf_toc_node_offset(text: str, node: PdfTocNode) -> int:
-    node_marker = parse_structural_heading(node.title)
-    normalized_title = _normalize_for_match(node.title)
-    cursor = 0
-    for raw_line in text.splitlines(keepends=True):
-        line = _clean_label(raw_line)
-        if not line or len(line) > 180:
-            cursor += len(raw_line)
-            continue
-        marker = parse_structural_heading(line)
-        structural_match = bool(
-            node_marker is not None
-            and node_marker.number
-            and marker is not None
-            and marker.kind == node_marker.kind
-            and marker.level == node_marker.level
-            and marker.number.lower() == node_marker.number.lower()
-            and SequenceMatcher(
-                None,
-                normalized_title,
-                _normalize_for_match(line),
-            ).ratio()
-            >= 0.5
-        )
-        exact_generic_match = bool(
-            node_marker is None and _normalize_for_match(line) == normalized_title
-        )
-        if structural_match or exact_generic_match:
-            return cursor + max(0, raw_line.find(raw_line.strip()))
-        cursor += len(raw_line)
-    return -1
-
-
-def _pdf_structure_ocr_page_limit(page_count: int) -> int:
-    raw_limit = os.getenv(
-        "OPENCLASS_PDF_STRUCTURE_OCR_MAX_PAGES",
-        str(DEFAULT_PDF_STRUCTURE_OCR_MAX_PAGES),
-    )
-    try:
-        configured_limit = int(raw_limit)
-    except (TypeError, ValueError):
-        configured_limit = DEFAULT_PDF_STRUCTURE_OCR_MAX_PAGES
-    return min(max(0, page_count), max(1, configured_limit))
 
 
 def _canonical_structural_title_from_body(text: str, node: PdfTocNode) -> str | None:
@@ -1992,20 +1768,7 @@ def _canonical_structural_title_from_body(text: str, node: PdfTocNode) -> str | 
     )
     if exact is not None:
         return exact
-    best = max(
-        candidates,
-        key=lambda candidate: SequenceMatcher(
-            None,
-            normalized_node,
-            _normalize_for_match(candidate),
-        ).ratio(),
-    )
-    similarity = SequenceMatcher(
-        None,
-        normalized_node,
-        _normalize_for_match(best),
-    ).ratio()
-    return best if similarity >= 0.55 else None
+    return max(candidates, key=len)
 
 
 def _merge_pdf_navigation(
@@ -2255,96 +2018,6 @@ def _detected_pdf_toc_pages(pages: list[PageText]) -> list[PageText]:
             break
         detected.append(page)
     return detected
-
-
-def _pdf_toc_evidence_pages(pages: list[PageText]) -> list[PageText]:
-    candidates = pages[:40]
-    start = next(
-        (
-            index
-            for index, page in enumerate(candidates)
-            if any(
-                is_toc_heading(line)
-                for line in [line for line in page.text.splitlines() if line.strip()][:16]
-            )
-        ),
-        None,
-    )
-    if start is None:
-        detected = _detected_pdf_toc_pages(pages)
-        if not detected:
-            return []
-        start = next(
-            index for index, page in enumerate(candidates) if page.page_no == detected[0].page_no
-        )
-    return candidates[start : start + MAX_TOC_EVIDENCE_PAGES]
-
-
-def _proposal_node_title(number: str, title: str) -> str:
-    cleaned_title = _clean_label(title)
-    cleaned_number = _clean_label(number)
-    if not cleaned_number or parse_structural_heading(cleaned_title) is not None:
-        return cleaned_title
-    return f"{cleaned_number} {cleaned_title}".strip()
-
-
-def _with_codex_analysis_metadata(
-    parsed: ParsedSourceDocument,
-    *,
-    attempted: bool,
-    accepted: bool,
-    model: str,
-    proposal_count: int,
-    reason: str,
-) -> ParsedSourceDocument:
-    return ParsedSourceDocument(
-        text=parsed.text,
-        chapters=parsed.chapters,
-        pages=parsed.pages,
-        strategy=parsed.strategy,
-        warnings=parsed.warnings,
-        metadata={
-            **parsed.metadata,
-            "codex_structure_analysis_attempted": attempted,
-            "codex_structure_analysis_accepted": accepted,
-            "codex_structure_analysis_model": model,
-            "codex_structure_analysis_proposal_count": proposal_count,
-            "codex_structure_analysis_reason": _compact(reason, 500),
-        },
-    )
-
-
-def _source_structure_quality_rank(result: SourceStructureQualityResult) -> tuple[float, ...]:
-    return _source_structure_quality_value(result.quality)
-
-
-def _source_structure_quality_value(quality: Any) -> tuple[float, ...]:
-    level_rank = {
-        "search_only": 0,
-        "unverified": 1,
-        "partially_verified": 2,
-        "fully_verified": 3,
-    }.get(quality.level, 0)
-    return (
-        float(level_rank),
-        float(-quality.oversized_leaf_count),
-        float(quality.verified_leaf_count),
-        float(quality.verified_chapter_count),
-        quality.body_coverage_ratio,
-        quality.confidence,
-    )
-
-
-def _should_preserve_previous_structure(
-    previous: SourceStructure | None,
-    candidate: SourceStructureQualityResult,
-) -> bool:
-    return bool(
-        previous is not None
-        and previous.status in {"ready", "linear_only"}
-        and _source_structure_quality_value(previous.quality)
-        > _source_structure_quality_rank(candidate)
-    )
 
 
 def _docx_heading_level(style_name: str) -> int | None:
@@ -2767,22 +2440,9 @@ def _environment_flag(name: str, *, default: bool) -> bool:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
-
-def _optional_codex_source_structure_analyzer(
-    owner_user_id: str,
-) -> SourceStructureAnalyzer | None:
-    if not _environment_flag(
-        "OPENCLASS_CODEX_SOURCE_SUPERVISION_ENABLED",
-        default=False,
-    ):
-        return None
-    return build_codex_source_structure_analyzer(owner_user_id)
-
-
 source_structure_indexer = SourceStructureIndexer(
     visual_index_enabled=_environment_flag(
         "OPENCLASS_SOURCE_VISUAL_INDEX_ENABLED",
         default=False,
     ),
-    structure_analyzer_factory=_optional_codex_source_structure_analyzer,
 )

@@ -1203,4 +1203,4 @@ def _validate_public_url(raw_uri: str) -> str:
     return uri
 
 
-source_ingestion_service = SourceIngestionService(structure_indexer=source_structure_indexer)
+source_ingestion_service = SourceIngestionService()
