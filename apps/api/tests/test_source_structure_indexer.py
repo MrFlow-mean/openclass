@@ -596,7 +596,7 @@ def test_nested_pdf_outline_remains_authoritative_without_toc_ocr(
     assert all(chapter.verified for chapter in parsed.chapters)
 
 
-def test_missing_codex_supervisor_preserves_deterministic_pdf_directory(
+def test_deterministic_pdf_directory_is_preserved_without_visual_indexing(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -653,7 +653,6 @@ def test_missing_codex_supervisor_preserves_deterministic_pdf_directory(
         store=store,
         visual_extractor=UnexpectedVisualExtractor(),
         visual_index_enabled=False,
-        structure_analyzer_factory=lambda _owner: None,
     )
     monkeypatch.setattr(indexer, "_parse_record", lambda *_args, **_kwargs: parsed)
 
@@ -663,7 +662,6 @@ def test_missing_codex_supervisor_preserves_deterministic_pdf_directory(
     assert structure.status == "ready"
     assert structure.strategy == "pdf_outline"
     assert structure.visual_index_status == "unsupported"
-    assert "codex_supervision_status" not in structure.metadata
     assert [chapter.normalized_number for chapter in view.chapters] == ["1"]
 
 

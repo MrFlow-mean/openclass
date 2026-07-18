@@ -2065,7 +2065,6 @@ def test_source_generation_batches_all_text_and_visual_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED", "true")
     chunk_one = SourceChunk(
         id="chunk_one",
         package_id="package",
@@ -2415,7 +2414,6 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
 def codex_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setenv("OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED", "true")
     monkeypatch.setenv("OPENCLASS_CODEX_WORKSPACE_ROOT", str(tmp_path / "codex-workspaces"))
     monkeypatch.setattr(
         codex_chat,
