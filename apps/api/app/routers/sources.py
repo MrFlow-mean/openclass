@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -7,7 +8,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.models import SourceIngestionJob, SourceIngestionRecord, SourceStructureView, UserView
+from app.models import (
+    AIModelSelection,
+    SourceCatalogBatchView,
+    SourceCatalogView,
+    SourceIngestionJob,
+    SourceIngestionRecord,
+    SourceStructureView,
+    UserView,
+)
 from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.source_evidence_store import source_evidence_store
@@ -31,6 +40,18 @@ class SourceContentUpdateRequest(BaseModel):
     content: str
 
 
+def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        selection = AIModelSelection.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="catalog_model must be a valid model selection.") from exc
+    if selection.provider != "openai_codex" or not selection.model.strip():
+        raise HTTPException(status_code=400, detail="Catalog extraction requires an OpenAI Codex text model.")
+    return selection
+
+
 @router.get("/api/packages/{package_id}/sources", response_model=list[SourceIngestionRecord])
 def list_package_sources(package_id: str, user: UserView = Depends(current_user)) -> list[SourceIngestionRecord]:
     workspace = workspace_state.load_workspace_for_user(user.id)
@@ -45,6 +66,7 @@ async def import_package_source(
     source_uri: str | None = Form(default=None),
     title: str = Form(default=""),
     text: str | None = Form(default=None),
+    catalog_model: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
     user: UserView = Depends(current_user),
 ) -> SourceIngestionRecord:
@@ -52,6 +74,7 @@ async def import_package_source(
     package = workspace_state.get_package(workspace, package_id)
     try:
         if file is not None:
+            selected_catalog_model = _parse_catalog_model(catalog_model)
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
@@ -63,6 +86,7 @@ async def import_package_source(
                 content=content,
                 mime_type=file.content_type or "application/octet-stream",
                 title=title,
+                catalog_model=selected_catalog_model,
             )
             background_tasks.add_task(
                 source_ingestion_service.process_file_source,
@@ -240,6 +264,77 @@ def get_package_source_structure(
         raise HTTPException(status_code=404, detail="Source not found.")
     return source_structure_store.get_structure_view(source=source)
 
+
+@router.get("/api/packages/{package_id}/sources/catalogs", response_model=SourceCatalogBatchView)
+def get_package_source_catalogs(
+    package_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceCatalogBatchView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    sources = source_evidence_store.list_sources(owner_user_id=user.id, package_id=package_id)
+    return source_structure_store.get_catalog_views(package_id=package_id, sources=sources)
+
+
+@router.get("/api/packages/{package_id}/sources/{source_id}/catalog", response_model=SourceCatalogView)
+def get_package_source_catalog(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceCatalogView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    return source_structure_store.get_catalog_view(source=source)
+
+
+@router.post(
+    "/api/packages/{package_id}/sources/{source_id}/catalog/rebuild",
+    response_model=SourceCatalogView,
+)
+def rebuild_package_source_catalog(
+    package_id: str,
+    source_id: str,
+    catalog_model: str | None = Form(default=None),
+    user: UserView = Depends(current_user),
+) -> SourceCatalogView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    if (
+        source.metadata.get("source_processing_owner") == "open_notebook"
+        and source.metadata.get("catalog_pipeline") != "codex_directory_v1"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="OpenNotebook-managed sources do not use the local catalog rebuild pipeline.",
+        )
+    try:
+        rebuilt = source_ingestion_service.rebuild_catalog(
+            owner_user_id=user.id,
+            package_id=package_id,
+            source_id=source_id,
+            catalog_model=_parse_catalog_model(catalog_model),
+        )
+    except SourceIngestionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if rebuilt is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    return source_structure_store.get_catalog_view(source=rebuilt)
+
+
 @router.post("/api/packages/{package_id}/sources/{source_id}/structure/rebuild", response_model=SourceStructureView)
 def rebuild_package_source_structure(
     package_id: str,
@@ -251,7 +346,21 @@ def rebuild_package_source_structure(
     source = source_evidence_store.get_source(owner_user_id=user.id, package_id=package_id, source_id=source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    if source_ingestion_service.source_backend == "open_notebook":
+    current = source_structure_store.get_structure(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if current is not None and current.strategy == "codex_directory_v1":
+        rebuilt = source_ingestion_service.rebuild_catalog(
+            owner_user_id=user.id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if rebuilt is None:
+            raise HTTPException(status_code=404, detail="Source not found.")
+        return source_structure_store.get_structure_view(source=rebuilt)
+    if source.metadata.get("source_processing_owner") == "open_notebook":
         raise HTTPException(
             status_code=409,
             detail="OpenNotebook-managed sources do not use the local structure rebuild pipeline.",

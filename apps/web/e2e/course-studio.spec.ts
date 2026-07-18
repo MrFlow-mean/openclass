@@ -149,15 +149,86 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   }));
   let visibleSources = [...sourceRecords];
   const deletedSourceIds: string[] = [];
+  let legacyStructureRebuildRequests = 0;
+  let directoryCatalogRebuildRequests = 0;
+
+  const legacyCatalog = (source: (typeof sourceRecords)[number]) => ({
+    source: {
+      id: source.id,
+      title: source.title,
+      file_name: source.file_name,
+      mime_type: source.mime_type,
+      size_bytes: source.size_bytes,
+      status: source.status,
+      structure_status: source.structure_status,
+    },
+    structure_id: null,
+    status: source.structure_status,
+    strategy: source.structure_strategy,
+    has_verified_toc: false,
+    catalog_version: 0,
+    catalog_updated_at: source.structure_updated_at,
+    source_content_hash: "",
+    catalog_schema_version: "legacy",
+    catalog_model: "",
+    chapter_count: 0,
+    verified_chapter_count: 0,
+    confidence: 0,
+    quality: null,
+    error: "",
+    warnings: [],
+    chapters: [],
+  });
 
   await page.route("**/api/packages/*/sources**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          package_id: "package-test",
+          catalogs: visibleSources.map(legacyCatalog),
+        }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/catalog")) {
+      const sourceId = path.split("/").at(-2) ?? "";
+      const source = visibleSources.find((candidate) => candidate.id === sourceId);
+      await route.fulfill({
+        status: source ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify(source ? legacyCatalog(source) : { detail: "source not found" }),
+      });
+      return;
+    }
     if (request.method() === "GET" && path.endsWith("/sources")) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(visibleSources),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith("/structure/rebuild")) {
+      legacyStructureRebuildRequests += 1;
+      const sourceId = path.split("/").at(-3) ?? "";
+      const source = visibleSources.find((candidate) => candidate.id === sourceId);
+      await route.fulfill({
+        status: source ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify({ source, structure: null, chapters: [], chunks: [], visuals: [] }),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith("/catalog/rebuild")) {
+      directoryCatalogRebuildRequests += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "legacy source must not use directory catalog rebuild" }),
       });
       return;
     }
@@ -183,6 +254,10 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await page.getByRole("button", { name: "Sources" }).click();
 
   await expect(page.getByText("已上传 2 份资料")).toBeVisible();
+  await page.getByLabel(`查看资料目录状态 批量资料 A ${unique}`).click();
+  await page.getByLabel(`重新建立资料目录 批量资料 A ${unique}`).click();
+  await expect.poll(() => legacyStructureRebuildRequests).toBe(1);
+  expect(directoryCatalogRebuildRequests).toBe(0);
   await page.getByRole("button", { name: "批量管理" }).click();
   await expect(page.getByLabel(`选择资料 批量资料 A ${unique}`)).toBeVisible();
   await page.getByRole("button", { name: "全选", exact: true }).click();
@@ -197,6 +272,301 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await expect.poll(() => deletedSourceIds).toEqual(sourceRecords.map((source) => source.id));
   await expect(page.getByRole("button", { name: "批量管理" })).toHaveCount(0);
   await expect(page.getByText("拖拽文件到这里，或点击上传资料。")).toBeVisible();
+});
+
+test("prefetches saved catalogs once and sends an authoritative chapter range", async ({ page }) => {
+  const unique = Date.now();
+  const sourceId = `catalog-source-${unique}`;
+  const sourceTitle = `持久化目录资料 ${unique}`;
+  const chapterTitle = `可引用章节 ${unique}`;
+  const partialChapterTitle = `待验证章节 ${unique}`;
+  const catalogUpdatedAt = new Date().toISOString();
+  const initialContentHash = `hash-${unique}`;
+  let advertisedContentHash = initialContentHash;
+  let reportedStructureStatus = "building";
+  const sourceRecord = {
+    id: sourceId,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    title: sourceTitle,
+    source_type: "local_file",
+    source_uri: null,
+    file_name: `catalog-${unique}.pdf`,
+    mime_type: "application/pdf",
+    size_bytes: 4096,
+    status: "ready",
+    error: "",
+    structure_status: "ready",
+    structure_strategy: "codex_directory_v1",
+    structure_has_verified_toc: true,
+    structure_quality: null,
+    structure_error: "",
+    structure_updated_at: catalogUpdatedAt,
+    ingestion_job: null,
+    created_at: catalogUpdatedAt,
+    updated_at: catalogUpdatedAt,
+    metadata: { content_hash: initialContentHash },
+  };
+  const verifiedChapter = {
+    id: `chapter-verified-${unique}`,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    source_ingestion_id: sourceId,
+    parent_id: null,
+    number: "1",
+    normalized_number: "1",
+    title: chapterTitle,
+    level: 1,
+    path: [chapterTitle],
+    order_index: 0,
+    source_locator: "pdf:12-18",
+    body_start_offset: null,
+    body_end_offset: null,
+    page_start: 12,
+    page_end: 18,
+    anchor_status: "verified",
+    range: {
+      kind: "pdf_pages",
+      start: 12,
+      end: 18,
+      container: "",
+      start_anchor: "",
+      end_anchor: "",
+      path: [chapterTitle],
+      display_label: "pp. 12-18",
+      end_inclusive: true,
+      metadata: {},
+    },
+    mapping_status: "verified",
+    source_content_hash: initialContentHash,
+    catalog_evidence: [],
+    catalog_version: 3,
+    confidence: 0.98,
+    excerpt: "",
+    metadata: {},
+  };
+  const partialChapter = {
+    ...verifiedChapter,
+    id: `chapter-partial-${unique}`,
+    parent_id: verifiedChapter.id,
+    number: "1.1",
+    normalized_number: "1.1",
+    title: partialChapterTitle,
+    level: 2,
+    path: [chapterTitle, partialChapterTitle],
+    order_index: 1,
+    source_locator: "pdf:18",
+    mapping_status: "partial",
+  };
+  const catalog = {
+    source: {
+      id: sourceId,
+      title: sourceTitle,
+      file_name: sourceRecord.file_name,
+      mime_type: sourceRecord.mime_type,
+      size_bytes: sourceRecord.size_bytes,
+      status: "ready",
+      structure_status: "ready",
+    },
+    structure_id: `structure-${unique}`,
+    status: "ready",
+    strategy: "codex_directory_v1",
+    has_verified_toc: true,
+    catalog_version: 3,
+    catalog_updated_at: catalogUpdatedAt,
+    source_content_hash: initialContentHash,
+    catalog_schema_version: "codex_directory_v1",
+    catalog_model: "openai_codex:test-model",
+    chapter_count: 2,
+    verified_chapter_count: 1,
+    confidence: 0.98,
+    quality: null,
+    error: "",
+    warnings: [],
+    chapters: [verifiedChapter, partialChapter],
+  };
+  let servedCatalog = catalog;
+  let batchCatalogRequests = 0;
+  let singleCatalogRequests = 0;
+  let completedSingleCatalogResponses = 0;
+  let rebuildRequests = 0;
+  let staleSingleCatalogResponsesRemaining = 0;
+  let delaySingleCatalogResponseAt = 0;
+  let delayedSingleCatalogRequests = 0;
+  let releaseDelayedSingleCatalog = () => {};
+  let submittedSelection: Record<string, unknown> | null = null;
+  let uploadPostData = "";
+
+  // Local product verification can reuse the already-running web build while keeping E2E writes in the isolated API database.
+  await page.route("http://127.0.0.1:8000/api/**", async (route) => {
+    const request = route.request();
+    if (new URL(request.url()).pathname === "/api/ai-models") {
+      await route.fallback();
+      return;
+    }
+    const headers = { ...request.headers() };
+    delete headers.host;
+    delete headers["content-length"];
+    const response = await page.request.fetch(request.url().replace("127.0.0.1:8000", "127.0.0.1:8110"), {
+      method: request.method(),
+      headers,
+      data: request.postDataBuffer() ?? undefined,
+      failOnStatusCode: false,
+    });
+    await route.fulfill({ response });
+  });
+
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      batchCatalogRequests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ package_id: "package-test", catalogs: [servedCatalog] }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith(`/sources/${sourceId}/catalog`)) {
+      singleCatalogRequests += 1;
+      const responseCatalog = staleSingleCatalogResponsesRemaining > 0 ? catalog : servedCatalog;
+      staleSingleCatalogResponsesRemaining = Math.max(0, staleSingleCatalogResponsesRemaining - 1);
+      if (singleCatalogRequests === delaySingleCatalogResponseAt) {
+        delayedSingleCatalogRequests += 1;
+        await new Promise<void>((resolve) => {
+          releaseDelayedSingleCatalog = resolve;
+        });
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(responseCatalog) });
+      completedSingleCatalogResponses += 1;
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith(`/sources/${sourceId}/catalog/rebuild`)) {
+      rebuildRequests += 1;
+      const rebuiltCatalog = {
+        ...servedCatalog,
+        catalog_version: 3 + rebuildRequests,
+        catalog_updated_at: new Date(Date.now() + rebuildRequests * 1000).toISOString(),
+        chapters: [
+          {
+            ...verifiedChapter,
+            title: `${rebuildRequests === 1 ? "重建后章节" : "再次重建章节"} ${unique}`,
+            source_content_hash: advertisedContentHash,
+            catalog_version: 3 + rebuildRequests,
+          },
+        ],
+      };
+      servedCatalog = rebuiltCatalog;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(rebuiltCatalog),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            ...sourceRecord,
+            structure_status: reportedStructureStatus,
+            metadata: { ...sourceRecord.metadata, content_hash: advertisedContentHash },
+          },
+        ]),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith("/sources")) {
+      uploadPostData = request.postData() ?? "";
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(sourceRecord) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    const payload = route.request().postDataJSON() as { selection?: Record<string, unknown> | null };
+    submittedSelection = payload.selection ?? null;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "test stops after inspecting the chapter reference" }),
+    });
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `目录缓存测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `目录缓存测试页面 ${unique}`);
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Sources" }).click();
+
+  await expect.poll(() => batchCatalogRequests).toBe(1);
+  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await expect(page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true })).toBeVisible();
+  await page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true }).click();
+  await expect(page.getByRole("button", { name: `1.1 ${partialChapterTitle}`, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /引用章节到输入框/ })).toHaveCount(1);
+  expect(singleCatalogRequests).toBe(0);
+
+  await page.getByRole("button", { name: "History" }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await expect(page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true })).toBeVisible();
+  expect(batchCatalogRequests).toBe(1);
+  expect(singleCatalogRequests).toBe(0);
+
+  await page.getByRole("button", { name: `引用章节到输入框 1 ${chapterTitle}` }).click();
+  await page.getByPlaceholder("基于引用章节继续提问").fill("请基于这个章节生成板书");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect.poll(() => submittedSelection).not.toBeNull();
+  expect(submittedSelection).toMatchObject({
+    source_ingestion_id: sourceId,
+    source_chapter_id: verifiedChapter.id,
+    catalog_version: 3,
+    source_content_hash: initialContentHash,
+    source_page_start: 12,
+    source_page_end: 18,
+    source_range: {
+      kind: "pdf_pages",
+      start: 12,
+      end: 18,
+      end_inclusive: true,
+    },
+  });
+
+  const replacementContentHash = `replacement-hash-${unique}`;
+  advertisedContentHash = replacementContentHash;
+  reportedStructureStatus = "ready";
+  staleSingleCatalogResponsesRemaining = 2;
+  delaySingleCatalogResponseAt = 2;
+  servedCatalog = {
+    ...catalog,
+    source_content_hash: replacementContentHash,
+    chapters: catalog.chapters.map((chapter) => ({
+      ...chapter,
+      source_content_hash: replacementContentHash,
+    })),
+  };
+  await expect.poll(() => singleCatalogRequests, { timeout: 7_000 }).toBe(2);
+  await expect.poll(() => delayedSingleCatalogRequests).toBe(1);
+
+  await page.getByLabel(`重新建立资料目录 ${sourceTitle}`).click();
+  await expect.poll(() => rebuildRequests).toBe(1);
+  releaseDelayedSingleCatalog();
+  await expect.poll(() => completedSingleCatalogResponses).toBe(2);
+  await expect(page.getByRole("button", { name: `1 重建后章节 ${unique}`, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true })).toHaveCount(0);
+
+  await page.getByTestId("source-file-input").setInputFiles({
+    name: `catalog-model-${unique}.pdf`,
+    mimeType: "application/pdf",
+    buffer: Buffer.from("catalog model upload"),
+  });
+  await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
+  expect(uploadPostData).toContain('"provider":"openai_codex"');
+  expect(uploadPostData).toContain('"model":"gpt-5.5"');
 });
 
 test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {

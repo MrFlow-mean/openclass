@@ -20,6 +20,7 @@ from app.services.course_store import SqliteCourseStore
 from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
+from app.services.source_directory_processor import DirectoryNormalizationResult
 from app.services.youtube_transcript_adapter import YouTubeTranscript
 
 
@@ -43,6 +44,11 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(documents_router, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(documents_router, "EXPORT_DIR", export_dir)
     monkeypatch.setattr(source_ingestion_service, "source_backend", "native")
+    monkeypatch.setattr(
+        source_ingestion_service.directory_processor,
+        "normalizer_factory",
+        lambda _record: _PassthroughDirectoryNormalizer(),
+    )
     workspace_state.ensure_data_dirs()
 
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER
@@ -50,6 +56,15 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
         yield TestClient(main_module.app)
     finally:
         main_module.app.dependency_overrides.clear()
+
+
+class _PassthroughDirectoryNormalizer:
+    def normalize(self, *, record, candidates, selection):
+        return DirectoryNormalizationResult(
+            candidates=tuple(candidates),
+            turn_count=1 if candidates else 0,
+            metadata={"test_adapter": "passthrough"},
+        )
 
 
 def _document_with_text(document: dict, text: str) -> dict:
@@ -366,7 +381,7 @@ def test_native_url_source_import_and_delete(
     assert listed_after_delete.json() == []
 
 
-def test_source_import_uses_native_local_index(
+def test_source_import_uses_persisted_directory_catalog(
     api_client: TestClient,
 ) -> None:
     created_workspace = api_client.post(
@@ -386,8 +401,9 @@ def test_source_import_uses_native_local_index(
     assert source["ingestion_job"]["progress"] == 15
     assert source["error"] == ""
     assert source["open_notebook_notebook_id"] == ""
-    assert source["metadata"]["adapter"] == "openclass_native"
+    assert source["metadata"]["adapter"] == "codex_directory_v1"
     assert source["metadata"]["content_hash"]
+    assert source["metadata"]["catalog_pipeline"] == "codex_directory_v1"
     assert "open_notebook_sync_status" not in source["metadata"]
     assert source["structure_status"] == "pending"
 
@@ -396,6 +412,26 @@ def test_source_import_uses_native_local_index(
     assert listed.json()[0]["status"] == "ready"
     assert listed.json()[0]["ingestion_job"]["progress"] == 100
     assert listed.json()[0]["structure_has_verified_toc"] is True
+    source_id = listed.json()[0]["id"]
+    catalog = api_client.get(f"/api/packages/{package_id}/sources/{source_id}/catalog")
+    assert catalog.status_code == 200
+    assert catalog.json()["strategy"] == "codex_directory_v1"
+    assert catalog.json()["catalog_version"] == 1
+    assert catalog.json()["chapters"][0]["range"]["kind"] == "text_lines"
+    batch_catalog = api_client.get(f"/api/packages/{package_id}/sources/catalogs")
+    assert batch_catalog.status_code == 200
+    assert [item["source"]["id"] for item in batch_catalog.json()["catalogs"]] == [
+        source_id
+    ]
+    rebuilt_catalog = api_client.post(
+        f"/api/packages/{package_id}/sources/{source_id}/catalog/rebuild"
+    )
+    assert rebuilt_catalog.status_code == 200
+    assert rebuilt_catalog.json()["catalog_version"] == 2
+    structure = api_client.get(f"/api/packages/{package_id}/sources/{source_id}/structure")
+    assert structure.status_code == 200
+    assert structure.json()["chunks"] == []
+    assert structure.json()["visuals"] == []
 
 
 def test_url_source_uses_native_local_snapshot(

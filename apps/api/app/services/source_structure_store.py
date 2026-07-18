@@ -11,9 +11,14 @@ from typing import Any, Iterator
 
 from app.models import (
     RetrievalEvidence,
+    SourceCatalogBatchView,
+    SourceCatalogRun,
+    SourceCatalogSourceSummary,
+    SourceCatalogView,
     SourceChapter,
     SourceChunk,
     SourceIngestionRecord,
+    SourceRange,
     SourceStructure,
     SourceStructureQuality,
     SourceStructureView,
@@ -121,6 +126,11 @@ class SourceStructureStore:
                     visual_index_version INTEGER NOT NULL DEFAULT 0,
                     confidence REAL NOT NULL,
                     quality_json TEXT NOT NULL DEFAULT '{}',
+                    catalog_version INTEGER NOT NULL DEFAULT 0,
+                    catalog_updated_at TEXT,
+                    source_content_hash TEXT NOT NULL DEFAULT '',
+                    catalog_schema_version TEXT NOT NULL DEFAULT 'legacy',
+                    catalog_model TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL,
                     warnings_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
@@ -150,6 +160,11 @@ class SourceStructureStore:
                     page_start INTEGER,
                     page_end INTEGER,
                     anchor_status TEXT NOT NULL,
+                    range_json TEXT,
+                    mapping_status TEXT NOT NULL DEFAULT 'unverified',
+                    source_content_hash TEXT NOT NULL DEFAULT '',
+                    catalog_evidence_json TEXT NOT NULL DEFAULT '[]',
+                    catalog_version INTEGER NOT NULL DEFAULT 0,
                     confidence REAL NOT NULL,
                     excerpt TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}'
@@ -158,6 +173,32 @@ class SourceStructureStore:
                     ON source_chapters(owner_user_id, package_id, source_ingestion_id, order_index);
                 CREATE INDEX IF NOT EXISTS idx_source_chapters_number
                     ON source_chapters(owner_user_id, package_id, normalized_number, anchor_status);
+
+                CREATE TABLE IF NOT EXISTS source_catalog_runs (
+                    id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    package_id TEXT NOT NULL,
+                    source_ingestion_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    catalog_version INTEGER NOT NULL DEFAULT 0,
+                    model TEXT NOT NULL DEFAULT '',
+                    turn_count INTEGER NOT NULL DEFAULT 0,
+                    page_count INTEGER NOT NULL DEFAULT 0,
+                    inspected_page_count INTEGER NOT NULL DEFAULT 0,
+                    ocr_page_count INTEGER NOT NULL DEFAULT 0,
+                    chapter_count INTEGER NOT NULL DEFAULT 0,
+                    verified_chapter_count INTEGER NOT NULL DEFAULT 0,
+                    verification_rate REAL NOT NULL DEFAULT 0,
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    stage_history_json TEXT NOT NULL DEFAULT '[]',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_source_catalog_runs_source
+                    ON source_catalog_runs(owner_user_id, package_id, source_ingestion_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS source_chunks (
                     id TEXT PRIMARY KEY,
@@ -234,6 +275,22 @@ class SourceStructureStore:
                     "visual_index_status": "TEXT NOT NULL DEFAULT 'pending'",
                     "visual_index_version": "INTEGER NOT NULL DEFAULT 0",
                     "quality_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "catalog_version": "INTEGER NOT NULL DEFAULT 0",
+                    "catalog_updated_at": "TEXT",
+                    "source_content_hash": "TEXT NOT NULL DEFAULT ''",
+                    "catalog_schema_version": "TEXT NOT NULL DEFAULT 'legacy'",
+                    "catalog_model": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            _ensure_columns(
+                conn,
+                "source_chapters",
+                {
+                    "range_json": "TEXT",
+                    "mapping_status": "TEXT NOT NULL DEFAULT 'unverified'",
+                    "source_content_hash": "TEXT NOT NULL DEFAULT ''",
+                    "catalog_evidence_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "catalog_version": "INTEGER NOT NULL DEFAULT 0",
                 },
             )
             _ensure_columns(
@@ -319,6 +376,7 @@ class SourceStructureStore:
                         "source_visual_assets",
                         "source_chunks",
                         "source_chapters",
+                        "source_catalog_runs",
                         "source_structures",
                     ):
                         conn.execute(
@@ -332,6 +390,144 @@ class SourceStructureStore:
         self.coordinator.run_write(self.path, delete_structure)
         _remove_asset_files(asset_paths)
         self.cleanup_unreferenced_visual_assets(storage_keys)
+
+    def publish_catalog(
+        self,
+        *,
+        structure: SourceStructure,
+        chapters: list[SourceChapter],
+        run: SourceCatalogRun | None = None,
+    ) -> SourceStructure:
+        """Atomically publish one complete catalog without creating a text or visual index."""
+        return self.coordinator.run_write(
+            self.path,
+            lambda: self._publish_catalog(structure=structure, chapters=chapters, run=run),
+        )
+
+    def _publish_catalog(
+        self,
+        *,
+        structure: SourceStructure,
+        chapters: list[SourceChapter],
+        run: SourceCatalogRun | None = None,
+    ) -> SourceStructure:
+        self._validate_catalog_bundle(structure=structure, chapters=chapters, run=run)
+        old_asset_paths: list[str] = []
+        old_storage_keys: list[str] = []
+        stamp = now_iso()
+        published: SourceStructure
+        with self._lock:
+            with self._connect() as conn:
+                previous = conn.execute(
+                    """
+                    SELECT catalog_version
+                    FROM source_structures
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (structure.owner_user_id, structure.package_id, structure.source_ingestion_id),
+                ).fetchone()
+                current_version = int(previous["catalog_version"] or 0) if previous else 0
+                requested_version = int(structure.catalog_version or 0)
+                catalog_version = requested_version if requested_version > current_version else current_version + 1
+                source_content_hash = structure.source_content_hash
+                published_chapters = [
+                    chapter.model_copy(
+                        update={
+                            "catalog_version": catalog_version,
+                            "source_content_hash": chapter.source_content_hash or source_content_hash,
+                            "mapping_status": (
+                                "verified"
+                                if chapter.mapping_status == "unverified" and chapter.anchor_status == "verified"
+                                else chapter.mapping_status
+                            ),
+                        }
+                    )
+                    for chapter in chapters
+                ]
+                published = structure.model_copy(
+                    update={
+                        "catalog_version": catalog_version,
+                        "catalog_updated_at": stamp,
+                        "updated_at": stamp,
+                        "chapter_count": len(published_chapters),
+                        "chunk_count": 0,
+                        "visual_count": 0,
+                        "visual_index_status": "unsupported",
+                        "visual_index_version": 0,
+                        "has_verified_toc": any(
+                            chapter.mapping_status == "verified" for chapter in published_chapters
+                        ),
+                    }
+                )
+                old_visual_rows = conn.execute(
+                    """
+                    SELECT asset_path, storage_key FROM source_visual_assets
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (published.owner_user_id, published.package_id, published.source_ingestion_id),
+                ).fetchall()
+                old_asset_paths = [
+                    str(row["asset_path"])
+                    for row in old_visual_rows
+                    if row["asset_path"] and not row["storage_key"]
+                ]
+                old_storage_keys = [str(row["storage_key"]) for row in old_visual_rows if row["storage_key"]]
+                with conn:
+                    self._delete_index_rows(conn, published)
+                    self._upsert_structure(conn, published)
+                    self._insert_chapters(conn, published_chapters)
+                    if run is not None:
+                        verified_count = sum(
+                            chapter.mapping_status == "verified" for chapter in published_chapters
+                        )
+                        published_run = run.model_copy(
+                            update={
+                                "catalog_version": catalog_version,
+                                "chapter_count": len(published_chapters),
+                                "verified_chapter_count": verified_count,
+                                "verification_rate": (
+                                    verified_count / len(published_chapters) if published_chapters else 0.0
+                                ),
+                                "updated_at": stamp,
+                                "completed_at": run.completed_at or (stamp if run.status == "succeeded" else None),
+                            }
+                        )
+                        self._upsert_catalog_run(conn, published_run)
+        _remove_asset_files(old_asset_paths)
+        self.cleanup_unreferenced_visual_assets(old_storage_keys)
+        return published
+
+    def save_catalog_run(self, run: SourceCatalogRun) -> SourceCatalogRun:
+        return self.coordinator.run_write(self.path, lambda: self._save_catalog_run(run))
+
+    def _save_catalog_run(self, run: SourceCatalogRun) -> SourceCatalogRun:
+        run = run.model_copy(update={"updated_at": now_iso()})
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    self._upsert_catalog_run(conn, run)
+        return run
+
+    def list_catalog_runs(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        limit: int = 20,
+    ) -> list[SourceCatalogRun]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM source_catalog_runs
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (owner_user_id, package_id, source_id, max(1, limit)),
+                ).fetchall()
+        return [self._catalog_run_from_row(row) for row in rows]
 
     def save_structure_bundle(
         self,
@@ -403,9 +599,10 @@ class SourceStructureStore:
                         INSERT INTO source_structures(
                             id, owner_user_id, package_id, source_ingestion_id, status, strategy, has_verified_toc,
                             chapter_count, chunk_count, visual_count, visual_index_status,
-                            visual_index_version, confidence, quality_json, error, warnings_json, created_at, updated_at,
-                            metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            visual_index_version, confidence, quality_json, catalog_version, catalog_updated_at,
+                            source_content_hash, catalog_schema_version, catalog_model, error, warnings_json,
+                            created_at, updated_at, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(owner_user_id, package_id, source_ingestion_id) DO UPDATE SET
                             id = excluded.id,
                             status = excluded.status,
@@ -418,6 +615,11 @@ class SourceStructureStore:
                             visual_index_version = excluded.visual_index_version,
                             confidence = excluded.confidence,
                             quality_json = excluded.quality_json,
+                            catalog_version = excluded.catalog_version,
+                            catalog_updated_at = excluded.catalog_updated_at,
+                            source_content_hash = excluded.source_content_hash,
+                            catalog_schema_version = excluded.catalog_schema_version,
+                            catalog_model = excluded.catalog_model,
                             error = excluded.error,
                             warnings_json = excluded.warnings_json,
                             updated_at = excluded.updated_at,
@@ -438,6 +640,11 @@ class SourceStructureStore:
                             structure.visual_index_version,
                             structure.confidence,
                             _dumps(structure.quality.model_dump(mode="json")),
+                            structure.catalog_version,
+                            structure.catalog_updated_at,
+                            structure.source_content_hash,
+                            structure.catalog_schema_version,
+                            structure.catalog_model,
                             structure.error,
                             _dumps(structure.warnings),
                             structure.created_at,
@@ -451,8 +658,9 @@ class SourceStructureStore:
                             id, owner_user_id, package_id, source_ingestion_id, parent_id, number,
                             normalized_number, title, level, path_json, order_index, source_locator,
                             body_start_offset, body_end_offset, page_start, page_end, anchor_status,
-                            confidence, excerpt, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            range_json, mapping_status, source_content_hash, catalog_evidence_json,
+                            catalog_version, confidence, excerpt, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
@@ -473,6 +681,11 @@ class SourceStructureStore:
                                 chapter.page_start,
                                 chapter.page_end,
                                 chapter.anchor_status,
+                                _dumps(chapter.range.model_dump(mode="json")) if chapter.range else None,
+                                chapter.mapping_status,
+                                chapter.source_content_hash,
+                                _dumps([item.model_dump(mode="json") for item in chapter.catalog_evidence]),
+                                chapter.catalog_version,
                                 chapter.confidence,
                                 chapter.excerpt,
                                 _dumps(chapter.metadata),
@@ -596,7 +809,7 @@ class SourceStructureStore:
         )
 
     def _record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
-        warning = "资料重新解析失败，已保留上一次可用的目录和正文索引。"
+        warning = "资料目录重新建立失败，已保留上一次可用的目录。"
         warnings = list(dict.fromkeys([*structure.warnings, warning]))
         with self._lock:
             with self._connect() as conn:
@@ -629,6 +842,196 @@ class SourceStructureStore:
                     (owner_user_id, package_id, source_id),
                 ).fetchone()
         return self._structure_from_row(row) if row else None
+
+    def get_catalog_view(self, *, source: SourceIngestionRecord) -> SourceCatalogView:
+        batch = self.get_catalog_views(package_id=source.package_id, sources=[source])
+        return batch.catalogs[0]
+
+    def get_catalog_views(
+        self,
+        *,
+        package_id: str,
+        sources: list[SourceIngestionRecord],
+    ) -> SourceCatalogBatchView:
+        if not sources:
+            return SourceCatalogBatchView(package_id=package_id)
+        owner_user_id = sources[0].owner_user_id
+        if any(source.owner_user_id != owner_user_id or source.package_id != package_id for source in sources):
+            raise ValueError("Catalog batch sources must share one owner and package.")
+        source_ids = {source.id for source in sources}
+        with self._lock:
+            with self._connect() as conn:
+                structure_rows = conn.execute(
+                    """
+                    SELECT * FROM source_structures
+                    WHERE owner_user_id = ? AND package_id = ?
+                    """,
+                    (owner_user_id, package_id),
+                ).fetchall()
+                chapter_rows = conn.execute(
+                    """
+                    SELECT * FROM source_chapters
+                    WHERE owner_user_id = ? AND package_id = ?
+                    ORDER BY source_ingestion_id, order_index
+                    """,
+                    (owner_user_id, package_id),
+                ).fetchall()
+        structures = {
+            str(row["source_ingestion_id"]): self._structure_from_row(row)
+            for row in structure_rows
+            if str(row["source_ingestion_id"]) in source_ids
+        }
+        chapters_by_source: dict[str, list[SourceChapter]] = {source_id: [] for source_id in source_ids}
+        for row in chapter_rows:
+            source_id = str(row["source_ingestion_id"])
+            if source_id in source_ids:
+                chapters_by_source[source_id].append(self._chapter_from_row(row))
+        catalogs = [
+            self._build_catalog_view(
+                source=source,
+                structure=structures.get(source.id),
+                chapters=chapters_by_source.get(source.id, []),
+            )
+            for source in sources
+        ]
+        return SourceCatalogBatchView(package_id=package_id, catalogs=catalogs)
+
+    def get_catalog_chapter(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        chapter_id: str,
+    ) -> tuple[SourceStructure, SourceChapter] | None:
+        with self._lock:
+            with self._connect() as conn:
+                structure_row = conn.execute(
+                    """
+                    SELECT * FROM source_structures
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (owner_user_id, package_id, source_id),
+                ).fetchone()
+                chapter_row = conn.execute(
+                    """
+                    SELECT * FROM source_chapters
+                    WHERE owner_user_id = ? AND package_id = ?
+                      AND source_ingestion_id = ? AND id = ?
+                    """,
+                    (owner_user_id, package_id, source_id, chapter_id),
+                ).fetchone()
+        if structure_row is None or chapter_row is None:
+            return None
+        return self._structure_from_row(structure_row), self._chapter_from_row(chapter_row)
+
+    @staticmethod
+    def _build_catalog_view(
+        *,
+        source: SourceIngestionRecord,
+        structure: SourceStructure | None,
+        chapters: list[SourceChapter],
+    ) -> SourceCatalogView:
+        structure_status = structure.status if structure else source.structure_status
+        catalog_version = structure.catalog_version if structure else 0
+        source_content_hash = str(
+            (structure.source_content_hash if structure else "")
+            or source.metadata.get("source_content_hash")
+            or source.metadata.get("content_hash")
+            or source.metadata.get("sha256")
+            or ""
+        )
+        catalog_chapters = [
+            SourceStructureStore._chapter_for_catalog(
+                source=source,
+                structure=structure,
+                chapter=chapter,
+                source_content_hash=source_content_hash,
+                catalog_version=catalog_version,
+            )
+            for chapter in chapters
+        ]
+        verified_count = sum(chapter.mapping_status == "verified" for chapter in catalog_chapters)
+        return SourceCatalogView(
+            source=SourceCatalogSourceSummary(
+                id=source.id,
+                title=source.title,
+                file_name=source.file_name,
+                mime_type=source.mime_type,
+                size_bytes=source.size_bytes,
+                status=source.status,
+                structure_status=structure_status,
+            ),
+            structure_id=structure.id if structure else None,
+            status=structure_status,
+            strategy=structure.strategy if structure else source.structure_strategy,
+            has_verified_toc=(structure.has_verified_toc if structure else False),
+            catalog_version=catalog_version,
+            catalog_updated_at=(
+                (structure.catalog_updated_at or structure.updated_at)
+                if structure
+                else source.structure_updated_at
+            ),
+            source_content_hash=source_content_hash,
+            catalog_schema_version=structure.catalog_schema_version if structure else "legacy",
+            catalog_model=structure.catalog_model if structure else "",
+            chapter_count=len(catalog_chapters),
+            verified_chapter_count=verified_count,
+            confidence=structure.confidence if structure else 0.0,
+            quality=structure.quality if structure else source.structure_quality,
+            error=structure.error if structure else source.structure_error,
+            warnings=structure.warnings if structure else [],
+            chapters=catalog_chapters,
+        )
+
+    @staticmethod
+    def _chapter_for_catalog(
+        *,
+        source: SourceIngestionRecord,
+        structure: SourceStructure | None,
+        chapter: SourceChapter,
+        source_content_hash: str,
+        catalog_version: int,
+    ) -> SourceChapter:
+        source_range = chapter.range
+        if source_range is None and chapter.page_start is not None:
+            mime = source.mime_type.casefold()
+            suffix = Path(source.file_name).suffix.casefold()
+            range_kind = None
+            if "pdf" in mime or suffix == ".pdf":
+                range_kind = "pdf_pages"
+            elif "presentation" in mime or suffix in {".ppt", ".pptx"}:
+                range_kind = "ppt_slides"
+            if range_kind:
+                legacy_end = max(chapter.page_start, (chapter.page_end or chapter.page_start + 1) - 1)
+                display_label = (
+                    f"{'p.' if range_kind == 'pdf_pages' else 'slide'} {chapter.page_start}"
+                    if legacy_end == chapter.page_start
+                    else f"{'pp.' if range_kind == 'pdf_pages' else 'slides'} {chapter.page_start}-{legacy_end}"
+                )
+                source_range = SourceRange(
+                    kind=range_kind,
+                    start=chapter.page_start,
+                    end=legacy_end,
+                    display_label=display_label,
+                    metadata={"legacy_page_end_exclusive": True},
+                )
+        mapping_status = chapter.mapping_status
+        if (
+            mapping_status == "unverified"
+            and chapter.anchor_status == "verified"
+            and (not structure or structure.catalog_schema_version == "legacy")
+        ):
+            mapping_status = "verified"
+        return chapter.model_copy(
+            update={
+                "range": source_range,
+                "mapping_status": mapping_status,
+                "source_content_hash": chapter.source_content_hash or source_content_hash,
+                "catalog_version": chapter.catalog_version or catalog_version,
+                "excerpt": "",
+            }
+        )
 
     def get_structure_view(
         self,
@@ -1210,6 +1613,201 @@ class SourceStructureStore:
                 break
         return evidence
 
+    @staticmethod
+    def _validate_catalog_bundle(
+        *,
+        structure: SourceStructure,
+        chapters: list[SourceChapter],
+        run: SourceCatalogRun | None,
+    ) -> None:
+        chapter_ids = {chapter.id for chapter in chapters}
+        if len(chapter_ids) != len(chapters):
+            raise ValueError("Catalog chapter ids must be unique.")
+        if structure.strategy == "codex_directory_v1" and not structure.source_content_hash:
+            raise ValueError("codex_directory_v1 requires a source content hash.")
+        for chapter in chapters:
+            if (
+                chapter.owner_user_id != structure.owner_user_id
+                or chapter.package_id != structure.package_id
+                or chapter.source_ingestion_id != structure.source_ingestion_id
+            ):
+                raise ValueError("Catalog chapter ownership does not match its structure.")
+            if chapter.parent_id and chapter.parent_id not in chapter_ids:
+                raise ValueError("Catalog chapter parent_id must reference the same catalog.")
+            if (
+                structure.strategy == "codex_directory_v1"
+                and (chapter.mapping_status == "verified" or chapter.anchor_status == "verified")
+                and chapter.range is None
+            ):
+                raise ValueError("Verified codex_directory_v1 chapters require a SourceRange.")
+            if chapter.source_content_hash and chapter.source_content_hash != structure.source_content_hash:
+                raise ValueError("Catalog chapter content hash does not match its structure.")
+        if run is not None and (
+            run.owner_user_id != structure.owner_user_id
+            or run.package_id != structure.package_id
+            or run.source_ingestion_id != structure.source_ingestion_id
+        ):
+            raise ValueError("Catalog run ownership does not match its structure.")
+
+    @staticmethod
+    def _upsert_structure(conn: sqlite3.Connection, structure: SourceStructure) -> None:
+        conn.execute(
+            """
+            INSERT INTO source_structures(
+                id, owner_user_id, package_id, source_ingestion_id, status, strategy,
+                has_verified_toc, chapter_count, chunk_count, visual_count,
+                visual_index_status, visual_index_version, confidence, quality_json,
+                catalog_version, catalog_updated_at, source_content_hash,
+                catalog_schema_version, catalog_model, error, warnings_json,
+                created_at, updated_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_user_id, package_id, source_ingestion_id) DO UPDATE SET
+                id = excluded.id,
+                status = excluded.status,
+                strategy = excluded.strategy,
+                has_verified_toc = excluded.has_verified_toc,
+                chapter_count = excluded.chapter_count,
+                chunk_count = excluded.chunk_count,
+                visual_count = excluded.visual_count,
+                visual_index_status = excluded.visual_index_status,
+                visual_index_version = excluded.visual_index_version,
+                confidence = excluded.confidence,
+                quality_json = excluded.quality_json,
+                catalog_version = excluded.catalog_version,
+                catalog_updated_at = excluded.catalog_updated_at,
+                source_content_hash = excluded.source_content_hash,
+                catalog_schema_version = excluded.catalog_schema_version,
+                catalog_model = excluded.catalog_model,
+                error = excluded.error,
+                warnings_json = excluded.warnings_json,
+                updated_at = excluded.updated_at,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                structure.id,
+                structure.owner_user_id,
+                structure.package_id,
+                structure.source_ingestion_id,
+                structure.status,
+                structure.strategy,
+                int(structure.has_verified_toc),
+                structure.chapter_count,
+                structure.chunk_count,
+                structure.visual_count,
+                structure.visual_index_status,
+                structure.visual_index_version,
+                structure.confidence,
+                _dumps(structure.quality.model_dump(mode="json")),
+                structure.catalog_version,
+                structure.catalog_updated_at,
+                structure.source_content_hash,
+                structure.catalog_schema_version,
+                structure.catalog_model,
+                structure.error,
+                _dumps(structure.warnings),
+                structure.created_at,
+                structure.updated_at,
+                _dumps(structure.metadata),
+            ),
+        )
+
+    @staticmethod
+    def _insert_chapters(conn: sqlite3.Connection, chapters: list[SourceChapter]) -> None:
+        conn.executemany(
+            """
+            INSERT INTO source_chapters(
+                id, owner_user_id, package_id, source_ingestion_id, parent_id, number,
+                normalized_number, title, level, path_json, order_index, source_locator,
+                body_start_offset, body_end_offset, page_start, page_end, anchor_status,
+                range_json, mapping_status, source_content_hash, catalog_evidence_json,
+                catalog_version, confidence, excerpt, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    chapter.id,
+                    chapter.owner_user_id,
+                    chapter.package_id,
+                    chapter.source_ingestion_id,
+                    chapter.parent_id,
+                    chapter.number,
+                    chapter.normalized_number,
+                    chapter.title,
+                    chapter.level,
+                    _dumps(chapter.path),
+                    chapter.order_index,
+                    chapter.source_locator,
+                    chapter.body_start_offset,
+                    chapter.body_end_offset,
+                    chapter.page_start,
+                    chapter.page_end,
+                    chapter.anchor_status,
+                    _dumps(chapter.range.model_dump(mode="json")) if chapter.range else None,
+                    chapter.mapping_status,
+                    chapter.source_content_hash,
+                    _dumps([item.model_dump(mode="json") for item in chapter.catalog_evidence]),
+                    chapter.catalog_version,
+                    chapter.confidence,
+                    chapter.excerpt,
+                    _dumps(chapter.metadata),
+                )
+                for chapter in chapters
+            ],
+        )
+
+    @staticmethod
+    def _upsert_catalog_run(conn: sqlite3.Connection, run: SourceCatalogRun) -> None:
+        conn.execute(
+            """
+            INSERT INTO source_catalog_runs(
+                id, owner_user_id, package_id, source_ingestion_id, status, catalog_version,
+                model, turn_count, page_count, inspected_page_count, ocr_page_count,
+                chapter_count, verified_chapter_count, verification_rate, duration_ms,
+                stage_history_json, error, created_at, updated_at, completed_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                catalog_version = excluded.catalog_version,
+                model = excluded.model,
+                turn_count = excluded.turn_count,
+                page_count = excluded.page_count,
+                inspected_page_count = excluded.inspected_page_count,
+                ocr_page_count = excluded.ocr_page_count,
+                chapter_count = excluded.chapter_count,
+                verified_chapter_count = excluded.verified_chapter_count,
+                verification_rate = excluded.verification_rate,
+                duration_ms = excluded.duration_ms,
+                stage_history_json = excluded.stage_history_json,
+                error = excluded.error,
+                updated_at = excluded.updated_at,
+                completed_at = excluded.completed_at,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                run.id,
+                run.owner_user_id,
+                run.package_id,
+                run.source_ingestion_id,
+                run.status,
+                run.catalog_version,
+                run.model,
+                run.turn_count,
+                run.page_count,
+                run.inspected_page_count,
+                run.ocr_page_count,
+                run.chapter_count,
+                run.verified_chapter_count,
+                run.verification_rate,
+                run.duration_ms,
+                _dumps(run.stage_history),
+                run.error,
+                run.created_at,
+                run.updated_at,
+                run.completed_at,
+                _dumps(run.metadata),
+            ),
+        )
+
     def _delete_index_rows(self, conn: sqlite3.Connection, structure: SourceStructure) -> None:
         self.native_index.delete_for_source(
             conn,
@@ -1255,6 +1853,11 @@ class SourceStructureStore:
             visual_index_version=row["visual_index_version"],
             confidence=row["confidence"],
             quality=SourceStructureQuality.model_validate(_loads(row["quality_json"], {})),
+            catalog_version=row["catalog_version"],
+            catalog_updated_at=row["catalog_updated_at"],
+            source_content_hash=row["source_content_hash"],
+            catalog_schema_version=row["catalog_schema_version"],
+            catalog_model=row["catalog_model"],
             error=row["error"],
             warnings=_loads(row["warnings_json"], []),
             created_at=row["created_at"],
@@ -1281,8 +1884,38 @@ class SourceStructureStore:
             page_start=row["page_start"],
             page_end=row["page_end"],
             anchor_status=row["anchor_status"],
+            range=SourceRange.model_validate(_loads(row["range_json"], {})) if row["range_json"] else None,
+            mapping_status=row["mapping_status"],
+            source_content_hash=row["source_content_hash"],
+            catalog_evidence=_loads(row["catalog_evidence_json"], []),
+            catalog_version=row["catalog_version"],
             confidence=row["confidence"],
             excerpt=row["excerpt"],
+            metadata=_loads(row["metadata_json"], {}),
+        )
+
+    def _catalog_run_from_row(self, row: sqlite3.Row) -> SourceCatalogRun:
+        return SourceCatalogRun(
+            id=row["id"],
+            owner_user_id=row["owner_user_id"],
+            package_id=row["package_id"],
+            source_ingestion_id=row["source_ingestion_id"],
+            status=row["status"],
+            catalog_version=row["catalog_version"],
+            model=row["model"],
+            turn_count=row["turn_count"],
+            page_count=row["page_count"],
+            inspected_page_count=row["inspected_page_count"],
+            ocr_page_count=row["ocr_page_count"],
+            chapter_count=row["chapter_count"],
+            verified_chapter_count=row["verified_chapter_count"],
+            verification_rate=row["verification_rate"],
+            duration_ms=row["duration_ms"],
+            stage_history=_loads(row["stage_history_json"], []),
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            completed_at=row["completed_at"],
             metadata=_loads(row["metadata_json"], {}),
         )
 

@@ -7,8 +7,9 @@ import { GeometryGenerationPanel } from "@/components/course-studio/geometry-gen
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import { VoiceControlPanel } from "@/components/course-studio/voice-control-panel";
 import { useGeometryWorkspace } from "@/hooks/course-studio/use-geometry-workspace";
+import { useSourceCatalogCache } from "@/hooks/course-studio/use-source-catalog-cache";
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
-import type { AIModelSelection, BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
+import type { AIModelOption, AIModelSelection, BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
 
 export type CourseStudioSidebarTab = "geometry" | "history" | "sources" | "voice";
 
@@ -38,6 +39,8 @@ type CourseStudioSidePanelProps = {
   geometryReference: SelectionRef | null;
   onGeometryReferenceClear: () => void;
   textModel: AIModelSelection | null;
+  catalogModelOptions: AIModelOption[];
+  defaultCatalogModel: AIModelSelection;
   speechAutoEnabled: boolean;
   speechIsLoading: boolean;
   speechIsPlaying: boolean;
@@ -88,6 +91,8 @@ export function CourseStudioSidePanel({
   geometryReference,
   onGeometryReferenceClear,
   textModel,
+  catalogModelOptions,
+  defaultCatalogModel,
   speechAutoEnabled,
   speechIsLoading,
   speechIsPlaying,
@@ -117,6 +122,7 @@ export function CourseStudioSidePanel({
     textModel,
     onClearSelection: onGeometryReferenceClear,
   });
+  const sourceCatalogCache = useSourceCatalogCache();
 
   return (
     <aside
@@ -195,7 +201,15 @@ export function CourseStudioSidePanel({
             onClear={geometryWorkspace.clear}
           />
         ) : sidebarTab === "sources" ? (
-          <SourceImportPanel key={packageId} packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
+          <SourceImportPanel
+            key={packageId}
+            packageId={packageId}
+            catalogCache={sourceCatalogCache}
+            catalogModelOptions={catalogModelOptions}
+            defaultCatalogModel={defaultCatalogModel}
+            onError={onError}
+            onSourceReference={onSourceReference}
+          />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}

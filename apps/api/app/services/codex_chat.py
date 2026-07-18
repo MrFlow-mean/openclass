@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import (
     AgentActivityEvent,
@@ -76,6 +76,9 @@ CODEX_BOARD_GENERATION_TIMEOUT_SECONDS = 300
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
 MAX_SOURCE_VISUAL_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_VISUALS_PER_BATCH = 8
+SOURCE_RANGE_BATCH_BYTE_BUDGET = 32_000
+MAX_SOURCE_BATCH_SUMMARY_CHARS = 8_000
+MAX_SOURCE_RANGE_SUMMARY_PASSES = 4
 _PRESERVED_VISUAL_MARKER_RE = re.compile(
     r"\[\[OPENCLASS_PRESERVED_VISUAL_[0-9a-f]{12}_\d{4}\]\]"
 )
@@ -177,7 +180,8 @@ turn. Return only a brief completion acknowledgement after the file is written.
 SOURCE_BATCH_SUMMARY_INSTRUCTIONS = """
 Summarize one consecutive source batch for later board generation. Preserve definitions,
 relationships, examples, qualifications, formulas, and section order. Use only the supplied text.
-The summary must remain traceable to the supplied chunk IDs and must not add outside knowledge.
+The summary must remain traceable to the supplied evidence or chunk IDs and their page/locator
+provenance. Do not add outside knowledge.
 """.strip()
 
 SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS = """
@@ -189,7 +193,7 @@ the prompt. Do not add facts that are not visible in the image or its supplied m
 
 
 class _SourceBatchSummary(BaseModel):
-    summary: str
+    summary: str = Field(min_length=1, max_length=MAX_SOURCE_BATCH_SUMMARY_CHARS)
 
 
 @dataclass(frozen=True)
@@ -788,65 +792,89 @@ def _prepare_source_generation_inputs(
     prepared = requirement.model_copy(deep=True)
     grounding = prepared.source_grounding
     evidence = grounding.frozen_evidence
-    if sum(item.token_count for item in evidence) > SOURCE_BOARD_TOKEN_BUDGET:
-        chunk_ids = list(
-            dict.fromkeys(
-                chunk_id
-                for reference in grounding.confirmed_references
-                for chunk_id in reference.chunk_ids
-            )
-        )
-        chunks = source_structure_store.source_chunks_by_ids(
-            owner_user_id=owner_user_id,
-            chunk_ids=chunk_ids,
-        )
-        if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
-            raise CodexAppServerError(
-                "The frozen source range cannot be fully reconstructed from its chunk IDs"
-            )
-        prototype = evidence[0]
-        summaries: list[RetrievalEvidence] = []
-        for batch_index, batch in enumerate(_source_text_batches(chunks)):
-            batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
-            response = adapter.parse_structured(
-                system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
-                user_prompt=json.dumps(
-                    {
-                        "batch_index": batch_index,
-                        "chunks": [
-                            {"chunk_id": chunk_id, "text": text}
-                            for chunk_id, text in batch
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-                schema=_SourceBatchSummary,
-            )
-            if on_activity is not None:
-                for event in response.activity:
-                    on_activity(event)
-            summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
-            if not summary:
-                raise CodexAppServerError("Source batch summarization returned empty content")
-            summaries.append(
-                prototype.model_copy(
-                    update={
-                        "id": f"{prototype.id}:summary:{batch_index}",
-                        "chunk_ids": batch_chunk_ids,
-                        "excerpt": summary[:360],
-                        "expanded_text": summary,
-                        "token_count": max(1, (len(summary) + 3) // 4),
-                        "reason": "Provider-generated summary of one consecutive frozen source batch.",
-                        "metadata": {
-                            **prototype.metadata,
-                            "retrieval_mode": "frozen_source_batch_summary",
-                            "batch_index": batch_index,
-                            "covered_chunk_ids": batch_chunk_ids,
-                        },
-                    }
+    uses_on_demand_range = _is_on_demand_range_evidence(evidence)
+    evidence_cost = (
+        _conservative_text_tokens(item.expanded_text) for item in evidence
+    ) if uses_on_demand_range else (item.token_count for item in evidence)
+    if sum(evidence_cost) > SOURCE_BOARD_TOKEN_BUDGET:
+        if uses_on_demand_range:
+            compacted = evidence
+            for summary_pass in range(MAX_SOURCE_RANGE_SUMMARY_PASSES):
+                compacted = _summarize_frozen_range_evidence(
+                    adapter=adapter,
+                    evidence=compacted,
+                    on_activity=on_activity,
+                    summary_pass=summary_pass,
+                )
+                if sum(
+                    _conservative_text_tokens(item.expanded_text)
+                    for item in compacted
+                ) <= SOURCE_BOARD_TOKEN_BUDGET:
+                    grounding.frozen_evidence = compacted
+                    break
+            else:
+                raise CodexAppServerError(
+                    "The selected source range could not be compacted within the board token budget"
+                )
+        else:
+            chunk_ids = list(
+                dict.fromkeys(
+                    chunk_id
+                    for reference in grounding.confirmed_references
+                    for chunk_id in reference.chunk_ids
                 )
             )
-        grounding.frozen_evidence = summaries
+            chunks = source_structure_store.source_chunks_by_ids(
+                owner_user_id=owner_user_id,
+                chunk_ids=chunk_ids,
+            )
+            if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
+                raise CodexAppServerError(
+                    "The frozen source range cannot be fully reconstructed from its chunk IDs"
+                )
+            prototype = evidence[0]
+            summaries: list[RetrievalEvidence] = []
+            for batch_index, batch in enumerate(_source_text_batches(chunks)):
+                batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
+                response = adapter.parse_structured(
+                    system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
+                    user_prompt=json.dumps(
+                        {
+                            "batch_index": batch_index,
+                            "chunks": [
+                                {"chunk_id": chunk_id, "text": text}
+                                for chunk_id, text in batch
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    schema=_SourceBatchSummary,
+                )
+                if on_activity is not None:
+                    for event in response.activity:
+                        on_activity(event)
+                summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
+                if not summary:
+                    raise CodexAppServerError("Source batch summarization returned empty content")
+                summaries.append(
+                    prototype.model_copy(
+                        update={
+                            "id": f"{prototype.id}:summary:{batch_index}",
+                            "chunk_ids": batch_chunk_ids,
+                            "excerpt": summary[:360],
+                            "expanded_text": summary,
+                            "token_count": max(1, (len(summary) + 3) // 4),
+                            "reason": "Provider-generated summary of one consecutive frozen source batch.",
+                            "metadata": {
+                                **prototype.metadata,
+                                "retrieval_mode": "frozen_source_batch_summary",
+                                "batch_index": batch_index,
+                                "covered_chunk_ids": batch_chunk_ids,
+                            },
+                        }
+                    )
+                )
+            grounding.frozen_evidence = summaries
 
     visuals = grounding.frozen_visual_evidence
     raster_visuals = [item for item in visuals if not _is_structured_table_evidence(item)]
@@ -1032,6 +1060,152 @@ def _source_text_batches(chunks) -> list[list[tuple[str, str]]]:
     if current:
         batches.append(current)
     return batches
+
+
+def _is_on_demand_range_evidence(evidence: list[RetrievalEvidence]) -> bool:
+    return bool(evidence) and all(
+        item.metadata.get("source_range")
+        and item.metadata.get("catalog_version")
+        and not item.chunk_ids
+        for item in evidence
+    )
+
+
+def _summarize_frozen_range_evidence(
+    *,
+    adapter: CodexAIExecutionAdapter,
+    evidence: list[RetrievalEvidence],
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+    summary_pass: int = 0,
+) -> list[RetrievalEvidence]:
+    batches = _source_evidence_batches(evidence)
+    if not batches:
+        raise CodexAppServerError("The frozen source range contains no readable evidence")
+    summaries: list[RetrievalEvidence] = []
+    for batch_index, batch in enumerate(batches):
+        provenance = [
+            {
+                "evidence_id": item.id,
+                "source_ingestion_id": item.source_ingestion_id,
+                "chapter_id": item.chapter_id,
+                "section_path": item.section_path,
+                "page_range": item.page_range,
+                "source_locator": item.metadata.get("source_locator"),
+                "source_range": item.metadata.get("source_range"),
+                "text_part": part_index,
+                "text_part_count": part_count,
+                "text": text,
+            }
+            for item, text, part_index, part_count in batch
+        ]
+        response = adapter.parse_structured(
+            system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
+            user_prompt=json.dumps(
+                {
+                    "summary_pass": summary_pass,
+                    "batch_index": batch_index,
+                    "batch_count": len(batches),
+                    "evidence": provenance,
+                },
+                ensure_ascii=False,
+            ),
+            schema=_SourceBatchSummary,
+        )
+        if on_activity is not None:
+            for event in response.activity:
+                on_activity(event)
+        summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
+        if not summary:
+            raise CodexAppServerError("Source batch summarization returned empty content")
+        prototype = batch[0][0]
+        covered_evidence_ids = list(dict.fromkeys(item.id for item, *_rest in batch))
+        covered_page_ranges = list(
+            dict.fromkeys(item.page_range for item, *_rest in batch if item.page_range)
+        )
+        covered_locators = list(
+            dict.fromkeys(
+                str(item.metadata.get("source_locator") or "")
+                for item, *_rest in batch
+                if item.metadata.get("source_locator")
+            )
+        )
+        summaries.append(
+            prototype.model_copy(
+                update={
+                    "id": f"{prototype.id}:range-summary:{summary_pass}:{batch_index}",
+                    "page_range": " / ".join(covered_page_ranges),
+                    "chunk_ids": [],
+                    "excerpt": summary[:360],
+                    "expanded_text": summary,
+                    "token_count": _conservative_text_tokens(summary),
+                    "reason": "Provider-generated summary of one consecutive on-demand source range batch.",
+                    "metadata": {
+                        **prototype.metadata,
+                        "retrieval_mode": "frozen_source_range_batch_summary",
+                        "summary_pass": summary_pass,
+                        "batch_index": batch_index,
+                        "batch_count": len(batches),
+                        "covered_evidence_ids": covered_evidence_ids,
+                        "covered_page_ranges": covered_page_ranges,
+                        "covered_source_locators": covered_locators,
+                        "source_provenance": [
+                            {key: value for key, value in item.items() if key != "text"}
+                            for item in provenance
+                        ],
+                    },
+                }
+            )
+        )
+    return summaries
+
+
+def _source_evidence_batches(
+    evidence: list[RetrievalEvidence],
+) -> list[list[tuple[RetrievalEvidence, str, int, int]]]:
+    batches: list[list[tuple[RetrievalEvidence, str, int, int]]] = []
+    current: list[tuple[RetrievalEvidence, str, int, int]] = []
+    used_tokens = 0
+    for item in evidence:
+        text_parts = _split_text_by_utf8_bytes(
+            item.expanded_text,
+            max_bytes=SOURCE_RANGE_BATCH_BYTE_BUDGET,
+        ) or [""]
+        for part_index, text in enumerate(text_parts):
+            if not text.strip():
+                continue
+            token_count = _conservative_text_tokens(text)
+            if current and used_tokens + token_count > SOURCE_RANGE_BATCH_BYTE_BUDGET:
+                batches.append(current)
+                current = []
+                used_tokens = 0
+            current.append((item, text, part_index, len(text_parts)))
+            used_tokens += token_count
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _split_text_by_utf8_bytes(text: str, *, max_bytes: int) -> list[str]:
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be positive")
+    parts: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for character in text:
+        character_bytes = len(character.encode("utf-8"))
+        if current and current_bytes + character_bytes > max_bytes:
+            parts.append("".join(current))
+            current = []
+            current_bytes = 0
+        current.append(character)
+        current_bytes += character_bytes
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _conservative_text_tokens(text: str) -> int:
+    return max(1, len(text.encode("utf-8")))
 
 
 def _visual_manifest_payload(

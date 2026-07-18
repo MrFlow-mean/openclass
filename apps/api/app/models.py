@@ -617,6 +617,7 @@ SourceStructureQualityLevel = Literal[
 ]
 SourceTextReadiness = Literal["unknown", "ready", "sparse", "very_sparse", "empty"]
 SourceStructureStrategy = Literal[
+    "codex_directory_v1",
     "epub_navigation",
     "epub_heading",
     "pdf_outline",
@@ -629,12 +630,66 @@ SourceStructureStrategy = Literal[
     "open_notebook_search_only",
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
+SourceChapterMappingStatus = Literal["verified", "partial", "unverified", "unmapped"]
+SourceRangeKind = Literal[
+    "pdf_pages",
+    "epub_spine",
+    "docx_paragraphs",
+    "ppt_slides",
+    "sheet_rows",
+    "text_lines",
+    "dom_anchor",
+    "structured_path",
+]
+SourceCatalogRunStatus = Literal["queued", "running", "succeeded", "failed"]
 SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
 SourceVisualAnchorStatus = Literal["verified", "unverified"]
 SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
 SourceScopeKind = Literal["source", "chapter", "page_range"]
 PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
 AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
+
+
+class SourceRange(BaseModel):
+    """A format-native, inclusive range that can be validated before source reading."""
+
+    kind: SourceRangeKind
+    start: int | str | None = None
+    end: int | str | None = None
+    container: str = ""
+    start_anchor: str = ""
+    end_anchor: str = ""
+    path: list[str] = Field(default_factory=list)
+    display_label: str = ""
+    end_inclusive: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "SourceRange":
+        if not self.end_inclusive:
+            raise ValueError("SourceRange.end must be inclusive.")
+        if self.kind == "pdf_pages":
+            if not isinstance(self.start, int) or isinstance(self.start, bool):
+                raise ValueError("PDF source ranges require an integer start page.")
+            if not isinstance(self.end, int) or isinstance(self.end, bool):
+                raise ValueError("PDF source ranges require an integer end page.")
+            if self.start < 1 or self.end < 1:
+                raise ValueError("PDF source ranges use 1-based physical pages.")
+            if self.end < self.start:
+                raise ValueError("SourceRange.end must not precede SourceRange.start.")
+        elif isinstance(self.start, int) and isinstance(self.end, int) and self.end < self.start:
+            raise ValueError("SourceRange.end must not precede SourceRange.start.")
+        return self
+
+
+class SourceCatalogEvidence(BaseModel):
+    method: str = ""
+    source_locator: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    excerpt: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceStructureQuality(BaseModel):
@@ -811,6 +866,11 @@ class SourceStructure(BaseModel):
     visual_index_status: SourceVisualIndexStatus = "pending"
     visual_index_version: int = 0
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    catalog_version: int = Field(default=0, ge=0)
+    catalog_updated_at: str | None = None
+    source_content_hash: str = ""
+    catalog_schema_version: str = "legacy"
+    catalog_model: str = ""
     error: str = ""
     warnings: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
@@ -836,8 +896,37 @@ class SourceChapter(BaseModel):
     page_start: int | None = None
     page_end: int | None = None
     anchor_status: SourceChapterAnchorStatus = "unverified"
+    range: SourceRange | None = None
+    mapping_status: SourceChapterMappingStatus = "unverified"
+    source_content_hash: str = ""
+    catalog_evidence: list[SourceCatalogEvidence] = Field(default_factory=list)
+    catalog_version: int = Field(default=0, ge=0)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     excerpt: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceCatalogRun(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("catalogrun"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    status: SourceCatalogRunStatus = "queued"
+    catalog_version: int = Field(default=0, ge=0)
+    model: str = ""
+    turn_count: int = Field(default=0, ge=0)
+    page_count: int = Field(default=0, ge=0)
+    inspected_page_count: int = Field(default=0, ge=0)
+    ocr_page_count: int = Field(default=0, ge=0)
+    chapter_count: int = Field(default=0, ge=0)
+    verified_chapter_count: int = Field(default=0, ge=0)
+    verification_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    duration_ms: int = Field(default=0, ge=0)
+    stage_history: list[str] = Field(default_factory=list)
+    error: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    completed_at: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -930,6 +1019,41 @@ class SourceStructureView(BaseModel):
     chapters: list[SourceChapter] = Field(default_factory=list)
     chunks: list[SourceChunk] = Field(default_factory=list)
     visuals: list[SourceVisualAsset] = Field(default_factory=list)
+
+
+class SourceCatalogSourceSummary(BaseModel):
+    id: str
+    title: str
+    file_name: str = ""
+    mime_type: str = ""
+    size_bytes: int = 0
+    status: SourceIngestionStatus = "queued"
+    structure_status: SourceStructureStatus = "pending"
+
+
+class SourceCatalogView(BaseModel):
+    source: SourceCatalogSourceSummary
+    structure_id: str | None = None
+    status: SourceStructureStatus = "pending"
+    strategy: SourceStructureStrategy | None = None
+    has_verified_toc: bool = False
+    catalog_version: int = Field(default=0, ge=0)
+    catalog_updated_at: str | None = None
+    source_content_hash: str = ""
+    catalog_schema_version: str = "legacy"
+    catalog_model: str = ""
+    chapter_count: int = Field(default=0, ge=0)
+    verified_chapter_count: int = Field(default=0, ge=0)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    quality: SourceStructureQuality = Field(default_factory=SourceStructureQuality)
+    error: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    chapters: list[SourceChapter] = Field(default_factory=list)
+
+
+class SourceCatalogBatchView(BaseModel):
+    package_id: str
+    catalogs: list[SourceCatalogView] = Field(default_factory=list)
 
 
 class EvidenceBundle(BaseModel):
@@ -1025,6 +1149,9 @@ class SelectionRef(BaseModel):
     source_locator: str = ""
     source_page_start: int | None = None
     source_page_end: int | None = None
+    source_range: SourceRange | None = None
+    catalog_version: int | None = Field(default=None, ge=0)
+    source_content_hash: str | None = None
     source_scope_kind: SourceScopeKind = "chapter"
 
 

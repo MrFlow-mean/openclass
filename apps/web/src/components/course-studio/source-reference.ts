@@ -1,4 +1,10 @@
-import type { SelectionRef, SourceChapter, SourceIngestionRecord } from "@/types";
+import type {
+  SelectionRef,
+  SourceCatalogView,
+  SourceChapter,
+  SourceIngestionRecord,
+  SourceRange,
+} from "@/types";
 
 export function createOpenNotebookSourceSelection(source: SourceIngestionRecord): SelectionRef {
   return {
@@ -11,13 +17,24 @@ export function createOpenNotebookSourceSelection(source: SourceIngestionRecord)
   };
 }
 
-export function createSourceChapterSelection(source: SourceIngestionRecord, chapter: SourceChapter): SelectionRef {
+export function createSourceChapterSelection(
+  source: SourceIngestionRecord,
+  chapter: SourceChapter,
+  catalog?: SourceCatalogView | null
+): SelectionRef {
   const chapterLabel = sourceChapterLabel(chapter);
   const path = chapter.path.length ? chapter.path.join(" > ") : chapterLabel;
-  const pageRange = sourceChapterPageRange(chapter);
+  const sourceRange = sourceChapterRange(chapter);
+  const rangeLabel = sourceRange?.display_label || sourceChapterPageRange(chapter);
+  const pdfStart = sourceRange?.kind === "pdf_pages" && typeof sourceRange.start === "number"
+    ? sourceRange.start
+    : chapter.page_start;
+  const pdfEnd = sourceRange?.kind === "pdf_pages" && typeof sourceRange.end === "number"
+    ? sourceRange.end
+    : chapter.page_end;
   return {
     kind: "source",
-    excerpt: [`《${source.title}》`, path, pageRange].filter(Boolean).join(" · "),
+    excerpt: [`《${source.title}》`, path, rangeLabel].filter(Boolean).join(" · "),
     heading_path: chapter.path,
     source_ingestion_id: source.id,
     source_title: source.title,
@@ -25,11 +42,42 @@ export function createSourceChapterSelection(source: SourceIngestionRecord, chap
     source_chapter_id: chapter.id,
     source_chapter_number: chapter.number,
     source_chapter_title: chapter.title,
-    source_page_range: pageRange,
+    source_page_range: rangeLabel,
     source_locator: chapter.source_locator,
-    source_page_start: chapter.page_start,
-    source_page_end: chapter.page_end,
+    source_page_start: pdfStart,
+    source_page_end: pdfEnd,
     source_scope_kind: "chapter",
+    source_range: sourceRange,
+    catalog_version: chapter.catalog_version ?? catalog?.catalog_version ?? null,
+    source_content_hash: chapter.source_content_hash || catalog?.source_content_hash || "",
+  };
+}
+
+export function sourceChapterRange(chapter: SourceChapter): SourceRange | null {
+  if (chapter.range) {
+    return chapter.range;
+  }
+  if (chapter.page_start == null) {
+    return null;
+  }
+  const inclusiveEnd = Math.max(
+    chapter.page_start,
+    (chapter.page_end ?? chapter.page_start + 1) - 1
+  );
+  return {
+    kind: "pdf_pages",
+    start: chapter.page_start,
+    end: inclusiveEnd,
+    container: "",
+    start_anchor: "",
+    end_anchor: "",
+    path: chapter.path,
+    display_label:
+      inclusiveEnd === chapter.page_start
+        ? `p. ${chapter.page_start}`
+        : `pp. ${chapter.page_start}-${inclusiveEnd}`,
+    end_inclusive: true,
+    metadata: { compatibility_source: "legacy_exclusive_page_end" },
   };
 }
 
@@ -46,6 +94,9 @@ export function sourceChapterLabel(chapter: SourceChapter) {
 }
 
 function sourceChapterPageRange(chapter: SourceChapter) {
+  if (chapter.range?.display_label) {
+    return chapter.range.display_label;
+  }
   if (chapter.page_start == null) {
     return "";
   }

@@ -19,6 +19,9 @@ import type {
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
+  AIModelSelection,
+  SourceCatalogBatchView,
+  SourceCatalogView,
   SourceIngestionRecord,
   SourceContentView,
   SourceStructureView,
@@ -589,9 +592,26 @@ export const api = {
       method: "POST",
     });
   },
+  getPackageSourceCatalogs(packageId: string) {
+    return request<SourceCatalogBatchView>(`/api/packages/${packageId}/sources/catalogs`);
+  },
+  getPackageSourceCatalog(packageId: string, sourceId: string) {
+    return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog`);
+  },
+  rebuildPackageSourceCatalog(packageId: string, sourceId: string) {
+    return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog/rebuild`, {
+      method: "POST",
+    });
+  },
   async importPackageSource(
     packageId: string,
-    payload: { file?: File | null; sourceUri?: string; text?: string; title?: string },
+    payload: {
+      file?: File | null;
+      sourceUri?: string;
+      text?: string;
+      title?: string;
+      catalogModel?: AIModelSelection | null;
+    },
     options: { onUploadProgress?: (progress: number) => void } = {}
   ) {
     const formData = new FormData();
@@ -606,6 +626,9 @@ export const api = {
     }
     if (payload.title) {
       formData.append("title", payload.title);
+    }
+    if (payload.catalogModel) {
+      formData.append("catalog_model", JSON.stringify(payload.catalogModel));
     }
     if (payload.file && typeof XMLHttpRequest !== "undefined") {
       return new Promise<SourceIngestionRecord>((resolve, reject) => {

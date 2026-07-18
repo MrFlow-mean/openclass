@@ -1,17 +1,22 @@
 "use client";
 
 import clsx from "clsx";
-import { BookOpen, Check, ChevronDown, ChevronRight, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
+import { BookOpen, Check, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { SourceBatchControls } from "@/components/course-studio/source-batch-controls";
+import { SourceChapterTree } from "@/components/course-studio/source-chapter-tree";
+import {
+  findModelOption,
+  modelOptionKey,
+  selectionForModelOption,
+} from "@/components/course-studio/model-catalog";
 import {
   createOpenNotebookSourceSelection,
-  createSourceChapterSelection,
-  sourceChapterLabel,
 } from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
+  isDirectoryCatalogSource,
   SourceProcessingProgress,
 } from "@/components/course-studio/source-processing-progress";
 import {
@@ -23,18 +28,23 @@ import {
 } from "@/components/course-studio/source-structure-quality";
 import { api } from "@/lib/api";
 import { useSourceBatchManagement } from "@/hooks/course-studio/use-source-batch-management";
-import type { SelectionRef, SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
+import type { SourceCatalogCacheController } from "@/hooks/course-studio/use-source-catalog-cache";
+import type {
+  AIModelOption,
+  AIModelSelection,
+  SelectionRef,
+  SourceCatalogView,
+  SourceIngestionRecord,
+} from "@/types";
 
 type SourceImportPanelProps = {
   packageId: string;
+  catalogCache: SourceCatalogCacheController;
+  catalogModelOptions: AIModelOption[];
+  defaultCatalogModel: AIModelSelection;
   disabled?: boolean;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
-};
-
-type ChapterTreeNode = {
-  chapter: SourceChapter;
-  children: ChapterTreeNode[];
 };
 
 const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
@@ -53,7 +63,15 @@ function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
 
-export function SourceImportPanel({ packageId, disabled = false, onError, onSourceReference }: SourceImportPanelProps) {
+export function SourceImportPanel({
+  packageId,
+  catalogCache,
+  catalogModelOptions,
+  defaultCatalogModel,
+  disabled = false,
+  onError,
+  onSourceReference,
+}: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
   const [pastedText, setPastedText] = useState("");
@@ -63,8 +81,16 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [removingSourceId, setRemovingSourceId] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [catalogModelOverride, setCatalogModelOverride] = useState<AIModelSelection | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
+  const {
+    ensureCurrentSource,
+    invalidateSource,
+    invalidateSources,
+    prefetchPackage,
+    putCatalog,
+  } = catalogCache;
   const batchManagement = useSourceBatchManagement({
     packageId,
     sourceIds: sources.map((source) => source.id),
@@ -72,9 +98,36 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
     onRemoved: (sourceIds) => {
       const removedIds = new Set(sourceIds);
       setSources((current) => current.filter((source) => !removedIds.has(source.id)));
+      invalidateSources(sourceIds);
     },
     onError,
   });
+  const overriddenCatalogModelOption = findModelOption(catalogModelOptions, catalogModelOverride);
+  const configuredDefaultCatalogModelOption = findModelOption(catalogModelOptions, defaultCatalogModel);
+  const defaultCatalogModelOption = configuredDefaultCatalogModelOption?.enabled
+    ? configuredDefaultCatalogModelOption
+    : catalogModelOptions.find((option) => option.enabled) ?? configuredDefaultCatalogModelOption;
+  const selectedCatalogModelOption = overriddenCatalogModelOption?.enabled
+    ? overriddenCatalogModelOption
+    : defaultCatalogModelOption;
+  const catalogModel = selectedCatalogModelOption
+    ? selectionForModelOption(
+        selectedCatalogModelOption,
+        overriddenCatalogModelOption?.enabled ? catalogModelOverride : defaultCatalogModel
+      )
+    : defaultCatalogModel;
+
+  useEffect(() => {
+    let active = true;
+    void prefetchPackage(packageId).catch((error) => {
+      if (active) {
+        onError(error instanceof Error ? error.message : "资料目录读取失败");
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [onError, packageId, prefetchPackage]);
 
   const refreshSources = useCallback(async () => {
     if (!packageId) {
@@ -106,6 +159,23 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
     }, 3000);
     return () => window.clearInterval(intervalId);
   }, [disabled, refreshSources, sources]);
+
+  useEffect(() => {
+    if (!catalogCache.prefetchedPackageIds.has(packageId)) {
+      return;
+    }
+    let active = true;
+    void Promise.all(sources.map((source) => ensureCurrentSource(packageId, source))).catch(
+      (error) => {
+        if (active) {
+          onError(error instanceof Error ? error.message : "资料目录更新失败");
+        }
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [catalogCache.prefetchedPackageIds, ensureCurrentSource, onError, packageId, sources]);
 
   async function submitUrl() {
     const uri = sourceUri.trim();
@@ -142,6 +212,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
             {
               file,
               title: fileList.length === 1 ? title.trim() : "",
+              catalogModel: selectedCatalogModelOption?.enabled ? catalogModel : null,
             },
             {
               onUploadProgress: (fileProgress) => {
@@ -195,6 +266,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
     try {
       await api.deletePackageSource(packageId, sourceId);
       setSources((current) => current.filter((source) => source.id !== sourceId));
+      invalidateSource(sourceId);
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料移除失败");
     } finally {
@@ -261,7 +333,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
       className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
     >
       <UploadCloud className="h-3.5 w-3.5" />
-      {isImporting ? "解析中" : isDragActive ? "松开上传" : "上传资料"}
+      {isImporting ? "处理中" : isDragActive ? "松开上传" : "上传资料"}
     </button>
   );
 
@@ -276,6 +348,32 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
           className="mt-2 h-9 w-full rounded-md border border-gray-200 px-3 text-sm outline-none transition focus:border-black"
           disabled={disabled || isImporting}
         />
+        <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">
+          目录提取模型
+        </label>
+        <select
+          value={selectedCatalogModelOption ? modelOptionKey(selectedCatalogModelOption) : ""}
+          onChange={(event) => {
+            const option = catalogModelOptions.find(
+              (candidate) => modelOptionKey(candidate) === event.target.value
+            );
+            if (option?.enabled) {
+              setCatalogModelOverride(selectionForModelOption(option, catalogModel));
+            }
+          }}
+          disabled={disabled || isImporting || !catalogModelOptions.some((option) => option.enabled)}
+          className="mt-2 h-9 w-full rounded-md border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
+          aria-label="目录提取模型"
+        >
+          {catalogModelOptions.map((option) => (
+            <option key={modelOptionKey(option)} value={modelOptionKey(option)} disabled={!option.enabled}>
+              {option.label}{option.enabled ? "" : "（未配置）"}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-[11px] leading-5 text-gray-400">
+          仅用于上传后建立目录；后续按章阅读使用聊天框当前模型。
+        </p>
         <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">URL</label>
         <div className="mt-2 flex gap-2">
           <input
@@ -320,6 +418,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
         <div className="mt-3 flex items-center justify-end">
           <input
             ref={fileInputRef}
+            data-testid="source-file-input"
             type="file"
             multiple
             accept=".pdf,.epub,.docx,.pptx,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.json,.xml,.png,.jpg,.jpeg,.webp,.gif,.mp3,.m4a,.wav,.ogg,.mp4,.mov,.webm,.mpeg,application/pdf,application/epub+zip,text/*,image/*,audio/*,video/*,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -391,6 +490,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
                 key={source.id}
                 packageId={packageId}
                 source={source}
+                catalog={catalogCache.catalogsBySourceId.get(source.id) ?? null}
+                isCatalogLoading={
+                  catalogCache.prefetchingPackageIds.has(packageId) ||
+                  catalogCache.loadingSourceIds.has(source.id)
+                }
                 isRemoving={removingSourceId === source.id}
                 onRemove={() => void removeSource(source.id)}
                 selectionMode={batchManagement.isActive}
@@ -404,6 +508,15 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
                     current.map((item) => (item.id === updatedSource.id ? updatedSource : item))
                   )
                 }
+                onCatalogUpdate={(catalog) => {
+                  putCatalog(catalog);
+                  setSources((current) =>
+                    current.map((item) =>
+                      item.id === catalog.source.id ? mergeSourceWithCatalog(item, catalog) : item
+                    )
+                  );
+                }}
+                onCatalogInvalidate={() => invalidateSource(source.id)}
               />
             ))}
           </div>
@@ -435,6 +548,8 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
 function SourceRow({
   packageId,
   source,
+  catalog,
+  isCatalogLoading,
   isRemoving,
   onRemove,
   selectionMode,
@@ -444,9 +559,13 @@ function SourceRow({
   onError,
   onSourceReference,
   onSourceUpdate,
+  onCatalogUpdate,
+  onCatalogInvalidate,
 }: {
   packageId: string;
   source: SourceIngestionRecord;
+  catalog: SourceCatalogView | null;
+  isCatalogLoading: boolean;
   isRemoving: boolean;
   onRemove: () => void;
   selectionMode: boolean;
@@ -456,10 +575,10 @@ function SourceRow({
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
   onSourceUpdate: (source: SourceIngestionRecord) => void;
+  onCatalogUpdate: (catalog: SourceCatalogView) => void;
+  onCatalogInvalidate: () => void;
 }) {
-  const [structureView, setStructureView] = useState<SourceStructureView | null>(null);
   const [isStructureOpen, setIsStructureOpen] = useState(false);
-  const [isLoadingStructure, setIsLoadingStructure] = useState(false);
   const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -475,7 +594,7 @@ function SourceRow({
   const isFailed = source.status === "failed";
   const isOpenNotebookManaged = metadataString(source, "source_processing_owner") === "open_notebook";
   const sourceQuality = source.structure_quality;
-  const viewQuality = structureView?.structure?.quality;
+  const viewQuality = catalog?.quality;
   const structureQuality =
     viewQuality?.level && viewQuality.level !== "unassessed"
       ? viewQuality
@@ -493,26 +612,11 @@ function SourceRow({
   );
   const processingState = getSourceProcessingState(source);
 
-  async function toggleStructure() {
+  function toggleStructure() {
     if (!isReady) {
       return;
     }
-    const nextOpen = !isStructureOpen;
-    setIsStructureOpen(nextOpen);
-    if (!nextOpen || structureView || isLoadingStructure) {
-      return;
-    }
-    setIsLoadingStructure(true);
-    try {
-      const view = await api.getPackageSourceStructure(packageId, source.id);
-      setStructureView(view);
-      setExpandedChapterIds(new Set());
-      onSourceUpdate(view.source);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "资料结构读取失败");
-    } finally {
-      setIsLoadingStructure(false);
-    }
+    setIsStructureOpen((current) => !current);
   }
 
   async function rebuildStructure() {
@@ -521,11 +625,19 @@ function SourceRow({
     }
     setIsRebuildingStructure(true);
     try {
-      const view = await api.rebuildPackageSourceStructure(packageId, source.id);
-      setStructureView(view);
+      const usesDirectoryCatalog =
+        isDirectoryCatalogSource(source) ||
+        catalog?.strategy === "codex_directory_v1" ||
+        catalog?.catalog_schema_version === "codex_directory_v1";
+      if (usesDirectoryCatalog) {
+        onCatalogUpdate(await api.rebuildPackageSourceCatalog(packageId, source.id));
+      } else {
+        const legacyView = await api.rebuildPackageSourceStructure(packageId, source.id);
+        onSourceUpdate(legacyView.source);
+        onCatalogUpdate(await api.getPackageSourceCatalog(packageId, source.id));
+      }
       setIsStructureOpen(true);
       setExpandedChapterIds(new Set());
-      onSourceUpdate(view.source);
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料目录重建失败");
     } finally {
@@ -539,6 +651,7 @@ function SourceRow({
     }
     setIsRetrying(true);
     try {
+      onCatalogInvalidate();
       onSourceUpdate(await api.retryPackageSource(packageId, source.id));
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料重试失败");
@@ -590,7 +703,7 @@ function SourceRow({
       const result = await api.updatePackageSourceContent(packageId, source.id, nextContent);
       setContent(result.content);
       setDraftContent(result.content);
-      setStructureView(null);
+      onCatalogInvalidate();
       setExpandedChapterIds(new Set());
       setIsEditingContent(false);
       onSourceUpdate(result.source);
@@ -615,7 +728,7 @@ function SourceRow({
     }
   }
 
-  const chapterTree = buildChapterTree(structureView?.chapters ?? []);
+  const hasChapters = Boolean(catalog?.chapters.length);
   function toggleChapter(chapterId: string) {
     setExpandedChapterIds((current) => {
       const next = new Set(current);
@@ -697,7 +810,9 @@ function SourceRow({
                     : "bg-gray-100 text-gray-600"
                 )}
               >
-                {STATUS_LABELS[source.status]}
+                {source.status === "indexing" && isDirectoryCatalogSource(source)
+                  ? "建目录"
+                  : STATUS_LABELS[source.status]}
               </span>
               {isReady ? (
                 <span
@@ -760,8 +875,7 @@ function SourceRow({
               {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
-                  onClick={() => void toggleStructure()}
-                  disabled={isLoadingStructure}
+                  onClick={toggleStructure}
                   className={clsx(
                     "flex min-w-10 flex-col items-center justify-center gap-0.5 rounded-md border border-transparent px-1 py-1 text-[10px] leading-none transition disabled:cursor-not-allowed disabled:opacity-50",
                     source.structure_has_verified_toc
@@ -771,7 +885,7 @@ function SourceRow({
                   title={source.structure_has_verified_toc ? "查看目录" : "查看目录状态"}
                   aria-label={`${source.structure_has_verified_toc ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
                 >
-                  {isLoadingStructure ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
+                  {isCatalogLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
                   <span>{isStructureOpen ? "收起" : "展开"}</span>
                 </button>
               ) : null}
@@ -864,7 +978,7 @@ function SourceRow({
               <SourceStructureQualitySummary
                 source={source}
                 quality={structureQuality}
-                warnings={structureView?.structure?.warnings}
+                warnings={catalog?.warnings}
               />
               <div className="mb-1 mt-2 flex justify-end">
                 <button
@@ -878,18 +992,18 @@ function SourceRow({
                   <RefreshCw className={clsx("h-3.5 w-3.5", isRebuildingStructure && "animate-spin")} />
                 </button>
               </div>
-              {isLoadingStructure ? (
+              {isCatalogLoading ? (
                 <p className="text-xs leading-5 text-gray-600">正在读取目录…</p>
-              ) : chapterTree.length ? (
+              ) : catalog && hasChapters ? (
                 <SourceChapterTree
                   source={source}
-                  nodes={chapterTree}
+                  catalog={catalog}
                   expandedIds={expandedChapterIds}
                   onToggle={toggleChapter}
                   onSourceReference={onSourceReference}
                 />
               ) : (
-                <SourceStructureEmptyState source={source} structureView={structureView} />
+                <SourceStructureEmptyState source={source} catalog={catalog} />
               )}
             </div>
           ) : null}
@@ -901,176 +1015,36 @@ function SourceRow({
 
 function SourceStructureEmptyState({
   source,
-  structureView,
+  catalog,
 }: {
   source: SourceIngestionRecord;
-  structureView: SourceStructureView | null;
+  catalog: SourceCatalogView | null;
 }) {
-  const structure = structureView?.structure;
-  const isWebUrl = source.source_type === "web_url";
-  const hasLocalSnapshot = Boolean(metadataString(source, "local_source_path"));
-  const isRemoteOnlyWebUrl = isWebUrl && !hasLocalSnapshot;
-  const quality = structure?.quality ?? source.structure_quality;
-  const hasNoIndexedBody =
-    source.structure_status === "linear_only" && structure?.chunk_count === 0;
+  const status = catalog?.status ?? source.structure_status;
   const message =
-    quality?.text_readiness === "empty" || hasNoIndexedBody
-      ? "这份资料没有提取到可检索正文，目录引用和全文检索当前都不可用。请检查文件文字层或 OCR 结果后重建。"
-      : source.structure_status === "failed"
-      ? source.structure_error || structure?.error || "目录结构索引失败。"
-      : source.structure_status === "linear_only"
-      ? isRemoteOnlyWebUrl
-        ? "这份 URL 资料未形成可验证目录，当前使用 OpenClass 原生全文片段检索。"
-        : "未发现可验证目录，本资料当前只能按全文片段检索。旧上传资料如果没有保存本地原文件，需要重新上传后才能尝试建立目录。"
-      : "目录结构还没有完成，稍后刷新资料状态。";
+    status === "failed"
+      ? catalog?.error || source.structure_error || "目录建立失败。上一个可用目录会继续保留。"
+      : status === "linear_only"
+        ? "未发现可验证的目录节点。可以明确点击重建，但普通展开不会重新处理资料。"
+        : status === "pending" || status === "building"
+          ? "目录正在建立并保存，完成后会自动更新。"
+          : "这份资料当前没有已保存的目录节点。";
   return (
     <p className="text-xs leading-5 text-gray-600">{message}</p>
   );
 }
 
-function SourceChapterTree({
-  source,
-  nodes,
-  expandedIds,
-  onToggle,
-  onSourceReference,
-}: {
-  source: SourceIngestionRecord;
-  nodes: ChapterTreeNode[];
-  expandedIds: Set<string>;
-  onToggle: (chapterId: string) => void;
-  onSourceReference?: (selection: SelectionRef) => void;
-}) {
-  return (
-    <div className="space-y-1">
-      {nodes.map((node) => (
-        <SourceChapterNode
-          key={node.chapter.id}
-          source={source}
-          node={node}
-          expandedIds={expandedIds}
-          onToggle={onToggle}
-          onSourceReference={onSourceReference}
-          depth={0}
-        />
-      ))}
-    </div>
-  );
-}
-
-function SourceChapterNode({
-  source,
-  node,
-  expandedIds,
-  onToggle,
-  onSourceReference,
-  depth,
-}: {
-  source: SourceIngestionRecord;
-  node: ChapterTreeNode;
-  expandedIds: Set<string>;
-  onToggle: (chapterId: string) => void;
-  onSourceReference?: (selection: SelectionRef) => void;
-  depth: number;
-}) {
-  const hasChildren = node.children.length > 0;
-  const isExpanded = expandedIds.has(node.chapter.id);
-  const isVerified = node.chapter.anchor_status === "verified";
-  const title = sourceChapterLabel(node.chapter);
-  return (
-    <div>
-      <div
-        className="group flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-gray-700 transition hover:bg-white"
-        style={{ paddingLeft: `${Math.min(depth, 5) * 12 + 6}px` }}
-      >
-        <button
-          type="button"
-          onClick={() => (hasChildren ? onToggle(node.chapter.id) : undefined)}
-          className={clsx("flex min-w-0 flex-1 items-center gap-1 text-left", !hasChildren && "cursor-default")}
-          title={node.chapter.path.join(" > ") || title}
-        >
-          {hasChildren ? (
-            isExpanded ? (
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-blue-600" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-            )
-          ) : (
-            <span className="h-3.5 w-3.5 shrink-0" />
-          )}
-          <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
-        </button>
-        {!isVerified ? (
-          <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录条目已识别，正文范围尚未验证">
-            正文待验证
-          </span>
-        ) : null}
-        {onSourceReference && isVerified ? (
-          <button
-            type="button"
-            onClick={() => onSourceReference(createSourceChapterSelection(source, node.chapter))}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
-            title="引用到输入框"
-            aria-label={`引用章节到输入框 ${title || "未命名章节"}`}
-          >
-            <TextQuote className="h-4 w-4" />
-          </button>
-        ) : null}
-      </div>
-      {hasChildren && isExpanded ? (
-        <div className="mt-0.5 space-y-0.5">
-          {node.children.map((child) => (
-            <SourceChapterNode
-              key={child.chapter.id}
-              source={source}
-              node={child}
-              expandedIds={expandedIds}
-              onToggle={onToggle}
-              onSourceReference={onSourceReference}
-              depth={depth + 1}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function buildChapterTree(chapters: SourceChapter[]): ChapterTreeNode[] {
-  const sorted = [...chapters].sort((left, right) => left.order_index - right.order_index);
-  if (sorted.some((chapter) => chapter.parent_id)) {
-    const nodeById = new Map(sorted.map((chapter) => [chapter.id, { chapter, children: [] as ChapterTreeNode[] }]));
-    const roots: ChapterTreeNode[] = [];
-    for (const chapter of sorted) {
-      const node = nodeById.get(chapter.id);
-      if (!node) {
-        continue;
-      }
-      const parent = chapter.parent_id ? nodeById.get(chapter.parent_id) : null;
-      if (parent) {
-        parent.children.push(node);
-      } else {
-        roots.push(node);
-      }
-    }
-    return roots;
-  }
-  const roots: ChapterTreeNode[] = [];
-  const stack: ChapterTreeNode[] = [];
-  for (const chapter of sorted) {
-    const node: ChapterTreeNode = { chapter, children: [] };
-    while (stack.length && stack[stack.length - 1].chapter.level >= chapter.level) {
-      stack.pop();
-    }
-    const parent = stack[stack.length - 1];
-    if (parent) {
-      parent.children.push(node);
-    } else {
-      roots.push(node);
-    }
-    stack.push(node);
-  }
-  return roots;
+function mergeSourceWithCatalog(source: SourceIngestionRecord, catalog: SourceCatalogView): SourceIngestionRecord {
+  return {
+    ...source,
+    ...catalog.source,
+    structure_status: catalog.status,
+    structure_strategy: catalog.strategy,
+    structure_has_verified_toc: catalog.has_verified_toc,
+    structure_quality: catalog.quality,
+    structure_error: catalog.error,
+    structure_updated_at: catalog.catalog_updated_at,
+  };
 }
 
 function sourceNeedsRefresh(source: SourceIngestionRecord) {

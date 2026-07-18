@@ -12,6 +12,7 @@ import type {
   Lesson,
   SelectionRef,
   SectionTeachingProgress,
+  SourceRange,
 } from "@/types";
 
 export type ChatMessage = CourseChatMessageView;
@@ -132,6 +133,42 @@ function isDisplayableAssistantContent(content: string | null): content is strin
   return !LEGACY_NON_AI_ASSISTANT_PATTERNS.some((pattern) => text.includes(pattern));
 }
 
+function sourceRangeFromMetadata(value: unknown): SourceRange | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const allowedKinds = new Set<SourceRange["kind"]>([
+    "pdf_pages",
+    "epub_spine",
+    "docx_paragraphs",
+    "ppt_slides",
+    "sheet_rows",
+    "text_lines",
+    "dom_anchor",
+    "structured_path",
+  ]);
+  if (typeof raw.kind !== "string" || !allowedKinds.has(raw.kind as SourceRange["kind"])) {
+    return null;
+  }
+  const scalar = (candidate: unknown) =>
+    typeof candidate === "number" || typeof candidate === "string" ? candidate : null;
+  return {
+    kind: raw.kind as SourceRange["kind"],
+    start: scalar(raw.start),
+    end: scalar(raw.end),
+    container: typeof raw.container === "string" ? raw.container : "",
+    start_anchor: typeof raw.start_anchor === "string" ? raw.start_anchor : "",
+    end_anchor: typeof raw.end_anchor === "string" ? raw.end_anchor : "",
+    path: Array.isArray(raw.path) ? raw.path.filter((item): item is string => typeof item === "string") : [],
+    display_label: typeof raw.display_label === "string" ? raw.display_label : "",
+    end_inclusive: true,
+    metadata: raw.metadata && typeof raw.metadata === "object"
+      ? raw.metadata as Record<string, unknown>
+      : {},
+  };
+}
+
 function selectionFromMetadata(value: unknown): SelectionRef | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -163,6 +200,15 @@ function selectionFromMetadata(value: unknown): SelectionRef | null {
     source_locator: typeof raw.source_locator === "string" ? raw.source_locator : "",
     source_page_start: typeof raw.source_page_start === "number" ? raw.source_page_start : null,
     source_page_end: typeof raw.source_page_end === "number" ? raw.source_page_end : null,
+    source_scope_kind:
+      raw.source_scope_kind === "source" ||
+      raw.source_scope_kind === "chapter" ||
+      raw.source_scope_kind === "page_range"
+        ? raw.source_scope_kind
+        : undefined,
+    source_range: sourceRangeFromMetadata(raw.source_range),
+    catalog_version: typeof raw.catalog_version === "number" ? raw.catalog_version : null,
+    source_content_hash: typeof raw.source_content_hash === "string" ? raw.source_content_hash : "",
   };
 }
 
