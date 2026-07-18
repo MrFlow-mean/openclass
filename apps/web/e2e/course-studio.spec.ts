@@ -553,12 +553,72 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await enterAsGuest(page);
   await createPackageFromHome(page, `目录缓存测试课程包 ${unique}`);
   await createLessonFromEmptyStudio(page, `目录缓存测试页面 ${unique}`);
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error("无法读取测试视口");
+  }
+
+  const chatModelButton = page.getByTestId("codex-model-settings-button");
+  await chatModelButton.click();
+  const chatModelMenu = page.getByTestId("codex-model-settings-menu");
+  await expect(chatModelMenu).toBeVisible();
+  await page.getByTestId("codex-model-model-row").click();
+  const chatModelSubmenu = page.getByTestId("codex-model-model-menu");
+  await expect(chatModelSubmenu).toBeVisible();
+  const chatButtonBox = await chatModelButton.boundingBox();
+  const chatMenuBox = await chatModelMenu.boundingBox();
+  const chatSubmenuBox = await chatModelSubmenu.boundingBox();
+  if (!chatButtonBox || !chatMenuBox || !chatSubmenuBox) {
+    throw new Error("聊天模型菜单未能完成视口定位");
+  }
+  expect(chatMenuBox.y + chatMenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
+  expect(chatSubmenuBox.y + chatSubmenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
+  expect(chatSubmenuBox.x + chatSubmenuBox.width).toBeLessThanOrEqual(viewport.width);
+  await chatModelButton.click();
+  await expect(chatModelMenu).toBeHidden();
+
   await page.getByTitle("展开右侧栏").click();
   await page.getByRole("button", { name: "Sources" }).click();
 
-  await expect(page.getByLabel("目录提取模型")).toHaveValue("openai_codex:gpt-5.6-sol");
-  await page.getByLabel("目录提取推理强度").selectOption("high");
-  await page.getByLabel("目录提取速度").selectOption("priority");
+  const catalogModelButton = page.getByTestId("source-catalog-model-settings-button");
+  const catalogModelMenu = page.getByTestId("source-catalog-model-settings-menu");
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+  );
+  await catalogModelButton.click();
+  await expect(catalogModelMenu).toBeVisible();
+  const triggerBox = await catalogModelButton.boundingBox();
+  const menuBox = await catalogModelMenu.boundingBox();
+  if (!triggerBox || !menuBox) {
+    throw new Error("目录模型菜单未能完成视口定位");
+  }
+  expect(menuBox.y).toBeGreaterThanOrEqual(triggerBox.y + triggerBox.height);
+  expect(menuBox.x).toBeGreaterThanOrEqual(0);
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(viewport.width);
+  expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(viewport.height);
+
+  await page.getByTestId("source-catalog-model-reasoning-row").click();
+  const reasoningMenu = page.getByTestId("source-catalog-model-reasoning-menu");
+  await expect(reasoningMenu).toBeVisible();
+  const reasoningMenuBox = await reasoningMenu.boundingBox();
+  if (!reasoningMenuBox) {
+    throw new Error("目录模型推理强度菜单未能完成视口定位");
+  }
+  expect(reasoningMenuBox.x + reasoningMenuBox.width).toBeLessThanOrEqual(menuBox.x);
+  expect(reasoningMenuBox.x).toBeGreaterThanOrEqual(0);
+  expect(reasoningMenuBox.y + reasoningMenuBox.height).toBeLessThanOrEqual(viewport.height);
+  await reasoningMenu.getByRole("button", { name: "推理强度 高" }).click();
+  await page.getByTestId("source-catalog-model-speed-row").click();
+  await page
+    .getByTestId("source-catalog-model-speed-menu")
+    .getByRole("button", { name: "速度 快速" })
+    .click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+  );
+  await catalogModelButton.click();
+  await expect(catalogModelMenu).toBeHidden();
+  await expect(catalogModelButton).toHaveAttribute("aria-expanded", "false");
 
   await expect.poll(() => batchCatalogRequests).toBe(1);
   await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
@@ -570,8 +630,9 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
 
   await page.getByRole("button", { name: "History" }).click();
   await page.getByRole("button", { name: "Sources" }).click();
-  await expect(page.getByLabel("目录提取推理强度")).toHaveValue("high");
-  await expect(page.getByLabel("目录提取速度")).toHaveValue("priority");
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+  );
   await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
   expect(batchCatalogRequests).toBe(1);
@@ -615,6 +676,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByLabel(`重新建立资料目录 ${sourceTitle}`).click();
   await expect.poll(() => rebuildRequests).toBe(1);
   expect(rebuildPostData).toContain('name="catalog_model"');
+  expect(rebuildPostData).toContain('"provider":"openai_codex"');
   expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
   expect(rebuildPostData).toContain('"reasoning_effort":"high"');
   expect(rebuildPostData).toContain('"service_tier":"priority"');
@@ -623,11 +685,26 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect(page.getByRole("button", { name: new RegExp(`^1 重建后章节 ${unique}`) })).toBeVisible();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toHaveCount(0);
 
-  await page.getByLabel("目录提取模型").selectOption("openai_codex:gpt-5.6-luna");
-  await expect(page.getByLabel("目录提取推理强度")).toHaveValue("medium");
-  await expect(page.getByLabel("目录提取推理强度").locator('option[value="high"]')).toHaveCount(0);
-  await expect(page.getByLabel("目录提取速度")).toHaveValue("");
-  await expect(page.getByLabel("目录提取速度")).toBeDisabled();
+  await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-model-row").click();
+  await page
+    .getByTestId("source-catalog-model-model-menu")
+    .getByRole("button", { name: "选择模型 5.6 Luna" })
+    .click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Luna，推理强度 中，速度 标准/
+  );
+  await page.getByTestId("source-catalog-model-reasoning-row").click();
+  await expect(page.getByTestId("source-catalog-model-reasoning-menu")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("source-catalog-model-reasoning-menu")
+      .getByRole("button", { name: "推理强度 高" })
+  ).toHaveCount(0);
+  await page.getByTestId("source-catalog-model-reasoning-row").click();
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toBeDisabled();
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toContainText("仅标准");
+  await catalogModelButton.click();
 
   await page.getByTestId("source-file-input").setInputFiles({
     name: `catalog-model-${unique}.pdf`,
@@ -640,9 +717,27 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(uploadPostData).toContain('"reasoning_effort":"medium"');
   expect(uploadPostData).toContain('"service_tier":null');
 
-  await page.getByLabel("目录提取模型").selectOption("openai_codex:catalog-default-only");
-  await expect(page.getByLabel("目录提取推理强度")).toHaveValue("");
-  await expect(page.getByLabel("目录提取推理强度")).toBeDisabled();
+  await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-model-row").click();
+  await page
+    .getByTestId("source-catalog-model-model-menu")
+    .getByRole("button", { name: "选择模型 Default only test model" })
+    .click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 Default only test model，推理强度 默认，速度 标准/
+  );
+  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toBeDisabled();
+  await page.getByTestId("source-catalog-model-reset-button").click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+  );
+  await catalogModelButton.click();
+  await expect(catalogModelMenu).toBeHidden();
+  await page.getByRole("button", { name: "History" }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+  );
 });
 
 test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {

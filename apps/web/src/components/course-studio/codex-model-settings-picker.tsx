@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { Check, ChevronDown, ChevronRight, RotateCcw, Zap } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   modelOptionKey,
@@ -15,6 +16,16 @@ import type {
 } from "@/types";
 
 type SettingsMenu = "model" | "reasoning" | "speed" | null;
+type MenuPlacement = "above" | "below";
+type SubmenuSide = "left" | "right";
+type MenuPosition = { left: number; top: number };
+
+const MENU_GAP = 8;
+const VIEWPORT_PADDING = 8;
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
 
 const REASONING_EFFORT_LABELS: Record<string, string> = {
   none: "无",
@@ -59,17 +70,20 @@ function SettingsRow({
   value,
   active,
   disabled = false,
+  testId,
   onClick,
 }: {
   label: string;
   value: string;
   active: boolean;
   disabled?: boolean;
+  testId?: string;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       aria-expanded={active}
       disabled={disabled}
       onClick={onClick}
@@ -105,6 +119,7 @@ function OptionButton({
     <button
       type="button"
       aria-label={ariaLabel}
+      aria-pressed={selected}
       disabled={disabled}
       onClick={onClick}
       className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-gray-900 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
@@ -126,6 +141,11 @@ export function CodexModelSettingsPicker({
   defaultSelection,
   options,
   onChange,
+  disabled = false,
+  contextLabel = "模型设置",
+  testIdPrefix = "codex-model",
+  preferredPlacement = "above",
+  preferredSubmenuSide = "right",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -134,8 +154,18 @@ export function CodexModelSettingsPicker({
   defaultSelection: AIModelSelection;
   options: AIModelOption[];
   onChange: (selection: AIModelSelection) => void;
+  disabled?: boolean;
+  contextLabel?: string;
+  testIdPrefix?: string;
+  preferredPlacement?: MenuPlacement;
+  preferredSubmenuSide?: SubmenuSide;
 }) {
   const [activeMenu, setActiveMenu] = useState<SettingsMenu>(null);
+  const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
+  const [submenuPosition, setSubmenuPosition] = useState<MenuPosition | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const submenuRef = useRef<HTMLDivElement | null>(null);
   const normalizedSelection = selectedOption
     ? selectionForModelOption(selectedOption, selectedModel)
     : selectedModel;
@@ -154,6 +184,9 @@ export function CodexModelSettingsPicker({
   }
 
   function togglePicker() {
+    if (disabled) {
+      return;
+    }
     setActiveMenu(null);
     onOpenChange(!open);
   }
@@ -164,124 +197,269 @@ export function CodexModelSettingsPicker({
     applySelection(defaultOption ? selectionForModelOption(defaultOption, defaultSelection) : defaultSelection);
   }
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+      if (
+        triggerRef.current?.contains(target) ||
+        menuRef.current?.contains(target) ||
+        submenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setActiveMenu(null);
+      onOpenChange(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      setActiveMenu(null);
+      onOpenChange(false);
+      triggerRef.current?.focus();
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onOpenChange, open]);
+
+  useEffect(() => {
+    if (disabled && open) {
+      onOpenChange(false);
+    }
+  }, [disabled, onOpenChange, open]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    let animationFrame = 0;
+    function updatePositions() {
+      const trigger = triggerRef.current;
+      const menu = menuRef.current;
+      if (!trigger || !menu) {
+        return;
+      }
+
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const spaceAbove = triggerRect.top - VIEWPORT_PADDING;
+      const spaceBelow = window.innerHeight - triggerRect.bottom - VIEWPORT_PADDING;
+      const fitsAbove = spaceAbove >= menuRect.height + MENU_GAP;
+      const fitsBelow = spaceBelow >= menuRect.height + MENU_GAP;
+      const placeBelow =
+        preferredPlacement === "below"
+          ? fitsBelow || (!fitsAbove && spaceBelow >= spaceAbove)
+          : !fitsAbove && (fitsBelow || spaceBelow > spaceAbove);
+      const menuLeft = clamp(
+        triggerRect.left,
+        VIEWPORT_PADDING,
+        window.innerWidth - menuRect.width - VIEWPORT_PADDING
+      );
+      const menuTop = clamp(
+        placeBelow
+          ? triggerRect.bottom + MENU_GAP
+          : triggerRect.top - menuRect.height - MENU_GAP,
+        VIEWPORT_PADDING,
+        window.innerHeight - menuRect.height - VIEWPORT_PADDING
+      );
+      setMenuPosition({ left: menuLeft, top: menuTop });
+
+      const submenu = submenuRef.current;
+      if (!submenu) {
+        setSubmenuPosition(null);
+        return;
+      }
+      const submenuRect = submenu.getBoundingClientRect();
+      const leftCandidate = menuLeft - submenuRect.width - MENU_GAP;
+      const rightCandidate = menuLeft + menuRect.width + MENU_GAP;
+      const fitsLeft = leftCandidate >= VIEWPORT_PADDING;
+      const fitsRight = rightCandidate + submenuRect.width <= window.innerWidth - VIEWPORT_PADDING;
+      const placeLeft =
+        preferredSubmenuSide === "left"
+          ? fitsLeft || !fitsRight
+          : !fitsRight && fitsLeft;
+      const submenuLeft = clamp(
+        placeLeft ? leftCandidate : rightCandidate,
+        VIEWPORT_PADDING,
+        window.innerWidth - submenuRect.width - VIEWPORT_PADDING
+      );
+      const submenuTop = clamp(
+        placeBelow
+          ? menuTop
+          : menuTop + menuRect.height - submenuRect.height,
+        VIEWPORT_PADDING,
+        window.innerHeight - submenuRect.height - VIEWPORT_PADDING
+      );
+      setSubmenuPosition({ left: submenuLeft, top: submenuTop });
+    }
+
+    function scheduleUpdate() {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updatePositions);
+    }
+
+    updatePositions();
+    window.addEventListener("resize", scheduleUpdate);
+    window.addEventListener("scroll", scheduleUpdate, true);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate, true);
+    };
+  }, [activeMenu, open, preferredPlacement, preferredSubmenuSide]);
+
+  const menuLayer =
+    open && typeof document !== "undefined"
+      ? createPortal(
+          <>
+            <div
+              ref={menuRef}
+              data-testid={`${testIdPrefix}-settings-menu`}
+              style={{
+                left: menuPosition?.left ?? 0,
+                top: menuPosition?.top ?? 0,
+                visibility: menuPosition ? "visible" : "hidden",
+              }}
+              className="fixed z-[100] w-56 rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
+            >
+              <SettingsRow
+                label="模型"
+                value={modelLabel}
+                active={activeMenu === "model"}
+                testId={`${testIdPrefix}-model-row`}
+                onClick={() => setActiveMenu((current) => (current === "model" ? null : "model"))}
+              />
+              <SettingsRow
+                label="推理强度"
+                value={effortLabel}
+                active={activeMenu === "reasoning"}
+                disabled={!reasoningOptions.length}
+                testId={`${testIdPrefix}-reasoning-row`}
+                onClick={() => setActiveMenu((current) => (current === "reasoning" ? null : "reasoning"))}
+              />
+              <SettingsRow
+                label="速度"
+                value={hasSelectableSpeed ? speedLabel : "仅标准"}
+                active={activeMenu === "speed"}
+                disabled={!hasSelectableSpeed}
+                testId={`${testIdPrefix}-speed-row`}
+                onClick={() => setActiveMenu((current) => (current === "speed" ? null : "speed"))}
+              />
+              <div className="my-1 h-px bg-gray-100" />
+              <button
+                type="button"
+                data-testid={`${testIdPrefix}-reset-button`}
+                onClick={resetDefaults}
+                className="flex h-10 w-full items-center rounded-lg px-2.5 text-left text-sm text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-900"
+              >
+                <span>重置为默认设置</span>
+                <RotateCcw className="ml-auto h-4 w-4" />
+              </button>
+            </div>
+
+            {activeMenu ? (
+              <div
+                ref={submenuRef}
+                data-testid={`${testIdPrefix}-${activeMenu}-menu`}
+                style={{
+                  left: submenuPosition?.left ?? 0,
+                  top: submenuPosition?.top ?? 0,
+                  visibility: submenuPosition ? "visible" : "hidden",
+                }}
+                className="fixed z-[110] max-h-[420px] w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
+              >
+                <p className="px-2.5 pb-1 pt-1.5 text-sm text-gray-400">
+                  {activeMenu === "model" ? "模型" : activeMenu === "reasoning" ? "推理强度" : "速度"}
+                </p>
+
+                {activeMenu === "model"
+                  ? options.map((option) => (
+                      <OptionButton
+                        key={modelOptionKey(option)}
+                        label={shortModelLabel(option, normalizedSelection)}
+                        selected={modelOptionKey(option) === modelSelectionKey(normalizedSelection)}
+                        ariaLabel={`选择模型 ${shortModelLabel(option, normalizedSelection)}`}
+                        disabled={!option.enabled}
+                        onClick={() => applySelection(selectionForModelOption(option, normalizedSelection))}
+                      />
+                    ))
+                  : null}
+
+                {activeMenu === "reasoning"
+                  ? reasoningOptions.map((option) => (
+                      <OptionButton
+                        key={option.reasoning_effort}
+                        label={reasoningEffortLabel(option.reasoning_effort)}
+                        description={reasoningEffortDescription(option)}
+                        selected={option.reasoning_effort === normalizedSelection.reasoning_effort}
+                        ariaLabel={`推理强度 ${reasoningEffortLabel(option.reasoning_effort)}${option.reasoning_effort === "ultra" ? " Ultra" : ""}`}
+                        onClick={() =>
+                          applySelection({
+                            ...normalizedSelection,
+                            reasoning_effort: option.reasoning_effort,
+                          })
+                        }
+                      />
+                    ))
+                  : null}
+
+                {activeMenu === "speed" ? (
+                  <>
+                    <OptionButton
+                      label="标准"
+                      description="默认速度"
+                      selected={!normalizedSelection.service_tier}
+                      ariaLabel="速度 标准"
+                      onClick={() => applySelection({ ...normalizedSelection, service_tier: null })}
+                    />
+                    {serviceTiers.map((option) => (
+                      <OptionButton
+                        key={option.id}
+                        label={serviceTierLabel(option)}
+                        description={serviceTierDescription(option)}
+                        selected={option.id === normalizedSelection.service_tier}
+                        ariaLabel={`速度 ${serviceTierLabel(option)}`}
+                        onClick={() => applySelection({ ...normalizedSelection, service_tier: option.id })}
+                      />
+                    ))}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </>,
+          document.body
+        )
+      : null;
+
   return (
     <div className="relative min-w-0">
       <button
+        ref={triggerRef}
         type="button"
-        data-testid="codex-model-settings-button"
+        data-testid={`${testIdPrefix}-settings-button`}
         aria-expanded={open}
-        aria-label={`模型设置，当前 ${modelLabel}，推理强度 ${effortLabel}，速度 ${speedLabel}`}
+        aria-label={`${contextLabel}，当前 ${modelLabel}，推理强度 ${effortLabel}，速度 ${speedLabel}`}
+        disabled={disabled}
         onClick={togglePicker}
-        className="flex h-10 w-full items-center justify-center gap-1.5 rounded-full bg-gray-100 px-3 text-sm text-gray-900 transition-colors hover:bg-gray-200"
+        className="flex h-10 w-full items-center justify-center gap-1.5 rounded-full bg-gray-100 px-3 text-sm text-gray-900 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-gray-100"
       >
         <Zap className="h-3.5 w-3.5 shrink-0 fill-current" />
         <span className="truncate font-medium">{modelLabel}</span>
         <span className="shrink-0 font-medium text-violet-600">{effortLabel}</span>
         <ChevronDown className={clsx("ml-auto h-4 w-4 shrink-0 text-gray-400 transition-transform", open && "rotate-180")} />
       </button>
-
-      {open ? (
-        <>
-          <div
-            data-testid="codex-model-settings-menu"
-            className="absolute bottom-full left-0 z-40 mb-2 w-56 rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
-          >
-            <SettingsRow
-              label="模型"
-              value={modelLabel}
-              active={activeMenu === "model"}
-              onClick={() => setActiveMenu((current) => (current === "model" ? null : "model"))}
-            />
-            <SettingsRow
-              label="推理强度"
-              value={effortLabel}
-              active={activeMenu === "reasoning"}
-              disabled={!reasoningOptions.length}
-              onClick={() => setActiveMenu((current) => (current === "reasoning" ? null : "reasoning"))}
-            />
-            <SettingsRow
-              label="速度"
-              value={hasSelectableSpeed ? speedLabel : "仅标准"}
-              active={activeMenu === "speed"}
-              disabled={!hasSelectableSpeed}
-              onClick={() => setActiveMenu((current) => (current === "speed" ? null : "speed"))}
-            />
-            <div className="my-1 h-px bg-gray-100" />
-            <button
-              type="button"
-              onClick={resetDefaults}
-              className="flex h-10 w-full items-center rounded-lg px-2.5 text-left text-sm text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-900"
-            >
-              <span>重置为默认设置</span>
-              <RotateCcw className="ml-auto h-4 w-4" />
-            </button>
-          </div>
-
-          {activeMenu ? (
-            <div
-              data-testid={`codex-model-${activeMenu}-menu`}
-              className="absolute bottom-full left-[calc(14rem+0.5rem)] z-50 mb-2 max-h-[420px] w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
-            >
-              <p className="px-2.5 pb-1 pt-1.5 text-sm text-gray-400">
-                {activeMenu === "model" ? "模型" : activeMenu === "reasoning" ? "推理强度" : "速度"}
-              </p>
-
-              {activeMenu === "model"
-                ? options.map((option) => (
-                    <OptionButton
-                      key={modelOptionKey(option)}
-                      label={shortModelLabel(option, normalizedSelection)}
-                      selected={modelOptionKey(option) === modelSelectionKey(normalizedSelection)}
-                      ariaLabel={`选择模型 ${shortModelLabel(option, normalizedSelection)}`}
-                      disabled={!option.enabled}
-                      onClick={() => applySelection(selectionForModelOption(option, normalizedSelection))}
-                    />
-                  ))
-                : null}
-
-              {activeMenu === "reasoning"
-                ? reasoningOptions.map((option) => (
-                    <OptionButton
-                      key={option.reasoning_effort}
-                      label={reasoningEffortLabel(option.reasoning_effort)}
-                      description={reasoningEffortDescription(option)}
-                      selected={option.reasoning_effort === normalizedSelection.reasoning_effort}
-                      ariaLabel={`推理强度 ${reasoningEffortLabel(option.reasoning_effort)}${option.reasoning_effort === "ultra" ? " Ultra" : ""}`}
-                      onClick={() =>
-                        applySelection({
-                          ...normalizedSelection,
-                          reasoning_effort: option.reasoning_effort,
-                        })
-                      }
-                    />
-                  ))
-                : null}
-
-              {activeMenu === "speed" ? (
-                <>
-                  <OptionButton
-                    label="标准"
-                    description="默认速度"
-                    selected={!normalizedSelection.service_tier}
-                    ariaLabel="速度 标准"
-                    onClick={() => applySelection({ ...normalizedSelection, service_tier: null })}
-                  />
-                  {serviceTiers.map((option) => (
-                    <OptionButton
-                      key={option.id}
-                      label={serviceTierLabel(option)}
-                      description={serviceTierDescription(option)}
-                      selected={option.id === normalizedSelection.service_tier}
-                      ariaLabel={`速度 ${serviceTierLabel(option)}`}
-                      onClick={() => applySelection({ ...normalizedSelection, service_tier: option.id })}
-                    />
-                  ))}
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </>
-      ) : null}
+      {menuLayer}
     </div>
   );
 }

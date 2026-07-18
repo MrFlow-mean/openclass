@@ -368,6 +368,7 @@ export function SourceImportPanel({
         <SourceCatalogModelPicker
           options={catalogModelOptions}
           selection={catalogModel}
+          defaultSelection={defaultCatalogModel}
           disabled={disabled || isImporting}
           onChange={updateCatalogModel}
         />
