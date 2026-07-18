@@ -25,8 +25,6 @@ const JOB_PHASE_LABELS: Record<string, string> = {
   parsing: "正在解析正文",
   reading_pages: "正在逐页读取正文",
   mapping_structure: "正在识别目录与正文结构",
-  reviewing_structure: "Codex 正在核对目录与原文",
-  repairing_structure: "正在按审计结果修复目录",
   building_chunks: "正在建立检索片段",
   extracting_visuals: "正在提取图表与图片",
   persisting: "正在保存资料索引",

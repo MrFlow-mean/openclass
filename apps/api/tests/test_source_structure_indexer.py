@@ -29,13 +29,9 @@ from app.services.source_structure_indexer import (
     _chapter_for_chunk,
     _close_chapter_ranges,
     _detected_pdf_toc_pages,
-    _discard_non_monotonic_printed_pages,
     _find_pdf_toc_node_offset,
     _pdf_outline_chapters,
-    _printed_page_offset_from_margins,
-    _proposal_node_title,
     _pdf_structure_ocr_page_limit,
-    _pdf_toc_evidence_pages,
     _pdf_toc_chapters,
     _looks_like_toc_page,
     _parse_toc_line,
@@ -324,44 +320,6 @@ def test_toc_page_detection_stops_before_body_pages() -> None:
     assert [page.page_no for page in _detected_pdf_toc_pages(pages)] == [2, 3]
 
 
-def test_supervision_evidence_expands_stale_toc_metadata_to_continuation_pages() -> None:
-    pages = [
-        PageText(page_no=1, text="Cover"),
-        PageText(
-            page_no=2,
-            text="目录\n第一章 总论……1\n第一节 基础……2\n第二节 后续……4",
-        ),
-        PageText(
-            page_no=3,
-            text="第二章 继续……8\n第一节 更多……8\n第二节 细节……12",
-        ),
-        PageText(page_no=4, text="第一章 总论\n这里是没有目录页码行的正文。"),
-    ]
-
-    evidence = _pdf_toc_evidence_pages(
-        pages,
-        metadata={"toc_page_start": 2, "toc_page_end": 2},
-    )
-
-    assert [page.page_no for page in evidence] == [2, 3]
-
-
-def test_repeated_contents_heading_keeps_english_continuation_page() -> None:
-    pages = [
-        PageText(
-            page_no=2,
-            text="Contents\nChapter 1 Introduction\n1. First topic 1\n2. Second topic 4",
-        ),
-        PageText(
-            page_no=3,
-            text="CONTENTS\nChapter 6 Later material\n1. Another topic 119",
-        ),
-        PageText(page_no=4, text="1. Introduction\nThis is body text."),
-    ]
-
-    assert [page.page_no for page in _detected_pdf_toc_pages(pages)] == [2, 3]
-
-
 def test_layout_toc_splits_columns_before_grouping_rows() -> None:
     layout = OCRPageLayout(
         page_no=2,
@@ -611,141 +569,6 @@ def test_layout_toc_nodes_are_verified_by_printed_page_offset() -> None:
     assert (offset, support) == (2, 2)
     assert [node.physical_page for node in nodes] == [3, 3]
     assert all(node.verified for node in nodes)
-
-
-def test_pdf_margin_page_numbers_recover_offset_when_titles_differ() -> None:
-    pages = [
-        PageText(page_no=3, text="Different body heading\nBody\n1"),
-        PageText(page_no=4, text="Continued body\nBody\n2"),
-        PageText(page_no=5, text="Another different heading\nBody\n3"),
-    ]
-
-    assert _printed_page_offset_from_margins(pages, last_toc_page=2) == (2, 3)
-
-
-def test_pdf_parent_without_page_inherits_first_child_printed_page() -> None:
-    nodes = [
-        pdf_toc_parser.PdfTocNode(
-            title="Chapter 1 Introduction",
-            printed_page=0,
-            toc_page=2,
-            level=1,
-        ),
-        pdf_toc_parser.PdfTocNode(
-            title="1 First topic",
-            printed_page=1,
-            toc_page=2,
-            level=2,
-        ),
-    ]
-    pages = [
-        PageText(page_no=2, text="Contents"),
-        PageText(page_no=3, text="1.1 First topic\nBody\n1"),
-        PageText(page_no=4, text="Body\n2"),
-        PageText(page_no=5, text="Body\n3"),
-    ]
-
-    _verify_pdf_toc_nodes(nodes, pages)
-
-    assert nodes[0].printed_page == 1
-    assert nodes[0].metadata["printed_page_inferred_from_first_child"] is True
-
-
-def test_strong_margin_offset_outranks_distant_same_title_match() -> None:
-    node = pdf_toc_parser.PdfTocNode(
-        title="1 Repeated heading",
-        number="1",
-        printed_page=1,
-        toc_page=2,
-        level=2,
-        metadata={"source": "pdf_codex_toc"},
-    )
-    pages = [
-        PageText(page_no=2, text="Contents"),
-        PageText(page_no=3, text="Different body heading\nBody\n1"),
-        PageText(page_no=4, text="Body\n2"),
-        PageText(page_no=5, text="Body\n3"),
-        PageText(page_no=10, text="1 Repeated heading\nUnrelated later mention\n8"),
-    ]
-
-    offset, support = _verify_pdf_toc_nodes([node], pages)
-
-    assert (offset, support) == (2, 4)
-    assert node.physical_page == 3
-
-
-def test_codex_review_title_is_not_rewritten_by_body_anchor() -> None:
-    original_title = "1.1 Complete source topic"
-    node = pdf_toc_parser.PdfTocNode(
-        title=original_title,
-        number="1.1",
-        printed_page=1,
-        toc_page=2,
-        level=2,
-        metadata={"source": "pdf_codex_toc"},
-    )
-    pages = [
-        PageText(page_no=2, text="Contents"),
-        PageText(page_no=3, text="1.1 Complete source topic revised\nBody\n1"),
-        PageText(page_no=4, text="Body\n2"),
-        PageText(page_no=5, text="Body\n3"),
-    ]
-
-    _verify_pdf_toc_nodes([node], pages)
-
-    assert node.title == original_title
-    assert node.metadata["body_anchor_title"] == "1.1 Complete source topic revised"
-
-
-def test_non_monotonic_ocr_page_is_discarded_within_a_chapter() -> None:
-    nodes = [
-        pdf_toc_parser.PdfTocNode(
-            title="Chapter 4 Identification spaces",
-            number="4",
-            printed_page=0,
-            toc_page=2,
-            level=1,
-        ),
-        pdf_toc_parser.PdfTocNode(
-            title="3 Quotient spaces",
-            number="3",
-            printed_page=72,
-            toc_page=2,
-            level=2,
-        ),
-        pdf_toc_parser.PdfTocNode(
-            title="4 Orbit spaces",
-            number="4",
-            printed_page=7,
-            toc_page=2,
-            level=2,
-        ),
-    ]
-
-    _discard_non_monotonic_printed_pages(nodes)
-
-    assert nodes[2].printed_page == 0
-    assert nodes[2].metadata["discarded_non_monotonic_printed_page"] == 7
-
-
-def test_chapter_relative_body_number_can_anchor_a_toc_section() -> None:
-    node = pdf_toc_parser.PdfTocNode(
-        title="4 Orbit spaces",
-        number="4",
-        printed_page=0,
-        toc_page=2,
-        level=2,
-        metadata={"body_number_candidates": ["4.4"]},
-    )
-
-    assert _find_pdf_toc_node_offset("4.4 Orbit spaces\nBody", node) == 0
-
-
-def test_proposal_title_does_not_duplicate_textual_number_prefix() -> None:
-    assert (
-        _proposal_node_title("Appendix", "Appendix: Generators and relations")
-        == "Appendix: Generators and relations"
-    )
 
 
 def test_layout_toc_infers_a_missing_printed_page_from_body_anchor() -> None:

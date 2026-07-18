@@ -129,9 +129,7 @@ VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
 
 `.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
 
-默认的 `OPENCLASS_SOURCE_BACKEND=open_notebook` 模式恢复为由 Open Notebook 独立负责资料解析、索引、状态同步和范围内搜索。OpenClass 只保存原文件和远端资料身份，不再在默认路径中重复执行本地目录、OCR、视觉索引或 Codex 结构监督；用户引用整份资料后，系统按本轮问题检索 Open Notebook，并把返回片段冻结给板书生成链路。
-
-需要继续试验 OpenClass 本地章节目录、页码边界、视觉证据和 Codex 结构监督时，可显式设置 `OPENCLASS_SOURCE_BACKEND=native`。该模式保留现有高级实现，但不再是默认资料处理路径。
+默认的 `OPENCLASS_SOURCE_BACKEND=native` 使用 OpenClass 本地确定性解析能力建立资料结构；该路径不调用 Codex。需要接入 Open Notebook 时，可显式设置 `OPENCLASS_SOURCE_BACKEND=open_notebook`。
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，Realtime 会通过服务端 sideband（旁路控制通道）调用同一条 Chatbot workflow；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 
