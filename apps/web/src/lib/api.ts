@@ -598,9 +598,18 @@ export const api = {
   getPackageSourceCatalog(packageId: string, sourceId: string) {
     return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog`);
   },
-  rebuildPackageSourceCatalog(packageId: string, sourceId: string) {
+  rebuildPackageSourceCatalog(
+    packageId: string,
+    sourceId: string,
+    catalogModel: AIModelSelection | null = null
+  ) {
+    const formData = new FormData();
+    if (catalogModel) {
+      formData.append("catalog_model", JSON.stringify(catalogModel));
+    }
     return request<SourceCatalogView>(`/api/packages/${packageId}/sources/${sourceId}/catalog/rebuild`, {
       method: "POST",
+      body: formData,
     });
   },
   async importPackageSource(

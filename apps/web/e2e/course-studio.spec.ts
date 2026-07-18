@@ -276,6 +276,58 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
 
 test("prefetches saved catalogs once and sends an authoritative chapter range", async ({ page }) => {
   const unique = Date.now();
+  const solModel = {
+    provider: "openai_codex",
+    model: "gpt-5.6-sol",
+    label: "OpenAI Codex GPT-5.6-Sol",
+    capability: "text",
+    enabled: true,
+    configured: true,
+    default: true,
+    default_reasoning_effort: "low",
+    supported_reasoning_efforts: [
+      { reasoning_effort: "low", description: "" },
+      { reasoning_effort: "high", description: "" },
+    ],
+    default_service_tier: null,
+    service_tiers: [{ id: "priority", name: "Fast", description: "" }],
+  };
+  const lunaModel = {
+    ...solModel,
+    model: "gpt-5.6-luna",
+    label: "OpenAI Codex GPT-5.6-Luna",
+    default: false,
+    default_reasoning_effort: "medium",
+    supported_reasoning_efforts: [{ reasoning_effort: "medium", description: "" }],
+    service_tiers: [],
+  };
+  const defaultOnlyModel = {
+    ...lunaModel,
+    model: "catalog-default-only",
+    label: "OpenAI Codex Default-only test model",
+    default_reasoning_effort: null,
+    supported_reasoning_efforts: [],
+  };
+  await page.unroute("**/api/ai-models");
+  await page.route("**/api/ai-models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: [solModel, lunaModel, defaultOnlyModel],
+        realtime: [],
+        defaults: {
+          text: {
+            provider: solModel.provider,
+            model: solModel.model,
+            reasoning_effort: solModel.default_reasoning_effort,
+            service_tier: null,
+          },
+          realtime: { provider: "openai_codex", model: "realtime-unavailable" },
+        },
+      }),
+    });
+  });
   const sourceId = `catalog-source-${unique}`;
   const sourceTitle = `持久化目录资料 ${unique}`;
   const chapterTitle = `可引用章节 ${unique}`;
@@ -396,6 +448,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   let releaseDelayedSingleCatalog = () => {};
   let submittedSelection: Record<string, unknown> | null = null;
   let uploadPostData = "";
+  let rebuildPostData = "";
 
   // Local product verification can reuse the already-running web build while keeping E2E writes in the isolated API database.
   await page.route("http://127.0.0.1:8000/api/**", async (route) => {
@@ -444,6 +497,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     }
     if (request.method() === "POST" && path.endsWith(`/sources/${sourceId}/catalog/rebuild`)) {
       rebuildRequests += 1;
+      rebuildPostData = request.postData() ?? "";
       const rebuiltCatalog = {
         ...servedCatalog,
         catalog_version: 3 + rebuildRequests,
@@ -502,18 +556,24 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByTitle("展开右侧栏").click();
   await page.getByRole("button", { name: "Sources" }).click();
 
+  await expect(page.getByLabel("目录提取模型")).toHaveValue("openai_codex:gpt-5.6-sol");
+  await page.getByLabel("目录提取推理强度").selectOption("high");
+  await page.getByLabel("目录提取速度").selectOption("priority");
+
   await expect.poll(() => batchCatalogRequests).toBe(1);
   await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
-  await expect(page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true })).toBeVisible();
-  await page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true }).click();
-  await expect(page.getByRole("button", { name: `1.1 ${partialChapterTitle}`, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) }).click();
+  await expect(page.getByRole("button", { name: new RegExp(`^1\\.1 ${partialChapterTitle}`) })).toBeVisible();
   await expect(page.getByRole("button", { name: /引用章节到输入框/ })).toHaveCount(1);
   expect(singleCatalogRequests).toBe(0);
 
   await page.getByRole("button", { name: "History" }).click();
   await page.getByRole("button", { name: "Sources" }).click();
+  await expect(page.getByLabel("目录提取推理强度")).toHaveValue("high");
+  await expect(page.getByLabel("目录提取速度")).toHaveValue("priority");
   await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
-  await expect(page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
   expect(batchCatalogRequests).toBe(1);
   expect(singleCatalogRequests).toBe(0);
 
@@ -554,10 +614,20 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
 
   await page.getByLabel(`重新建立资料目录 ${sourceTitle}`).click();
   await expect.poll(() => rebuildRequests).toBe(1);
+  expect(rebuildPostData).toContain('name="catalog_model"');
+  expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
+  expect(rebuildPostData).toContain('"reasoning_effort":"high"');
+  expect(rebuildPostData).toContain('"service_tier":"priority"');
   releaseDelayedSingleCatalog();
   await expect.poll(() => completedSingleCatalogResponses).toBe(2);
-  await expect(page.getByRole("button", { name: `1 重建后章节 ${unique}`, exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: `1 ${chapterTitle}`, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: new RegExp(`^1 重建后章节 ${unique}`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toHaveCount(0);
+
+  await page.getByLabel("目录提取模型").selectOption("openai_codex:gpt-5.6-luna");
+  await expect(page.getByLabel("目录提取推理强度")).toHaveValue("medium");
+  await expect(page.getByLabel("目录提取推理强度").locator('option[value="high"]')).toHaveCount(0);
+  await expect(page.getByLabel("目录提取速度")).toHaveValue("");
+  await expect(page.getByLabel("目录提取速度")).toBeDisabled();
 
   await page.getByTestId("source-file-input").setInputFiles({
     name: `catalog-model-${unique}.pdf`,
@@ -566,7 +636,13 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   });
   await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
   expect(uploadPostData).toContain('"provider":"openai_codex"');
-  expect(uploadPostData).toContain('"model":"gpt-5.5"');
+  expect(uploadPostData).toContain('"model":"gpt-5.6-luna"');
+  expect(uploadPostData).toContain('"reasoning_effort":"medium"');
+  expect(uploadPostData).toContain('"service_tier":null');
+
+  await page.getByLabel("目录提取模型").selectOption("openai_codex:catalog-default-only");
+  await expect(page.getByLabel("目录提取推理强度")).toHaveValue("");
+  await expect(page.getByLabel("目录提取推理强度")).toBeDisabled();
 });
 
 test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {

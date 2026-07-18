@@ -5,10 +5,13 @@ import { BookOpen, Check, ClipboardPaste, Download, FileText, Globe2, Pencil, Re
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { SourceBatchControls } from "@/components/course-studio/source-batch-controls";
+import { SourceCatalogModelPicker } from "@/components/course-studio/source-catalog-model-picker";
 import { SourceChapterTree } from "@/components/course-studio/source-chapter-tree";
 import {
   findModelOption,
-  modelOptionKey,
+  persistModelSelection,
+  readStoredModelSelection,
+  resolveModelSelection,
   selectionForModelOption,
 } from "@/components/course-studio/model-catalog";
 import {
@@ -58,6 +61,7 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
 
 const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
 const ACTIVE_STRUCTURE_STATUSES = new Set<SourceIngestionRecord["structure_status"]>(["pending", "building"]);
+const CATALOG_MODEL_STORAGE_KEY = "blackboard-ai:selected-catalog-model";
 
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
@@ -81,9 +85,10 @@ export function SourceImportPanel({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [removingSourceId, setRemovingSourceId] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
-  const [catalogModelOverride, setCatalogModelOverride] = useState<AIModelSelection | null>(null);
+  const [catalogModel, setCatalogModel] = useState<AIModelSelection>(defaultCatalogModel);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
+  const didRestoreCatalogModelRef = useRef(false);
   const {
     ensureCurrentSource,
     invalidateSource,
@@ -102,20 +107,32 @@ export function SourceImportPanel({
     },
     onError,
   });
-  const overriddenCatalogModelOption = findModelOption(catalogModelOptions, catalogModelOverride);
-  const configuredDefaultCatalogModelOption = findModelOption(catalogModelOptions, defaultCatalogModel);
-  const defaultCatalogModelOption = configuredDefaultCatalogModelOption?.enabled
-    ? configuredDefaultCatalogModelOption
-    : catalogModelOptions.find((option) => option.enabled) ?? configuredDefaultCatalogModelOption;
-  const selectedCatalogModelOption = overriddenCatalogModelOption?.enabled
-    ? overriddenCatalogModelOption
-    : defaultCatalogModelOption;
-  const catalogModel = selectedCatalogModelOption
-    ? selectionForModelOption(
-        selectedCatalogModelOption,
-        overriddenCatalogModelOption?.enabled ? catalogModelOverride : defaultCatalogModel
+  const selectedCatalogModelOption = findModelOption(catalogModelOptions, catalogModel);
+  const activeCatalogModel = selectedCatalogModelOption?.enabled
+    ? selectionForModelOption(selectedCatalogModelOption, catalogModel)
+    : null;
+
+  useEffect(() => {
+    if (
+      didRestoreCatalogModelRef.current ||
+      !catalogModelOptions.some((option) => option.enabled)
+    ) {
+      return;
+    }
+    didRestoreCatalogModelRef.current = true;
+    setCatalogModel(
+      resolveModelSelection(
+        catalogModelOptions,
+        readStoredModelSelection(CATALOG_MODEL_STORAGE_KEY),
+        defaultCatalogModel
       )
-    : defaultCatalogModel;
+    );
+  }, [catalogModelOptions, defaultCatalogModel]);
+
+  function updateCatalogModel(selection: AIModelSelection) {
+    setCatalogModel(selection);
+    persistModelSelection(CATALOG_MODEL_STORAGE_KEY, selection);
+  }
 
   useEffect(() => {
     let active = true;
@@ -212,7 +229,7 @@ export function SourceImportPanel({
             {
               file,
               title: fileList.length === 1 ? title.trim() : "",
-              catalogModel: selectedCatalogModelOption?.enabled ? catalogModel : null,
+              catalogModel: activeCatalogModel,
             },
             {
               onUploadProgress: (fileProgress) => {
@@ -348,29 +365,12 @@ export function SourceImportPanel({
           className="mt-2 h-9 w-full rounded-md border border-gray-200 px-3 text-sm outline-none transition focus:border-black"
           disabled={disabled || isImporting}
         />
-        <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">
-          目录提取模型
-        </label>
-        <select
-          value={selectedCatalogModelOption ? modelOptionKey(selectedCatalogModelOption) : ""}
-          onChange={(event) => {
-            const option = catalogModelOptions.find(
-              (candidate) => modelOptionKey(candidate) === event.target.value
-            );
-            if (option?.enabled) {
-              setCatalogModelOverride(selectionForModelOption(option, catalogModel));
-            }
-          }}
-          disabled={disabled || isImporting || !catalogModelOptions.some((option) => option.enabled)}
-          className="mt-2 h-9 w-full rounded-md border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
-          aria-label="目录提取模型"
-        >
-          {catalogModelOptions.map((option) => (
-            <option key={modelOptionKey(option)} value={modelOptionKey(option)} disabled={!option.enabled}>
-              {option.label}{option.enabled ? "" : "（未配置）"}
-            </option>
-          ))}
-        </select>
+        <SourceCatalogModelPicker
+          options={catalogModelOptions}
+          selection={catalogModel}
+          disabled={disabled || isImporting}
+          onChange={updateCatalogModel}
+        />
         <p className="mt-1 text-[11px] leading-5 text-gray-400">
           仅用于上传后建立目录；后续按章阅读使用聊天框当前模型。
         </p>
@@ -490,6 +490,7 @@ export function SourceImportPanel({
                 key={source.id}
                 packageId={packageId}
                 source={source}
+                catalogModel={activeCatalogModel}
                 catalog={catalogCache.catalogsBySourceId.get(source.id) ?? null}
                 isCatalogLoading={
                   catalogCache.prefetchingPackageIds.has(packageId) ||
@@ -548,6 +549,7 @@ export function SourceImportPanel({
 function SourceRow({
   packageId,
   source,
+  catalogModel,
   catalog,
   isCatalogLoading,
   isRemoving,
@@ -564,6 +566,7 @@ function SourceRow({
 }: {
   packageId: string;
   source: SourceIngestionRecord;
+  catalogModel: AIModelSelection | null;
   catalog: SourceCatalogView | null;
   isCatalogLoading: boolean;
   isRemoving: boolean;
@@ -634,7 +637,9 @@ function SourceRow({
         catalog?.strategy === "codex_directory_v1" ||
         catalog?.catalog_schema_version === "codex_directory_v1";
       if (usesDirectoryCatalog) {
-        onCatalogUpdate(await api.rebuildPackageSourceCatalog(packageId, source.id));
+        onCatalogUpdate(
+          await api.rebuildPackageSourceCatalog(packageId, source.id, catalogModel)
+        );
       } else {
         const legacyView = await api.rebuildPackageSourceStructure(packageId, source.id);
         onSourceUpdate(legacyView.source);

@@ -129,15 +129,19 @@ export function selectionForModelOption(
   option: AIModelOption,
   current: AIModelSelection | null
 ): AIModelSelection {
-  const reasoningOptions = option.supported_reasoning_efforts ?? [];
-  const supportedEfforts = new Set(reasoningOptions.map((item) => item.reasoning_effort));
+  const reasoningOptions = option.supported_reasoning_efforts;
+  const knownReasoningOptions = reasoningOptions ?? [];
+  const supportedEfforts = new Set(knownReasoningOptions.map((item) => item.reasoning_effort));
   const currentEffort = current?.reasoning_effort?.trim() || null;
   const defaultEffort = option.default_reasoning_effort?.trim() || null;
-  const reasoningEffort =
-    (currentEffort && supportedEfforts.has(currentEffort) ? currentEffort : null) ??
-    (defaultEffort && (!supportedEfforts.size || supportedEfforts.has(defaultEffort)) ? defaultEffort : null) ??
-    reasoningOptions[0]?.reasoning_effort ??
-    (!supportedEfforts.size ? currentEffort : null);
+  const reasoningEffort = reasoningOptions === undefined
+    ? currentEffort ?? defaultEffort
+    : supportedEfforts.size
+      ? (currentEffort && supportedEfforts.has(currentEffort) ? currentEffort : null) ??
+        (defaultEffort && supportedEfforts.has(defaultEffort) ? defaultEffort : null) ??
+        knownReasoningOptions[0]?.reasoning_effort ??
+        null
+      : defaultEffort;
 
   const serviceTiers = option.service_tiers;
   const supportedServiceTiers = new Set((serviceTiers ?? []).map((item) => item.id));
