@@ -3,6 +3,13 @@ import { expect, test, type Page } from "@playwright/test";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8110";
 
 test.beforeEach(async ({ page }) => {
+  await page.route(/^http:\/\/(?:localhost|127\.0\.0\.1):8000\/api\//, async (route) => {
+    const requested = new URL(route.request().url());
+    const configured = new URL(API_BASE_URL);
+    requested.protocol = configured.protocol;
+    requested.host = configured.host;
+    await route.continue({ url: requested.toString() });
+  });
   const textModel = {
     provider: "openai_codex",
     model: "gpt-5.5",
@@ -134,9 +141,6 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
     size_bytes: 1024,
     status: "ready",
     error: "",
-    open_notebook_notebook_id: "",
-    open_notebook_source_id: "",
-    open_notebook_command_id: "",
     structure_status: "linear_only",
     structure_strategy: "linear",
     structure_has_verified_toc: false,
@@ -197,6 +201,167 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await expect.poll(() => deletedSourceIds).toEqual(sourceRecords.map((source) => source.id));
   await expect(page.getByRole("button", { name: "批量管理" })).toHaveCount(0);
   await expect(page.getByText("拖拽文件到这里，或点击上传资料。")).toBeVisible();
+});
+
+test("references an indexed nested source chapter into the chat turn", async ({ page }) => {
+  const unique = Date.now();
+  const sourceId = `catalog-source-${unique}`;
+  const chapterId = `chapter-3-3-1-${unique}`;
+  const sourceTitle = `可交互目录资料 ${unique}`;
+  const now = new Date().toISOString();
+  const source = {
+    id: sourceId,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    title: sourceTitle,
+    source_type: "local_file",
+    source_uri: null,
+    file_name: `${sourceTitle}.pdf`,
+    mime_type: "application/pdf",
+    size_bytes: 4096,
+    status: "ready",
+    error: "",
+    structure_status: "ready",
+    structure_strategy: "codex_catalog",
+    structure_has_verified_toc: true,
+    structure_error: "",
+    structure_updated_at: now,
+    reference_ready: true,
+    source_processing_run_id: `run-${unique}`,
+    source_processing_worker_count: 2,
+    source_processing_completed_worker_count: 2,
+    ingestion_job: null,
+    created_at: now,
+    updated_at: now,
+    metadata: {},
+  };
+  const chapters = [
+    { id: `chapter-3-${unique}`, parent_id: null, number: "3", title: "第三部分", level: 1, path: ["第三部分"], order_index: 0, page_start: 30, page_end: 60 },
+    { id: `chapter-3-3-${unique}`, parent_id: `chapter-3-${unique}`, number: "3.3", title: "专题", level: 2, path: ["第三部分", "专题"], order_index: 1, page_start: 40, page_end: 50 },
+    { id: chapterId, parent_id: `chapter-3-3-${unique}`, number: "3.3.1", title: "目标章节", level: 3, path: ["第三部分", "专题", "目标章节"], order_index: 2, page_start: 42, page_end: 45 },
+  ].map((chapter) => ({
+    ...chapter,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    source_ingestion_id: sourceId,
+    normalized_number: chapter.number,
+    source_locator: `codex:page:${chapter.page_start}`,
+    body_start_offset: chapter.page_start * 100,
+    body_end_offset: chapter.page_end * 100,
+    anchor_status: "verified",
+    confidence: 0.96,
+    excerpt: `${chapter.number} ${chapter.title} 正文`,
+    metadata: {},
+  }));
+
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([source]) });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith(`/sources/${sourceId}/structure`)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          source,
+          structure: {
+            id: `structure-${unique}`,
+            owner_user_id: "guest-test",
+            package_id: "package-test",
+            source_ingestion_id: sourceId,
+            status: "ready",
+            strategy: "codex_catalog",
+            has_verified_toc: true,
+            chapter_count: chapters.length,
+            chunk_count: 3,
+            confidence: 0.96,
+            error: "",
+            warnings: [],
+            created_at: now,
+            updated_at: now,
+            metadata: {},
+          },
+          parts: [
+            {
+              id: `part-body-${unique}`,
+              owner_user_id: "guest-test",
+              package_id: "package-test",
+              source_ingestion_id: sourceId,
+              kind: "body",
+              title: "正文",
+              order_index: 0,
+              source_locator: "pages:20-120",
+              body_start_offset: 2000,
+              body_end_offset: 12000,
+              page_start: 20,
+              page_end: 121,
+              anchor_status: "verified",
+              confidence: 0.98,
+              evidence_page_numbers: [20],
+              metadata: {},
+            },
+          ],
+          chapters,
+          chunks: [],
+          visuals: [],
+          processing_run: {
+            id: `run-${unique}`,
+            source_ingestion_id: sourceId,
+            status: "ready",
+            model: "codex-test",
+            worker_count: 2,
+            completed_worker_count: 2,
+            error: "",
+            created_at: now,
+            updated_at: now,
+            finished_at: now,
+            metadata: {},
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "test stops after inspecting the request" }),
+    });
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `目录引用课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `目录引用页面 ${unique}`);
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await page.getByText("第三部分", { exact: true }).click();
+  await page.getByText("3.3 专题", { exact: true }).click();
+  await page.getByLabel("引用章节到输入框 3.3.1 目标章节").click();
+
+  await expect(page.getByLabel("移除引用")).toBeVisible();
+  await page.getByPlaceholder("基于引用章节继续提问").fill("请根据这一章生成板书");
+  const requestPromise = page.waitForRequest(
+    (request) => request.url().includes("/chat/stream") && request.method() === "POST"
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const request = await requestPromise;
+  const payload = request.postDataJSON() as { selection?: Record<string, unknown> };
+  expect(payload.selection).toMatchObject({
+    kind: "source",
+    source_ingestion_id: sourceId,
+    source_chapter_id: chapterId,
+    source_chapter_number: "3.3.1",
+    source_chapter_title: "目标章节",
+    source_page_start: 42,
+    source_page_end: 45,
+    source_scope_kind: "chapter",
+  });
 });
 
 test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {
@@ -265,9 +430,6 @@ test("references board content into the geometry workspace and renders a generat
         size_bytes: 68,
         status: "queued",
         error: "",
-        open_notebook_notebook_id: "",
-        open_notebook_source_id: "",
-        open_notebook_command_id: "",
         structure_status: "pending",
         structure_strategy: null,
         structure_has_verified_toc: false,
@@ -377,9 +539,6 @@ test("adds images and files from the chat plus menu and includes them in the tur
         size_bytes: 68,
         status: "queued",
         error: "",
-        open_notebook_notebook_id: "",
-        open_notebook_source_id: "",
-        open_notebook_command_id: "",
         structure_status: "pending",
         structure_strategy: null,
         structure_has_verified_toc: false,

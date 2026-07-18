@@ -86,7 +86,7 @@ npm run dev              # 同时启动前后端
 - 前端：http://localhost:3000
 - 后端：http://localhost:8000
 - 健康检查：http://localhost:8000/health
-- Open Notebook（资料处理后端）：默认使用 `http://localhost:5055`；需单独启动其 API 和 worker（任务执行器）
+- 资料编目：使用当前用户已登录的 Codex；无需另启资料处理 sidecar（旁车服务）
 - SQLite 主库：`apps/api/data/openclass.sqlite3`
 - AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`
 
@@ -129,9 +129,9 @@ VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
 
 `.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
 
-默认的 `OPENCLASS_SOURCE_BACKEND=open_notebook` 模式恢复为由 Open Notebook 独立负责资料解析、索引、状态同步和范围内搜索。OpenClass 只保存原文件和远端资料身份，不再在默认路径中重复执行本地目录、OCR、视觉索引或 Codex 结构监督；用户引用整份资料后，系统按本轮问题检索 Open Notebook，并把返回片段冻结给板书生成链路。
+上传资料后，OpenClass 先做确定性的格式解包、文字提取、页码和偏移量记录，再由 SourceCataloger（资料编目角色）执行至少一个 Codex structured turn（结构化回合）。它识别封面、前言、目录、正文、附录和后记等实际存在的篇幅，并输出完整目录候选；大型资料再由多个独立 Codex 按不重叠页段并行核对章节正文锚点。后端验证范围、层级、父子关系和原文证据后一次性发布索引。
 
-需要继续试验 OpenClass 本地章节目录、页码边界、视觉证据和 Codex 结构监督时，可显式设置 `OPENCLASS_SOURCE_BACKEND=native`。该模式保留现有高级实现，但不再是默认资料处理路径。
+Codex 只接收后端准备的受控文字或页图数据包，不获得上传目录或任意文件系统权限，也不直接写 SQLite 或板书。点击目录章节后，前端发送稳定的 `source_chapter_id`，后端据此冻结对应正文 evidence（证据），再通过既有需求冻结和板书生成门禁交给 BoardEditor。`OPENCLASS_SOURCE_CODEX_MAX_WORKERS` 控制单份大型资料的并行 worker（执行者）上限，默认是 3；`OPENCLASS_SOURCE_CODEX_MAX_CONCURRENCY` 控制所有资料任务共享的 Codex 调用上限，默认是 4。
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，Realtime 会通过服务端 sideband（旁路控制通道）调用同一条 Chatbot workflow；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 

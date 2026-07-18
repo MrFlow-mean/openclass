@@ -1,16 +1,5 @@
 import type { SelectionRef, SourceChapter, SourceIngestionRecord } from "@/types";
 
-export function createOpenNotebookSourceSelection(source: SourceIngestionRecord): SelectionRef {
-  return {
-    kind: "source",
-    excerpt: `《${source.title}》`,
-    source_ingestion_id: source.id,
-    source_title: source.title,
-    source_uri: source.source_uri,
-    source_scope_kind: "source",
-  };
-}
-
 export function createSourceChapterSelection(source: SourceIngestionRecord, chapter: SourceChapter): SelectionRef {
   const chapterLabel = sourceChapterLabel(chapter);
   const path = chapter.path.length ? chapter.path.join(" > ") : chapterLabel;

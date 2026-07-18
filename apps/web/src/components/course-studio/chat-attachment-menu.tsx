@@ -13,13 +13,20 @@ const FILE_ACCEPT =
   ".pdf,.epub,.docx,.pptx,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.json,.xml,.png,.jpg,.jpeg,.webp,.gif,.mp3,.m4a,.wav,.ogg,.mp4,.mov,.webm,.mpeg,application/pdf,application/epub+zip,text/*,image/*,audio/*,video/*,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 function attachmentFromSource(source: SourceIngestionRecord): ChatAttachmentRef {
+  const isImage = source.mime_type.startsWith("image/");
+  const status =
+    source.status === "ready" && !source.reference_ready && !isImage
+      ? source.structure_status === "failed" || source.structure_quality?.text_readiness === "empty"
+        ? "failed"
+        : "indexing"
+      : source.status;
   return {
     source_ingestion_id: source.id,
     name: source.file_name || source.title,
     mime_type: source.mime_type || "application/octet-stream",
     size_bytes: source.size_bytes,
-    kind: source.mime_type.startsWith("image/") ? "image" : "file",
-    status: source.status,
+    kind: isImage ? "image" : "file",
+    status,
   };
 }
 

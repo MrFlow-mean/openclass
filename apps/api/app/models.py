@@ -617,6 +617,7 @@ SourceStructureQualityLevel = Literal[
 ]
 SourceTextReadiness = Literal["unknown", "ready", "sparse", "very_sparse", "empty"]
 SourceStructureStrategy = Literal[
+    "codex_catalog",
     "epub_navigation",
     "epub_heading",
     "pdf_outline",
@@ -627,9 +628,49 @@ SourceStructureStrategy = Literal[
     "docx_heading",
     "markdown_heading",
     "linear_text",
-    "open_notebook_search_only",
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
+SourceDocumentPartAnchorStatus = Literal["verified", "unverified"]
+SourceDocumentPartKind = Literal[
+    "front_cover",
+    "half_title",
+    "title_page",
+    "copyright",
+    "dedication",
+    "foreword",
+    "preface",
+    "introduction",
+    "acknowledgements",
+    "table_of_contents",
+    "list_of_figures",
+    "list_of_tables",
+    "body",
+    "epilogue",
+    "afterword",
+    "appendix",
+    "notes",
+    "glossary",
+    "bibliography",
+    "index",
+    "colophon",
+    "back_cover",
+    "unknown",
+]
+SourceCodexRunStatus = Literal[
+    "preparing_input",
+    "coordinator_running",
+    "workers_running",
+    "merging",
+    "validating",
+    "publishing",
+    "ready",
+    "blocked_codex_auth",
+    "retryable_failed",
+    "failed",
+    "cancelled",
+    "superseded",
+]
+SourceCodexTaskRole = Literal["coordinator", "worker"]
 SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
 SourceVisualAnchorStatus = Literal["verified", "unverified"]
 SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
@@ -768,6 +809,10 @@ class SourceIngestionRecord(BaseModel):
     structure_quality: SourceStructureQuality = Field(default_factory=SourceStructureQuality)
     structure_error: str = ""
     structure_updated_at: str | None = None
+    reference_ready: bool = False
+    source_processing_run_id: str = ""
+    source_processing_worker_count: int = 0
+    source_processing_completed_worker_count: int = 0
     ingestion_job: SourceIngestionJob | None = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -839,6 +884,72 @@ class SourceChapter(BaseModel):
     anchor_status: SourceChapterAnchorStatus = "unverified"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     excerpt: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceDocumentPart(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcepart"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    kind: SourceDocumentPartKind = "unknown"
+    title: str = ""
+    order_index: int = 0
+    source_locator: str = ""
+    body_start_offset: int | None = None
+    body_end_offset: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    anchor_status: SourceDocumentPartAnchorStatus = "unverified"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_page_numbers: list[int] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceCodexTask(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcetask"))
+    run_id: str
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    role: SourceCodexTaskRole
+    shard_id: str = ""
+    attempt: int = 1
+    status: str = "queued"
+    page_start: int | None = None
+    page_end: int | None = None
+    input_hash: str = ""
+    output_hash: str = ""
+    model: str = ""
+    thread_id: str = ""
+    turn_id: str = ""
+    error: str = ""
+    accepted: bool = False
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceCodexRun(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcerun"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    content_hash: str = ""
+    pipeline_version: int = 1
+    status: SourceCodexRunStatus = "preparing_input"
+    model: str = ""
+    input_manifest_hash: str = ""
+    output_hash: str = ""
+    coordinator_thread_id: str = ""
+    coordinator_turn_id: str = ""
+    worker_count: int = 0
+    completed_worker_count: int = 0
+    error: str = ""
+    published_structure_id: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    finished_at: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -928,9 +1039,11 @@ class SourceVisualEvidence(BaseModel):
 class SourceStructureView(BaseModel):
     source: SourceIngestionRecord
     structure: SourceStructure | None = None
+    parts: list[SourceDocumentPart] = Field(default_factory=list)
     chapters: list[SourceChapter] = Field(default_factory=list)
     chunks: list[SourceChunk] = Field(default_factory=list)
     visuals: list[SourceVisualAsset] = Field(default_factory=list)
+    processing_run: SourceCodexRun | None = None
 
 
 class EvidenceBundle(BaseModel):

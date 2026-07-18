@@ -163,6 +163,12 @@ function selectionFromMetadata(value: unknown): SelectionRef | null {
     source_locator: typeof raw.source_locator === "string" ? raw.source_locator : "",
     source_page_start: typeof raw.source_page_start === "number" ? raw.source_page_start : null,
     source_page_end: typeof raw.source_page_end === "number" ? raw.source_page_end : null,
+    source_scope_kind:
+      raw.source_scope_kind === "source" ||
+      raw.source_scope_kind === "chapter" ||
+      raw.source_scope_kind === "page_range"
+        ? raw.source_scope_kind
+        : undefined,
   };
 }
 

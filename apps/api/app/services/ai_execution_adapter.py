@@ -15,6 +15,9 @@ StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 @dataclass(frozen=True)
 class StructuredExecutionResult:
     output_parsed: Any
+    thread_id: str = ""
+    turn_id: str | None = None
+    usage: Any = None
     activity: list[AgentActivityEvent] = field(default_factory=list)
 
 
@@ -130,7 +133,10 @@ class CodexAIExecutionAdapter:
         )
         return StructuredExecutionResult(
             output_parsed=response.output_parsed,
-            activity=response.activity,
+            thread_id=(getattr(response, "thread_id", "") or getattr(response, "id", "") or ""),
+            turn_id=getattr(response, "turn_id", None),
+            usage=getattr(response, "usage", None),
+            activity=getattr(response, "activity", []),
         )
 
     def generate_board(
