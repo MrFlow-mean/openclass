@@ -93,7 +93,10 @@ def test_structured_turn_does_not_restart_deadline_after_thread_start(monkeypatc
     assert writes == []
 
 
-def test_structured_turn_sends_provider_strict_output_schema() -> None:
+@pytest.mark.parametrize("service_tier", ["priority", None])
+def test_structured_turn_sends_provider_strict_output_schema(
+    service_tier: str | None,
+) -> None:
     class _Session:
         deadline_monotonic = time.monotonic() + 5
         _next_id = 1
@@ -149,6 +152,9 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
         schema=_StructuredPayload,
         image_inputs=["data:image/png;base64,AAAA"],
         allow_live_web_search=True,
+        reasoning_effort="high",
+        service_tier=service_tier,
+        service_tier_is_set=True,
     )
 
     output_schema = session.writes[0]["params"]["outputSchema"]
@@ -158,6 +164,8 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
     assert nested_schema["additionalProperties"] is False
     assert nested_schema["required"] == ["note"]
     turn_params = session.writes[0]["params"]
+    assert turn_params["effort"] == "high"
+    assert turn_params["serviceTier"] == service_tier
     assert "sandboxPolicy" not in turn_params
     assert turn_params["input"] == [
         {"type": "text", "text": "user"},
@@ -167,6 +175,8 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
         "default_permissions": "openclass_chat",
         "web_search": "live",
     }
+    assert "effort" not in session.thread_params
+    assert session.thread_params["serviceTier"] == service_tier
     assert "built-in web search" in session.thread_params["developerInstructions"]
     assert "Role instructions:\nsystem" in session.thread_params["developerInstructions"]
 

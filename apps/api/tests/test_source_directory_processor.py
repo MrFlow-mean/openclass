@@ -1798,11 +1798,19 @@ def test_failed_rebuild_preserves_previous_catalog_version(tmp_path: Path) -> No
 
 def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None:
     calls: list[int] = []
+    runtime_settings: list[tuple[str | None, str | None, bool]] = []
     progress_updates: list[tuple[str, int]] = []
 
     def fake_parse(self, **kwargs):
         packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
         calls.append(packet["batch_index"])
+        runtime_settings.append(
+            (
+                kwargs["reasoning_effort"],
+                kwargs["service_tier"],
+                kwargs["service_tier_is_set"],
+            )
+        )
         return SimpleNamespace(
             output_parsed=DirectoryBatchDecision(
                 batch_hash=packet["batch_hash"],
@@ -1855,10 +1863,16 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
             mime_type="text/markdown",
         ),
         candidates=candidates,
-        selection=_model(),
+        selection=AIModelSelection(
+            provider="openai_codex",
+            model="catalog-test-model",
+            reasoning_effort="high",
+            service_tier="priority",
+        ),
     )
 
     assert calls == [0, 1, 2]
+    assert runtime_settings == [("high", "priority", True)] * 3
     assert progress_updates == [
         ("normalizing_directory", 69),
         ("normalizing_directory", 75),

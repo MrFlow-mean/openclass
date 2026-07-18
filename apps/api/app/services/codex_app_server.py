@@ -1119,6 +1119,9 @@ class CodexAppServerTextClient:
         image_inputs: list[str] | None = None,
         allow_live_web_search: bool = False,
         on_activity: Callable[[AgentActivityEvent], None] | None = None,
+        reasoning_effort: str | None = None,
+        service_tier: str | None = None,
+        service_tier_is_set: bool = False,
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
         status = codex_provider_status(self.user_id, refresh=False)
@@ -1145,6 +1148,9 @@ class CodexAppServerTextClient:
                 deadline_monotonic=deadline_monotonic,
                 allow_live_web_search=allow_live_web_search,
                 on_activity=on_activity,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
+                service_tier_is_set=service_tier_is_set,
             )
         if budget is not None:
             budget.validate_output(output_text)
@@ -1481,6 +1487,9 @@ def _run_structured_turn(
     deadline_monotonic: float | None = None,
     allow_live_web_search: bool = False,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    service_tier_is_set: bool = False,
 ) -> tuple[str, Any, list[AgentActivityEvent]]:
     deadline = _deadline_for(
         CODEX_APP_SERVER_TIMEOUT_SECONDS,
@@ -1497,6 +1506,12 @@ def _run_structured_turn(
             "approvalPolicy": "never",
             "config": {"default_permissions": CODEX_CHAT_PERMISSION_PROFILE},
             "serviceName": "openclass_codex_provider",
+            **_runtime_setting_params(
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
+                service_tier_is_set=service_tier_is_set,
+                include_effort=False,
+            ),
         }
         if allow_live_web_search:
             thread_params["config"]["web_search"] = "live"
@@ -1545,6 +1560,12 @@ def _run_structured_turn(
                     "cwd": cwd,
                     "approvalPolicy": "never",
                     "outputSchema": strict_json_schema(schema),
+                    **_runtime_setting_params(
+                        reasoning_effort=reasoning_effort,
+                        service_tier=service_tier,
+                        service_tier_is_set=service_tier_is_set,
+                        include_effort=True,
+                    ),
                 },
             }
         )

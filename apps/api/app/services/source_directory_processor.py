@@ -140,6 +140,9 @@ class CodexDirectoryNormalizer:
                 ),
                 schema=DirectoryBatchDecision,
                 allow_live_web_search=False,
+                reasoning_effort=selection.reasoning_effort,
+                service_tier=selection.service_tier,
+                service_tier_is_set="service_tier" in selection.model_fields_set,
             )
             decision = DirectoryBatchDecision.model_validate(response.output_parsed)
             normalized.extend(_apply_batch_decision(batch, decision, expected_hash=batch_hash))
