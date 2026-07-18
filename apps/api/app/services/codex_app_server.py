@@ -53,28 +53,7 @@ _STATUS_CACHE_TTL_SECONDS = 10
 
 
 class CodexAppServerError(RuntimeError):
-    def __init__(
-        self,
-        message: str,
-        *,
-        thread_id: str = "",
-        turn_id: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.thread_id = thread_id
-        self.turn_id = turn_id
-
-    def with_turn_identity(
-        self,
-        *,
-        thread_id: str,
-        turn_id: str | None,
-    ) -> "CodexAppServerError":
-        if not self.thread_id:
-            self.thread_id = thread_id
-        if not self.turn_id:
-            self.turn_id = turn_id
-        return self
+    pass
 
 
 class CodexLoginRateLimitError(CodexAppServerError):
@@ -115,8 +94,6 @@ def _remaining_before(deadline_monotonic: float, *, cap: float | None = None) ->
 class CodexParsedResponse:
     output_parsed: BaseModel
     id: str | None = None
-    thread_id: str = ""
-    turn_id: str | None = None
     output_text: str | None = None
     usage: Any = None
     activity: list[AgentActivityEvent] = field(default_factory=list)
@@ -1158,7 +1135,7 @@ class CodexAppServerTextClient:
             timeout_seconds=timeout_seconds,
             deadline_monotonic=deadline_monotonic,
         ) as session:
-            output_text, usage, activity, thread_id, turn_id = _run_structured_turn(
+            output_text, usage, activity = _run_structured_turn(
                 session=session,
                 model=model,
                 system_prompt=system_prompt,
@@ -1171,24 +1148,9 @@ class CodexAppServerTextClient:
             )
         if budget is not None:
             budget.validate_output(output_text)
-        try:
-            parsed = schema.model_validate(_extract_json(output_text))
-        except Exception as exc:
-            if isinstance(exc, CodexAppServerError):
-                raise exc.with_turn_identity(
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                )
-            raise CodexAppServerError(
-                str(exc),
-                thread_id=thread_id,
-                turn_id=turn_id,
-            ) from exc
+        parsed = schema.model_validate(_extract_json(output_text))
         return CodexParsedResponse(
             output_parsed=parsed,
-            id=thread_id,
-            thread_id=thread_id,
-            turn_id=turn_id,
             output_text=output_text,
             usage=usage,
             activity=activity,
@@ -1519,7 +1481,7 @@ def _run_structured_turn(
     deadline_monotonic: float | None = None,
     allow_live_web_search: bool = False,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
-) -> tuple[str, Any, list[AgentActivityEvent], str, str | None]:
+) -> tuple[str, Any, list[AgentActivityEvent]]:
     deadline = _deadline_for(
         CODEX_APP_SERVER_TIMEOUT_SECONDS,
         deadline_monotonic=(
@@ -1559,14 +1521,11 @@ def _run_structured_turn(
             timeout_seconds=_remaining_before(deadline, cap=30),
         )
         _remaining_before(deadline)
+        _validate_chat_thread_permission_response(thread_result)
         thread = thread_result.get("thread") if isinstance(thread_result.get("thread"), dict) else {}
         thread_id = str(thread.get("id") or "")
         if not thread_id:
             raise CodexAppServerError(f"Codex thread/start did not return a thread id: {thread_result}")
-        try:
-            _validate_chat_thread_permission_response(thread_result)
-        except CodexAppServerError as exc:
-            raise exc.with_turn_identity(thread_id=thread_id, turn_id=None)
         request_id = session._next_id
         session._next_id += 1
         session._write(
@@ -1590,7 +1549,6 @@ def _run_structured_turn(
             }
         )
         final_text = ""
-        turn_id: str | None = None
         usage: Any = None
         activity = CodexActivityRecorder(on_activity)
         while time.monotonic() < deadline:
@@ -1599,24 +1557,13 @@ def _run_structured_turn(
             except queue.Empty:
                 continue
             _remaining_before(deadline)
-            if message.get("id") == request_id:
-                if "error" in message:
-                    raise _json_response_error(message).with_turn_identity(
-                        thread_id=thread_id,
-                        turn_id=turn_id,
-                    )
-                result = message.get("result") if isinstance(message.get("result"), dict) else {}
-                turn = result.get("turn") if isinstance(result.get("turn"), dict) else {}
-                turn_id = str(turn.get("id") or turn_id or "") or None
-                continue
+            if message.get("id") == request_id and "error" in message:
+                raise _json_response_error(message)
             if "method" in message and "id" in message and "result" not in message and "error" not in message:
                 session._answer_server_request(message)
                 continue
             method = message.get("method")
             params = message.get("params") if isinstance(message.get("params"), dict) else {}
-            if method == "turn/started":
-                turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
-                turn_id = str(turn.get("id") or turn_id or "") or None
             if method == "thread/tokenUsage/updated":
                 usage = params
             if method == "item/started":
@@ -1637,27 +1584,14 @@ def _run_structured_turn(
                     final_text = item["text"]
             if method == "turn/completed":
                 turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
-                turn_id = str(turn.get("id") or turn_id or "") or None
                 if turn.get("status") == "failed":
                     error = turn.get("error") if isinstance(turn.get("error"), dict) else {}
-                    raise CodexAppServerError(
-                        str(error.get("message") or error or "Codex turn failed"),
-                        thread_id=thread_id,
-                        turn_id=turn_id,
-                    )
+                    raise CodexAppServerError(str(error.get("message") or error or "Codex turn failed"))
                 if final_text:
-                    return final_text, usage, activity.events, thread_id, turn_id
-                raise CodexAppServerError(
-                    "Codex turn completed without an agent message",
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                )
+                    return final_text, usage, activity.events
+                raise CodexAppServerError("Codex turn completed without an agent message")
         _remaining_before(deadline)
-        raise CodexAppServerError(
-            "Timed out waiting for Codex turn completion",
-            thread_id=thread_id,
-            turn_id=turn_id,
-        )
+        raise CodexAppServerError("Timed out waiting for Codex turn completion")
 
 
 def _extract_json(text: str) -> Any:

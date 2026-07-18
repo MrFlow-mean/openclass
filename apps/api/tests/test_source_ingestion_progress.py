@@ -4,6 +4,7 @@ import sqlite3
 import threading
 
 from app.models import CoursePackage, SourceIngestionRecord, SourceStructure
+from app.services.open_notebook_adapter import OpenNotebookSourceResult
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator, SourceIngestionJobStore
@@ -12,7 +13,8 @@ from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
 
 
-def test_source_ingestion_uses_codex_catalog_backend(tmp_path) -> None:
+def test_source_ingestion_defaults_to_native_backend(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLASS_SOURCE_BACKEND", raising=False)
     database = tmp_path / "openclass.sqlite3"
 
     service = SourceIngestionService(
@@ -21,9 +23,10 @@ def test_source_ingestion_uses_codex_catalog_backend(tmp_path) -> None:
         structure_store=SourceStructureStore(database),
     )
 
+    assert service.source_backend == "native"
 
 
-def test_retry_detaches_legacy_source_state(tmp_path, monkeypatch) -> None:
+def test_native_retry_detaches_failed_open_notebook_source(tmp_path, monkeypatch) -> None:
     database = tmp_path / "openclass.sqlite3"
     source_store = SourceEvidenceStore(database)
     structure_store = SourceStructureStore(database)
@@ -78,6 +81,7 @@ def test_retry_detaches_legacy_source_state(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setattr(workspace_state, "UPLOAD_DIR", upload_dir)
     service = SourceIngestionService(
+        source_backend="native",
         store=source_store,
         job_store=job_store,
         structure_store=structure_store,
@@ -95,10 +99,10 @@ def test_retry_detaches_legacy_source_state(tmp_path, monkeypatch) -> None:
     assert retried.open_notebook_notebook_id == ""
     assert retried.open_notebook_source_id == ""
     assert retried.open_notebook_command_id == ""
-    assert retried.metadata["adapter"] == "codex_source_catalog"
+    assert retried.metadata["adapter"] == "openclass_native"
     assert "source_processing_owner" not in retried.metadata
     assert not any(key.startswith("open_notebook_") for key in retried.metadata)
-    assert received_records[0].metadata["adapter"] == "codex_source_catalog"
+    assert received_records[0].metadata["adapter"] == "openclass_native"
     assert "source_processing_owner" not in received_records[0].metadata
     assert not any(
         key.startswith("open_notebook_") for key in received_records[0].metadata
@@ -189,6 +193,7 @@ def test_concurrent_file_ingestion_finishes_without_locked_database(tmp_path, mo
     structure_store = SourceStructureStore(database, coordinator=coordinator)
     job_store = SourceIngestionJobStore(database, coordinator=coordinator)
     service = SourceIngestionService(
+        source_backend="native",
         store=source_store,
         job_store=job_store,
         structure_store=structure_store,
@@ -267,6 +272,7 @@ def test_file_ingestion_exposes_durable_progress_while_indexing(tmp_path, monkey
 
     monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
     service = SourceIngestionService(
+        source_backend="native",
         store=source_store,
         job_store=job_store,
         structure_store=structure_store,
@@ -307,6 +313,74 @@ def test_file_ingestion_exposes_durable_progress_while_indexing(tmp_path, monkey
     assert not worker.is_alive()
 
     completed = service.list_sources(owner_user_id="user_progress", package_id=package.id)[0]
+    assert completed.status == "ready"
+    assert completed.ingestion_job is not None
+    assert completed.ingestion_job.progress == 100
+    assert completed.ingestion_job.phase_history[-1] == "ready"
+
+
+def test_open_notebook_mode_skips_local_structure_pipeline(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    job_store = SourceIngestionJobStore(database)
+
+    class FakeOpenNotebookAdapter:
+        api_url = "http://notebook.test"
+
+        def create_notebook(self, **_kwargs) -> str:
+            return "notebook:test"
+
+        def upload_file_source(self, **_kwargs) -> OpenNotebookSourceResult:
+            return OpenNotebookSourceResult(
+                source_id="source:remote",
+                command_id="command:remote",
+                status="processing",
+            )
+
+        def get_command(self, _command_id: str) -> dict[str, object]:
+            return {"status": "completed", "result": {"source_id": "source:remote"}}
+
+    class RejectingIndexer:
+        def ensure_structure(self, *_args, **_kwargs):
+            raise AssertionError("OpenNotebook mode must not call the local structure indexer")
+
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    service = SourceIngestionService(
+        adapter=FakeOpenNotebookAdapter(),
+        source_backend="open_notebook",
+        store=source_store,
+        job_store=job_store,
+        structure_store=structure_store,
+        structure_indexer=RejectingIndexer(),
+    )
+    package = CoursePackage(id="course_open_notebook", title="Notebook", summary="", lessons=[])
+
+    queued = service.queue_file_source(
+        owner_user_id="user_open_notebook",
+        package=package,
+        file_name="source.md",
+        content=b"# Source\n\nBody",
+        mime_type="text/markdown",
+    )
+    processing = service.process_file_source(
+        owner_user_id="user_open_notebook",
+        package_id=package.id,
+        source_id=queued.id,
+    )
+
+    assert processing.status == "parsing"
+    assert processing.metadata["source_processing_owner"] == "open_notebook"
+    assert structure_store.get_structure(
+        owner_user_id="user_open_notebook",
+        package_id=package.id,
+        source_id=queued.id,
+    ) is None
+
+    completed = service.list_sources(
+        owner_user_id="user_open_notebook",
+        package_id=package.id,
+    )[0]
     assert completed.status == "ready"
     assert completed.ingestion_job is not None
     assert completed.ingestion_job.progress == 100

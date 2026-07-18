@@ -12,6 +12,7 @@ from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_download_path, source_ingestion_service
+from app.services.source_structure_indexer import source_structure_indexer
 from app.services.source_structure_store import source_structure_store
 
 router = APIRouter()
@@ -250,14 +251,10 @@ def rebuild_package_source_structure(
     source = source_evidence_store.get_source(owner_user_id=user.id, package_id=package_id, source_id=source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
-    try:
-        rebuilt = source_ingestion_service.retry_source(
-            owner_user_id=user.id,
-            package_id=package_id,
-            source_id=source_id,
+    if source_ingestion_service.source_backend == "open_notebook":
+        raise HTTPException(
+            status_code=409,
+            detail="OpenNotebook-managed sources do not use the local structure rebuild pipeline.",
         )
-    except SourceIngestionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if rebuilt is None:
-        raise HTTPException(status_code=404, detail="Source not found.")
-    return source_structure_store.get_structure_view(source=rebuilt)
+    source_structure_indexer.rebuild_structure(source)
+    return source_structure_store.get_structure_view(source=source)

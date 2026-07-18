@@ -13,8 +13,6 @@ from app.models import (
     RetrievalEvidence,
     SourceChapter,
     SourceChunk,
-    SourceCodexRun,
-    SourceDocumentPart,
     SourceIngestionRecord,
     SourceStructure,
     SourceStructureQuality,
@@ -29,7 +27,6 @@ from app.services.source_ingestion_jobs import (
     SourceIngestionCoordinator,
     source_ingestion_coordinator,
 )
-from app.services.source_codex_store import SourceCodexStore
 from app.services.source_visual_storage import (
     MAX_SOURCE_VISUAL_BYTES,
     SourceVisualStorageError,
@@ -72,14 +69,12 @@ class SourceStructureStore:
         *,
         native_index: NativeSourceIndex | None = None,
         coordinator: SourceIngestionCoordinator = source_ingestion_coordinator,
-        codex_store: SourceCodexStore | None = None,
     ) -> None:
         self._path = path
         self._lock = threading.RLock()
         self._initialized_paths: set[str] = set()
         self.native_index = native_index or NativeSourceIndex()
         self.coordinator = coordinator
-        self.codex_store = codex_store or SourceCodexStore(path=path, coordinator=coordinator)
 
     @property
     def path(self) -> Path:
@@ -163,27 +158,6 @@ class SourceStructureStore:
                     ON source_chapters(owner_user_id, package_id, source_ingestion_id, order_index);
                 CREATE INDEX IF NOT EXISTS idx_source_chapters_number
                     ON source_chapters(owner_user_id, package_id, normalized_number, anchor_status);
-
-                CREATE TABLE IF NOT EXISTS source_document_parts (
-                    id TEXT PRIMARY KEY,
-                    owner_user_id TEXT NOT NULL,
-                    package_id TEXT NOT NULL,
-                    source_ingestion_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    order_index INTEGER NOT NULL,
-                    source_locator TEXT NOT NULL,
-                    body_start_offset INTEGER,
-                    body_end_offset INTEGER,
-                    page_start INTEGER,
-                    page_end INTEGER,
-                    anchor_status TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    evidence_page_numbers_json TEXT NOT NULL DEFAULT '[]',
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
-                );
-                CREATE INDEX IF NOT EXISTS idx_source_document_parts_source
-                    ON source_document_parts(owner_user_id, package_id, source_ingestion_id, order_index);
 
                 CREATE TABLE IF NOT EXISTS source_chunks (
                     id TEXT PRIMARY KEY,
@@ -297,28 +271,8 @@ class SourceStructureStore:
             package_id=record.package_id,
             source_id=record.id,
         )
-        processing_run = self.codex_store.latest_run(
-            owner_user_id=record.owner_user_id,
-            package_id=record.package_id,
-            source_id=record.id,
-        )
         if structure is None:
-            if processing_run is None:
-                return record
-            return record.model_copy(
-                update={
-                    "reference_ready": False,
-                    "source_processing_run_id": processing_run.id,
-                    "source_processing_worker_count": processing_run.worker_count,
-                    "source_processing_completed_worker_count": processing_run.completed_worker_count,
-                }
-            )
-        reference_ready = bool(
-            processing_run is not None
-            and processing_run.status == "ready"
-            and structure.status in {"ready", "linear_only"}
-            and structure.chunk_count > 0
-        )
+            return record
         return record.model_copy(
             update={
                 "structure_status": structure.status,
@@ -327,12 +281,6 @@ class SourceStructureStore:
                 "structure_quality": structure.quality,
                 "structure_error": structure.error,
                 "structure_updated_at": structure.updated_at,
-                "reference_ready": reference_ready,
-                "source_processing_run_id": processing_run.id if processing_run else "",
-                "source_processing_worker_count": processing_run.worker_count if processing_run else 0,
-                "source_processing_completed_worker_count": (
-                    processing_run.completed_worker_count if processing_run else 0
-                ),
             }
         )
 
@@ -371,7 +319,6 @@ class SourceStructureStore:
                         "source_visual_assets",
                         "source_chunks",
                         "source_chapters",
-                        "source_document_parts",
                         "source_structures",
                     ):
                         conn.execute(
@@ -383,11 +330,6 @@ class SourceStructureStore:
                         )
 
         self.coordinator.run_write(self.path, delete_structure)
-        self.codex_store.delete_for_source(
-            owner_user_id=owner_user_id,
-            package_id=package_id,
-            source_id=source_id,
-        )
         _remove_asset_files(asset_paths)
         self.cleanup_unreferenced_visual_assets(storage_keys)
 
@@ -397,9 +339,7 @@ class SourceStructureStore:
         structure: SourceStructure,
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
-        parts: list[SourceDocumentPart] | None = None,
         visuals: list[SourceVisualAsset] | None = None,
-        processing_run: SourceCodexRun | None = None,
     ) -> SourceStructure:
         return self.coordinator.run_write(
             self.path,
@@ -407,9 +347,7 @@ class SourceStructureStore:
                 structure=structure,
                 chapters=chapters,
                 chunks=chunks,
-                parts=parts,
                 visuals=visuals,
-                processing_run=processing_run,
             ),
         )
 
@@ -419,11 +357,8 @@ class SourceStructureStore:
         structure: SourceStructure,
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
-        parts: list[SourceDocumentPart] | None = None,
         visuals: list[SourceVisualAsset] | None = None,
-        processing_run: SourceCodexRun | None = None,
     ) -> SourceStructure:
-        parts = parts or []
         visuals = visuals or []
         chunks = [_chunk_with_text_hash(chunk) for chunk in chunks]
         old_asset_paths: list[str] = []
@@ -509,37 +444,6 @@ class SourceStructureStore:
                             structure.updated_at,
                             _dumps(structure.metadata),
                         ),
-                    )
-                    conn.executemany(
-                        """
-                        INSERT INTO source_document_parts(
-                            id, owner_user_id, package_id, source_ingestion_id, kind, title,
-                            order_index, source_locator, body_start_offset, body_end_offset,
-                            page_start, page_end, anchor_status, confidence,
-                            evidence_page_numbers_json, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        [
-                            (
-                                part.id,
-                                part.owner_user_id,
-                                part.package_id,
-                                part.source_ingestion_id,
-                                part.kind,
-                                part.title,
-                                part.order_index,
-                                part.source_locator,
-                                part.body_start_offset,
-                                part.body_end_offset,
-                                part.page_start,
-                                part.page_end,
-                                part.anchor_status,
-                                part.confidence,
-                                _dumps(part.evidence_page_numbers),
-                                _dumps(part.metadata),
-                            )
-                            for part in parts
-                        ],
                     )
                     conn.executemany(
                         """
@@ -656,13 +560,6 @@ class SourceStructureStore:
                         ],
                     )
                     self.native_index.index_chunks(conn, chunks)
-                    if processing_run is not None:
-                        self.codex_store.complete_publish_on_connection(
-                            conn,
-                            run=processing_run,
-                            structure_id=structure.id,
-                            finished_at=stamp,
-                        )
         retained_paths = {visual.asset_path for visual in visuals if visual.asset_path}
         _remove_asset_files(path for path in old_asset_paths if path not in retained_paths)
         retained_storage_keys = {visual.storage_key for visual in visuals if visual.storage_key}
@@ -758,15 +655,6 @@ class SourceStructureStore:
                     """,
                     (source.owner_user_id, source.package_id, source.id),
                 ).fetchall()
-                part_rows = conn.execute(
-                    """
-                    SELECT *
-                    FROM source_document_parts
-                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
-                    ORDER BY order_index
-                    """,
-                    (source.owner_user_id, source.package_id, source.id),
-                ).fetchall()
                 chunk_rows = conn.execute(
                     """
                     SELECT *
@@ -788,15 +676,9 @@ class SourceStructureStore:
         return SourceStructureView(
             source=self.attach_summary(source),
             structure=self._structure_from_row(structure_row) if structure_row else None,
-            parts=[self._document_part_from_row(row) for row in part_rows],
             chapters=[self._chapter_from_row(row) for row in chapter_rows],
             chunks=[self._chunk_from_row(row) for row in chunk_rows],
             visuals=[self._visual_from_row(row) for row in visual_rows],
-            processing_run=self.codex_store.latest_run(
-                owner_user_id=source.owner_user_id,
-                package_id=source.package_id,
-                source_id=source.id,
-            ),
         )
 
     def visual_evidence_for_scope(
@@ -1627,13 +1509,6 @@ class SourceStructureStore:
             """,
             (structure.owner_user_id, structure.package_id, structure.source_ingestion_id),
         )
-        conn.execute(
-            """
-            DELETE FROM source_document_parts
-            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
-            """,
-            (structure.owner_user_id, structure.package_id, structure.source_ingestion_id),
-        )
 
     def _structure_from_row(self, row: sqlite3.Row) -> SourceStructure:
         return SourceStructure(
@@ -1679,26 +1554,6 @@ class SourceStructureStore:
             anchor_status=row["anchor_status"],
             confidence=row["confidence"],
             excerpt=row["excerpt"],
-            metadata=_loads(row["metadata_json"], {}),
-        )
-
-    def _document_part_from_row(self, row: sqlite3.Row) -> SourceDocumentPart:
-        return SourceDocumentPart(
-            id=row["id"],
-            owner_user_id=row["owner_user_id"],
-            package_id=row["package_id"],
-            source_ingestion_id=row["source_ingestion_id"],
-            kind=row["kind"],
-            title=row["title"],
-            order_index=row["order_index"],
-            source_locator=row["source_locator"],
-            body_start_offset=row["body_start_offset"],
-            body_end_offset=row["body_end_offset"],
-            page_start=row["page_start"],
-            page_end=row["page_end"],
-            anchor_status=row["anchor_status"],
-            confidence=row["confidence"],
-            evidence_page_numbers=_loads(row["evidence_page_numbers_json"], []),
             metadata=_loads(row["metadata_json"], {}),
         )
 

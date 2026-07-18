@@ -5,8 +5,8 @@ import { BookOpen, Check, ChevronDown, ChevronRight, ClipboardPaste, Download, F
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { SourceBatchControls } from "@/components/course-studio/source-batch-controls";
-import { SourceDocumentParts } from "@/components/course-studio/source-document-parts";
 import {
+  createOpenNotebookSourceSelection,
   createSourceChapterSelection,
   sourceChapterLabel,
 } from "@/components/course-studio/source-reference";
@@ -473,6 +473,7 @@ function SourceRow({
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
+  const isOpenNotebookManaged = metadataString(source, "source_processing_owner") === "open_notebook";
   const sourceQuality = source.structure_quality;
   const viewQuality = structureView?.structure?.quality;
   const structureQuality =
@@ -709,10 +710,10 @@ function SourceRow({
                     )
                   )}
                 >
-                  {source.reference_ready ? "Codex 已编目" : structureLabel}
+                  {isOpenNotebookManaged ? "OpenNotebook" : structureLabel}
                 </span>
               ) : null}
-              {isReady ? (
+              {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
                   onClick={() => void toggleContent()}
@@ -722,6 +723,17 @@ function SourceRow({
                   aria-label={`查看资料正文 ${source.title}`}
                 >
                   {isLoadingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
+              {isReady && isOpenNotebookManaged && onSourceReference ? (
+                <button
+                  type="button"
+                  onClick={() => onSourceReference(createOpenNotebookSourceSelection(source))}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-blue-600 transition hover:bg-blue-50"
+                  title="引用整份 OpenNotebook 资料"
+                  aria-label={`引用整份资料 ${source.title}`}
+                >
+                  <TextQuote className="h-3.5 w-3.5" />
                 </button>
               ) : null}
               <button
@@ -745,7 +757,7 @@ function SourceRow({
                   <RotateCcw className={clsx("h-3.5 w-3.5", isRetrying && "animate-spin")} />
                 </button>
               ) : null}
-              {isReady ? (
+              {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
                   onClick={() => void toggleStructure()}
@@ -783,10 +795,8 @@ function SourceRow({
           ) : null}
           {isReady ? (
             <p className="mt-2 text-xs leading-5 text-gray-500">
-              {source.source_processing_run_id && source.source_processing_worker_count > 0
-                ? `${structureNote} 本次由 1 个协调 Codex 和 ${source.source_processing_worker_count} 个并行 Codex 处理。`
-                : source.source_processing_run_id
-                ? `${structureNote} 本次由 1 个 Codex 处理。`
+              {isOpenNotebookManaged
+                ? "资料正文由 OpenNotebook 处理；引用后按本轮问题检索相关片段。"
                 : structureNote}
             </p>
           ) : null}
@@ -856,7 +866,6 @@ function SourceRow({
                 quality={structureQuality}
                 warnings={structureView?.structure?.warnings}
               />
-              <SourceDocumentParts parts={structureView?.parts ?? []} />
               <div className="mb-1 mt-2 flex justify-end">
                 <button
                   type="button"
@@ -996,7 +1005,7 @@ function SourceChapterNode({
             正文待验证
           </span>
         ) : null}
-        {onSourceReference && isVerified && source.reference_ready ? (
+        {onSourceReference && isVerified ? (
           <button
             type="button"
             onClick={() => onSourceReference(createSourceChapterSelection(source, node.chapter))}

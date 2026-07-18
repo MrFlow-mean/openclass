@@ -20,7 +20,6 @@ from app.services.course_store import SqliteCourseStore
 from app.services.rich_document import build_document, rich_structure_counts
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
-from app.services.source_structure_indexer import source_structure_indexer
 from app.services.youtube_transcript_adapter import YouTubeTranscript
 
 
@@ -43,7 +42,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(workspace_state, "EXPORT_DIR", export_dir)
     monkeypatch.setattr(documents_router, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(documents_router, "EXPORT_DIR", export_dir)
-    monkeypatch.setattr(source_structure_indexer, "codex_processor_factory", None)
+    monkeypatch.setattr(source_ingestion_service, "source_backend", "native")
     workspace_state.ensure_data_dirs()
 
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER
@@ -315,7 +314,7 @@ def test_lesson_resource_upload_endpoint_is_not_exposed(api_client: TestClient) 
     assert upload.status_code == 404
 
 
-def test_codex_catalog_url_source_import_and_delete(
+def test_native_url_source_import_and_delete(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -343,7 +342,8 @@ def test_codex_catalog_url_source_import_and_delete(
     assert imported.status_code == 200
     source = imported.json()
     assert source["status"] == "ready"
-    assert source["metadata"]["adapter"] == "codex_source_catalog"
+    assert source["open_notebook_source_id"] == ""
+    assert source["metadata"]["adapter"] == "openclass_native_url"
     assert source["structure_status"] == "ready"
 
     listed = api_client.get(f"/api/packages/{package_id}/sources")
@@ -366,7 +366,7 @@ def test_codex_catalog_url_source_import_and_delete(
     assert listed_after_delete.json() == []
 
 
-def test_source_import_queues_codex_catalog(
+def test_source_import_uses_native_local_index(
     api_client: TestClient,
 ) -> None:
     created_workspace = api_client.post(
@@ -385,7 +385,8 @@ def test_source_import_queues_codex_catalog(
     assert source["status"] == "parsing"
     assert source["ingestion_job"]["progress"] == 15
     assert source["error"] == ""
-    assert source["metadata"]["adapter"] == "codex_source_catalog"
+    assert source["open_notebook_notebook_id"] == ""
+    assert source["metadata"]["adapter"] == "openclass_native"
     assert source["metadata"]["content_hash"]
     assert "open_notebook_sync_status" not in source["metadata"]
     assert source["structure_status"] == "pending"
@@ -397,7 +398,7 @@ def test_source_import_queues_codex_catalog(
     assert listed.json()[0]["structure_has_verified_toc"] is True
 
 
-def test_url_source_uses_local_snapshot_for_codex_catalog(
+def test_url_source_uses_native_local_snapshot(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -430,7 +431,7 @@ def test_url_source_uses_local_snapshot_for_codex_catalog(
     assert source["status"] == "ready"
     assert source["error"] == ""
     assert source["source_type"] == "web_url"
-    assert source["metadata"]["adapter"] == "codex_source_catalog"
+    assert source["metadata"]["adapter"] == "openclass_native_url"
     assert source["metadata"]["content_hash"]
     assert source["structure_status"] == "linear_only"
 

@@ -16,7 +16,6 @@ from urllib.parse import unquote
 from app.models import (
     SourceChapter,
     SourceChunk,
-    SourceDocumentPart,
     SourceIngestionRecord,
     SourceStructure,
     SourceVisualAsset,
@@ -40,7 +39,6 @@ from app.services.pdf_toc_parser import (
 )
 from app.services.native_source_index import source_chunk_text_hash
 from app.services.source_chapter_identity import stable_source_chapter_id
-from app.services.source_catalog_images import prepare_source_catalog_images
 from app.services.source_archive import SafeSourceArchive
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
@@ -49,10 +47,16 @@ from app.services.source_structure_quality import (
     evaluate_source_structure_quality,
     meaningful_text_character_count,
 )
-from app.services.source_codex_processor import (
-    SourceCatalogResult,
-    SourceCodexProcessor,
-    build_source_codex_processor,
+from app.services.source_structure_supervisor import (
+    SourceStructureSupervisionCandidate,
+    supervise_source_structure,
+)
+from app.services.source_structure_ai import (
+    MAX_TOC_EVIDENCE_PAGES,
+    SourcePageEvidence,
+    SourceStructureAnalyzer,
+    SourceStructureReview,
+    build_codex_source_structure_analyzer,
 )
 from app.services.source_visual_extraction import (
     CURRENT_SOURCE_VISUAL_INDEX_VERSION,
@@ -66,9 +70,9 @@ from app.services.source_xml import parse_untrusted_xml
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
 DEFAULT_PDF_STRUCTURE_OCR_MAX_PAGES = 400
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 11
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 10
 SourceIndexProgressCallback = Callable[[str, int], None]
-SourceCodexProcessorFactory = Callable[[str], SourceCodexProcessor]
+SourceStructureAnalyzerFactory = Callable[[str], SourceStructureAnalyzer | None]
 
 
 def _report_progress(
@@ -136,13 +140,13 @@ class SourceStructureIndexer:
         visual_extractor: SourceVisualExtractor = source_visual_extractor,
         visual_index_enabled: bool = True,
         coordinator: SourceIngestionCoordinator | None = None,
-        codex_processor_factory: SourceCodexProcessorFactory | None = None,
+        structure_analyzer_factory: SourceStructureAnalyzerFactory | None = None,
     ) -> None:
         self.store = store
         self.visual_extractor = visual_extractor
         self.visual_index_enabled = visual_index_enabled
         self.coordinator = coordinator or store.coordinator
-        self.codex_processor_factory = codex_processor_factory
+        self.structure_analyzer_factory = structure_analyzer_factory
 
     def ensure_structure(
         self,
@@ -263,8 +267,6 @@ class SourceStructureIndexer:
         progress_callback: SourceIndexProgressCallback | None = None,
     ) -> SourceStructure:
         extracted_storage_keys: list[str] = []
-        catalog_result: SourceCatalogResult | None = None
-        processor: SourceCodexProcessor | None = None
         try:
             _report_progress(progress_callback, "parsing", 25)
             parsed = (
@@ -281,38 +283,17 @@ class SourceStructureIndexer:
                 metadata=parsed.metadata,
             )
             chapters = quality_result.chapters
-            parts: list[SourceDocumentPart] = []
-            if self.codex_processor_factory is not None:
-                processor = self.codex_processor_factory(record.owner_user_id)
-                image_pages = prepare_source_catalog_images(
-                    path=_local_source_path(record),
-                    mime_type=record.mime_type,
-                    page_count=len(parsed.pages),
-                    candidate_chapters=chapters,
-                    parser_metadata=parsed.metadata,
-                )
-                catalog_result = processor.process(
-                    record=record,
-                    text=parsed.text,
-                    pages=parsed.pages,
-                    candidate_chapters=chapters,
-                    parser_metadata=parsed.metadata,
-                    image_pages=image_pages,
-                    progress_callback=progress_callback,
-                )
-                parts = catalog_result.parts
-                chapters = catalog_result.chapters
-                quality_result = evaluate_source_structure_quality(
-                    chapters=chapters,
-                    text=parsed.text,
-                    strategy="codex_catalog",
-                    metadata={
-                        **parsed.metadata,
-                        "source_codex_run_id": catalog_result.run.id,
-                    },
-                )
-                chapters = quality_result.chapters
-            if _should_preserve_previous_structure(previous, quality_result):
+            parsed, chapters, quality_result = self._repair_pdf_structure_with_codex(
+                record=record,
+                parsed=parsed,
+                chapters=chapters,
+                quality_result=quality_result,
+                progress_callback=progress_callback,
+            )
+            if (
+                _should_preserve_previous_structure(previous, quality_result)
+                and _can_preserve_previous_after_supervision(previous, parsed)
+            ):
                 ai_usage_logger.log_event(
                     "source_structure_quality_regression_rejected",
                     owner_user_id=record.owner_user_id,
@@ -322,17 +303,24 @@ class SourceStructureIndexer:
                     candidate_quality=quality_result.quality,
                 )
                 assert previous is not None
-                if catalog_result is not None and processor is not None:
-                    processor.reject_publish(
-                        catalog_result.run,
-                        reason="Codex 编目结果未通过资料结构质量门禁，已保留上一版索引。",
-                    )
                 return previous
-            chapters_to_publish = chapters
+            chapters_to_publish = (
+                chapters
+                if _structure_is_publishable_after_supervision(parsed)
+                else []
+            )
             _report_progress(progress_callback, "building_chunks", 63)
             chunks = self._chunks_for_record(record, parsed, chapters_to_publish)
             if not self.visual_index_enabled:
                 visual_result = SourceVisualExtractionResult(status="unsupported")
+            elif not _structure_is_publishable_after_supervision(parsed):
+                _report_progress(progress_callback, "extracting_visuals", 70)
+                visual_result = SourceVisualExtractionResult(
+                    status="unsupported",
+                    warnings=[
+                        "目录尚未通过 Codex 质量监工，已跳过依赖目录锚点的视觉索引。"
+                    ],
+                )
             elif preserve_existing_visuals and previous is not None:
                 _report_progress(progress_callback, "extracting_visuals", 70)
                 visual_result = SourceVisualExtractionResult(
@@ -422,14 +410,13 @@ class SourceStructureIndexer:
             structure = building.model_copy(
                 update={
                     "status": status,
-                    "strategy": "codex_catalog" if catalog_result is not None else parsed.strategy,
+                    "strategy": parsed.strategy,
                     "confidence": confidence,
                     "quality": quality_result.quality,
                     "warnings": list(
                         dict.fromkeys(
                             [
                                 *parsed.warnings,
-                                *(catalog_result.warnings if catalog_result is not None else []),
                                 *quality_result.warnings,
                                 *visual_result.warnings,
                             ]
@@ -441,15 +428,6 @@ class SourceStructureIndexer:
                     "metadata": {
                         **building.metadata,
                         **parsed.metadata,
-                        **(
-                            {
-                                "source_codex_run_id": catalog_result.run.id,
-                                "source_codex_pipeline_version": catalog_result.run.pipeline_version,
-                                "source_codex_worker_count": catalog_result.run.worker_count,
-                            }
-                            if catalog_result is not None
-                            else {}
-                        ),
                         "text_length": len(parsed.text),
                         "chapter_node_count": len(chapters_to_publish),
                         "candidate_chapter_node_count": len(chapters),
@@ -474,19 +452,14 @@ class SourceStructureIndexer:
                     },
                 }
             )
-            saved_structure = self.store.save_structure_bundle(
+            return self.store.save_structure_bundle(
                 structure=structure,
-                parts=parts,
                 chapters=chapters_to_publish,
                 chunks=chunks,
                 visuals=visual_result.visuals,
-                processing_run=catalog_result.run if catalog_result is not None else None,
             )
-            return saved_structure
         except Exception as exc:  # pragma: no cover - defensive boundary around third-party parsers
             self.store.cleanup_unreferenced_visual_assets(extracted_storage_keys)
-            if catalog_result is not None and processor is not None:
-                processor.reject_publish(catalog_result.run, reason=str(exc))
             if previous is not None and previous.status in {"ready", "linear_only"}:
                 return self.store.record_rebuild_failure(structure=previous, error=str(exc))
             failed = building.model_copy(
@@ -497,6 +470,329 @@ class SourceStructureIndexer:
                 }
             )
             return self.store.save_structure_bundle(structure=failed, chapters=[], chunks=[])
+
+    def _repair_pdf_structure_with_codex(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        parsed: ParsedSourceDocument,
+        chapters: list[SourceChapter],
+        quality_result: SourceStructureQualityResult,
+        progress_callback: SourceIndexProgressCallback | None = None,
+    ) -> tuple[ParsedSourceDocument, list[SourceChapter], SourceStructureQualityResult]:
+        if parsed.metadata.get("parser") != "pdf" or not parsed.pages:
+            return parsed, chapters, quality_result
+        if self.structure_analyzer_factory is None:
+            return parsed, chapters, quality_result
+        analyzer = self.structure_analyzer_factory(record.owner_user_id)
+        if analyzer is None:
+            return parsed, chapters, quality_result
+        reviewer = getattr(analyzer, "review_pdf_toc", None)
+        if not callable(reviewer):
+            return self._repair_pdf_structure_with_codex_legacy(
+                record=record,
+                parsed=parsed,
+                chapters=chapters,
+                quality_result=quality_result,
+            )
+        evidence_pages = _pdf_toc_evidence_pages(parsed.pages, metadata=parsed.metadata)
+        if not evidence_pages:
+            return (
+                _with_codex_supervision_metadata(
+                    parsed,
+                    status="blocked",
+                    model=analyzer.model,
+                    rounds=0,
+                    repair_count=0,
+                    summary="No original table-of-contents pages were available for comparison.",
+                    issues=["The source has no reviewable table-of-contents evidence."],
+                ),
+                chapters,
+                quality_result,
+            )
+
+        initial = SourceStructureSupervisionCandidate(
+            payload=parsed,
+            chapters=chapters,
+            quality=quality_result,
+        )
+        outcome = supervise_source_structure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            source_title=record.title,
+            analyzer=analyzer,
+            evidence_pages=[
+                SourcePageEvidence(page_no=page.page_no, text=page.text)
+                for page in evidence_pages
+            ],
+            initial=initial,
+            build_repair_candidate=lambda review, candidate_payload: (
+                self._supervision_candidate_from_review(
+                    record=record,
+                    parsed=candidate_payload,
+                    review=review,
+                    evidence_pages=evidence_pages,
+                )
+            ),
+            report_progress=lambda phase, progress: _report_progress(
+                progress_callback,
+                phase,
+                progress,
+            ),
+        )
+        candidate = outcome.candidate
+        return (
+            _with_codex_supervision_metadata(
+                candidate.payload,
+                status=outcome.status,
+                model=analyzer.model,
+                rounds=outcome.rounds,
+                repair_count=outcome.repair_count,
+                summary=outcome.summary,
+                issues=outcome.issues,
+            ),
+            candidate.chapters,
+            candidate.quality,
+        )
+
+    def _supervision_candidate_from_review(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        parsed: ParsedSourceDocument,
+        review: SourceStructureReview,
+        evidence_pages: list[PageText],
+    ) -> SourceStructureSupervisionCandidate:
+        evidence_page_numbers = {page.page_no for page in evidence_pages}
+        nodes: list[PdfTocNode] = []
+        numeric_path: list[str] = []
+        for proposal_node in review.nodes:
+            if proposal_node.toc_page not in evidence_page_numbers:
+                continue
+            while len(numeric_path) >= proposal_node.level:
+                numeric_path.pop()
+            proposal_marker = parse_structural_heading(proposal_node.title)
+            structural_number = (
+                proposal_marker.number
+                if proposal_node.level == 1
+                and proposal_marker is not None
+                and proposal_marker.kind == "chapter"
+                else ""
+            )
+            raw_number = (
+                structural_number
+                or proposal_node.number
+                or _number_from_title(proposal_node.title)
+            )
+            normalized_number = _normalize_chapter_number(
+                _number_from_title(raw_number) or raw_number
+            )
+            body_number_candidates: list[str] = []
+            if normalized_number:
+                if proposal_node.level > 1 and numeric_path and "." not in normalized_number:
+                    body_number_candidates.append(
+                        ".".join([*numeric_path, normalized_number])
+                    )
+                numeric_path.append(normalized_number)
+            nodes.append(
+                PdfTocNode(
+                    title=_proposal_node_title(
+                        proposal_node.number,
+                        proposal_node.title,
+                    ),
+                    number=proposal_node.number,
+                    level=proposal_node.level,
+                    toc_page=proposal_node.toc_page,
+                    printed_page=proposal_node.printed_page,
+                    confidence=proposal_node.confidence,
+                    metadata={
+                        "source": "pdf_codex_toc",
+                        "verification": "codex_supervision_repair_candidate",
+                        "body_number_candidates": body_number_candidates,
+                    },
+                )
+            )
+        _discard_non_monotonic_printed_pages(nodes)
+        printed_page_offset, mapping_support = _verify_pdf_toc_nodes(nodes, parsed.pages)
+        detected = _chapters_from_pdf_toc(nodes, parsed.pages)
+        _close_pdf_navigation_ranges(detected, parsed.pages, len(parsed.text))
+        candidate_parsed = ParsedSourceDocument(
+            text=parsed.text,
+            chapters=detected,
+            pages=parsed.pages,
+            strategy="pdf_codex_toc",
+            warnings=list(parsed.warnings),
+            metadata={
+                **parsed.metadata,
+                "toc_page_start": min((node.toc_page for node in nodes), default=0),
+                "toc_page_end": max((node.toc_page for node in nodes), default=0),
+                "printed_page_offset": printed_page_offset,
+                "printed_page_mapping_support": mapping_support,
+                "codex_toc_node_count": len(nodes),
+            },
+        )
+        candidate_chapters = self._chapters_for_record(record, candidate_parsed)
+        candidate_quality = evaluate_source_structure_quality(
+            chapters=candidate_chapters,
+            text=candidate_parsed.text,
+            strategy=candidate_parsed.strategy,
+            metadata=candidate_parsed.metadata,
+        )
+        return SourceStructureSupervisionCandidate(
+            payload=candidate_parsed,
+            chapters=candidate_quality.chapters,
+            quality=candidate_quality,
+        )
+
+    def _repair_pdf_structure_with_codex_legacy(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        parsed: ParsedSourceDocument,
+        chapters: list[SourceChapter],
+        quality_result: SourceStructureQualityResult,
+    ) -> tuple[ParsedSourceDocument, list[SourceChapter], SourceStructureQualityResult]:
+        if (
+            parsed.metadata.get("parser") != "pdf"
+            or quality_result.quality.level == "fully_verified"
+            or not parsed.pages
+            or self.structure_analyzer_factory is None
+        ):
+            return parsed, chapters, quality_result
+        analyzer = self.structure_analyzer_factory(record.owner_user_id)
+        if analyzer is None:
+            return parsed, chapters, quality_result
+        evidence_pages = _pdf_toc_evidence_pages(parsed.pages, metadata=parsed.metadata)
+        if not evidence_pages:
+            return parsed, chapters, quality_result
+        first_evidence_page = evidence_pages[0].page_no
+        first_evidence_index = next(
+            (
+                index
+                for index, page in enumerate(parsed.pages)
+                if page.page_no == first_evidence_page
+            ),
+            0,
+        )
+        evidence_pages = parsed.pages[first_evidence_index : first_evidence_index + 3]
+        try:
+            proposal = analyzer.propose_pdf_toc(
+                source_title=record.title,
+                pages=[
+                    SourcePageEvidence(page_no=page.page_no, text=page.text)
+                    for page in evidence_pages
+                ],
+                current_nodes=[
+                    {
+                        "number": chapter.number,
+                        "title": chapter.title,
+                        "level": chapter.level,
+                        "page_start": chapter.page_start,
+                        "verified": chapter.anchor_status == "verified",
+                    }
+                    for chapter in chapters[:300]
+                ],
+            )
+            if not proposal.should_replace or not proposal.nodes:
+                return _with_codex_analysis_metadata(
+                    parsed,
+                    attempted=True,
+                    accepted=False,
+                    model=analyzer.model,
+                    proposal_count=len(proposal.nodes),
+                    reason=proposal.reason,
+                ), chapters, quality_result
+            nodes = [
+                PdfTocNode(
+                    title=_proposal_node_title(node.number, node.title),
+                    number=node.number,
+                    level=node.level,
+                    toc_page=node.toc_page,
+                    printed_page=node.printed_page,
+                    confidence=node.confidence,
+                    metadata={
+                        "source": "pdf_codex_toc",
+                        "verification": "codex_toc_candidate",
+                    },
+                )
+                for node in proposal.nodes
+                if any(page.page_no == node.toc_page for page in evidence_pages)
+            ]
+            if not nodes:
+                return parsed, chapters, quality_result
+            printed_page_offset, mapping_support = _verify_pdf_toc_nodes(nodes, parsed.pages)
+            detected = _chapters_from_pdf_toc(nodes, parsed.pages)
+            _close_pdf_navigation_ranges(detected, parsed.pages, len(parsed.text))
+            candidate_parsed = ParsedSourceDocument(
+                text=parsed.text,
+                chapters=detected,
+                pages=parsed.pages,
+                strategy="pdf_codex_toc",
+                warnings=list(parsed.warnings),
+                metadata={
+                    **parsed.metadata,
+                    "toc_page_start": min(node.toc_page for node in nodes),
+                    "toc_page_end": max(node.toc_page for node in nodes),
+                    "printed_page_offset": printed_page_offset,
+                    "printed_page_mapping_support": mapping_support,
+                    "codex_toc_node_count": len(nodes),
+                },
+            )
+            candidate_chapters = self._chapters_for_record(record, candidate_parsed)
+            candidate_quality = evaluate_source_structure_quality(
+                chapters=candidate_chapters,
+                text=candidate_parsed.text,
+                strategy=candidate_parsed.strategy,
+                metadata=candidate_parsed.metadata,
+            )
+            if _source_structure_quality_rank(candidate_quality) <= _source_structure_quality_rank(
+                quality_result
+            ):
+                return _with_codex_analysis_metadata(
+                    parsed,
+                    attempted=True,
+                    accepted=False,
+                    model=analyzer.model,
+                    proposal_count=len(nodes),
+                    reason="Codex proposal did not improve deterministic quality metrics.",
+                ), chapters, quality_result
+            candidate_parsed = _with_codex_analysis_metadata(
+                candidate_parsed,
+                attempted=True,
+                accepted=True,
+                model=analyzer.model,
+                proposal_count=len(nodes),
+                reason=proposal.reason,
+            )
+            ai_usage_logger.log_event(
+                "source_structure_ai_accepted",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                model=analyzer.model,
+                previous_quality=quality_result.quality,
+                candidate_quality=candidate_quality.quality,
+                proposal_count=len(nodes),
+            )
+            return candidate_parsed, candidate_quality.chapters, candidate_quality
+        except Exception as exc:
+            ai_usage_logger.log_event(
+                "source_structure_ai_failed",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                model=getattr(analyzer, "model", ""),
+                error=str(exc),
+            )
+            return _with_codex_analysis_metadata(
+                parsed,
+                attempted=True,
+                accepted=False,
+                model=getattr(analyzer, "model", ""),
+                proposal_count=0,
+                reason="Codex structure analysis failed; deterministic parsing was preserved.",
+            ), chapters, quality_result
 
     def _parse_record(
         self,
@@ -1226,9 +1522,7 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         )
         docs: list[tuple[str, str, list[DetectedChapter], dict[str, int]]] = []
         parts: list[str] = []
-        pages: list[PageText] = []
         offset_by_name: dict[str, int] = {}
-        page_by_name: dict[str, int] = {}
         offset = 0
         heading_chapters: list[DetectedChapter] = []
         for name in html_names:
@@ -1236,35 +1530,20 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
                 raw = archive.read(name)
             except KeyError:
                 continue
-            text, headings, visual_refs, anchors = _html_text_headings_and_visuals(
+            text, headings, _visual_refs, anchors = _html_text_headings_and_visuals(
                 raw.decode("utf-8", errors="replace"),
                 source_name=name,
             )
-            if not text.strip() and not visual_refs:
-                continue
             if not text.strip():
-                text = f"[Visual-only spine item: {name}]"
+                continue
             prefix = f"\n\n[{name}]\n"
-            page_no = len(pages) + 1
             offset_by_name[name] = offset + len(prefix)
-            page_by_name[name] = page_no
             parts.append(prefix + text)
-            pages.append(
-                PageText(
-                    page_no=page_no,
-                    text=text,
-                    start_offset=offset,
-                    end_offset=offset + len(prefix) + len(text),
-                    content_start_offset=offset + len(prefix),
-                )
-            )
             for heading in headings:
                 heading.start_offset = offset + len(prefix) + (heading.start_offset or 0)
                 heading.source_locator = f"epub:{name}"
                 heading.verified = True
                 heading.confidence = 0.82
-                heading.page_start = page_no
-                heading.page_end = page_no + 1
                 heading.metadata = {"source": "epub_heading", "file": name}
                 heading_chapters.append(heading)
             docs.append((name, text, headings, anchors))
@@ -1273,38 +1552,22 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         # coordinate space, including each file prefix.
         full_text = "".join(parts)
         nav_items = _epub_navigation_items(archive, names)
-        nav_chapters = _chapters_from_epub_nav(
-            nav_items,
-            docs,
-            offset_by_name,
-            page_by_name,
-        )
+        nav_chapters = _chapters_from_epub_nav(nav_items, docs, offset_by_name)
         if nav_chapters:
             _close_epub_navigation_ranges(nav_chapters, len(full_text))
             return ParsedSourceDocument(
                 text=full_text,
                 chapters=nav_chapters,
-                pages=pages,
                 strategy="epub_navigation",
-                metadata={
-                    "parser": "epub",
-                    "navigation_items": len(nav_chapters),
-                    "page_count": len(pages),
-                    "page_unit_kind": "epub_spine_item",
-                },
+                metadata={"parser": "epub", "navigation_items": len(nav_chapters)},
             )
         _close_chapter_ranges(heading_chapters, len(full_text))
         return ParsedSourceDocument(
             text=full_text,
             chapters=heading_chapters,
-            pages=pages,
             strategy="epub_heading" if heading_chapters else "linear_text",
             warnings=[] if heading_chapters else ["EPUB 未发现可验证导航目录或标题结构。"],
-            metadata={
-                "parser": "epub",
-                "page_count": len(pages),
-                "page_unit_kind": "epub_spine_item",
-            },
+            metadata={"parser": "epub"},
         )
 
 
@@ -1433,9 +1696,7 @@ def _chapters_from_epub_nav(
     nav_items: list[_EpubNavigationItem],
     docs: list[tuple[str, str, list[DetectedChapter], dict[str, int]]],
     offset_by_name: dict[str, int],
-    page_by_name: dict[str, int] | None = None,
 ) -> list[DetectedChapter]:
-    page_by_name = page_by_name or {}
     docs_by_name = {name: text for name, text, _headings, _anchors in docs}
     anchors_by_name = {name: anchors for name, _text, _headings, anchors in docs}
     chapters: list[DetectedChapter] = []
@@ -1472,8 +1733,6 @@ def _chapters_from_epub_nav(
                 level=max(1, item.level, numbered_level),
                 source_locator=item.source_locator,
                 start_offset=start_offset,
-                page_start=page_by_name.get(item.target),
-                page_end=(page_by_name[item.target] + 1 if item.target in page_by_name else None),
                 confidence=confidence,
                 verified=start_offset is not None,
                 metadata={
@@ -2347,6 +2606,149 @@ def _detected_pdf_toc_pages(pages: list[PageText]) -> list[PageText]:
     return detected
 
 
+def _pdf_toc_evidence_pages(
+    pages: list[PageText],
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> list[PageText]:
+    toc_start = _positive_page_number((metadata or {}).get("toc_page_start"))
+    toc_end = _positive_page_number((metadata or {}).get("toc_page_end"))
+    detected = _detected_pdf_toc_pages(pages)
+    if detected:
+        detected_start = detected[0].page_no
+        detected_end = detected[-1].page_no
+        toc_start = min(toc_start or detected_start, detected_start)
+        toc_end = max(toc_end, detected_end)
+    if toc_start and toc_end >= toc_start:
+        ranged = [
+            page
+            for page in pages
+            if toc_start <= page.page_no <= toc_end
+        ]
+        if ranged:
+            return ranged[:MAX_TOC_EVIDENCE_PAGES]
+    candidates = pages[:40]
+    start = next(
+        (
+            index
+            for index, page in enumerate(candidates)
+            if any(
+                is_toc_heading(line)
+                for line in [line for line in page.text.splitlines() if line.strip()][:16]
+            )
+        ),
+        None,
+    )
+    if start is None:
+        detected = _detected_pdf_toc_pages(pages)
+        if not detected:
+            return []
+        start = next(
+            index for index, page in enumerate(candidates) if page.page_no == detected[0].page_no
+        )
+    if detected:
+        return detected[:MAX_TOC_EVIDENCE_PAGES]
+    return candidates[start : start + 1]
+
+
+def _positive_page_number(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _proposal_node_title(number: str, title: str) -> str:
+    cleaned_title = _clean_label(title)
+    cleaned_number = _clean_label(number)
+    if (
+        not cleaned_number
+        or parse_structural_heading(cleaned_title) is not None
+        or _normalize_for_match(cleaned_title).startswith(
+            _normalize_for_match(cleaned_number)
+        )
+    ):
+        return cleaned_title
+    return f"{cleaned_number} {cleaned_title}".strip()
+
+
+def _with_codex_analysis_metadata(
+    parsed: ParsedSourceDocument,
+    *,
+    attempted: bool,
+    accepted: bool,
+    model: str,
+    proposal_count: int,
+    reason: str,
+) -> ParsedSourceDocument:
+    return ParsedSourceDocument(
+        text=parsed.text,
+        chapters=parsed.chapters,
+        pages=parsed.pages,
+        strategy=parsed.strategy,
+        warnings=parsed.warnings,
+        metadata={
+            **parsed.metadata,
+            "codex_structure_analysis_attempted": attempted,
+            "codex_structure_analysis_accepted": accepted,
+            "codex_structure_analysis_model": model,
+            "codex_structure_analysis_proposal_count": proposal_count,
+            "codex_structure_analysis_reason": _compact(reason, 500),
+        },
+    )
+
+
+def _with_codex_supervision_metadata(
+    parsed: ParsedSourceDocument,
+    *,
+    status: str,
+    model: str,
+    rounds: int,
+    repair_count: int,
+    summary: str,
+    issues: list[str],
+) -> ParsedSourceDocument:
+    warnings = list(parsed.warnings)
+    if status != "passed":
+        warnings.append(
+            "Codex 目录质量监工尚未放行该目录；当前仅发布全文检索索引。"
+        )
+    return ParsedSourceDocument(
+        text=parsed.text,
+        chapters=parsed.chapters,
+        pages=parsed.pages,
+        strategy=parsed.strategy,
+        warnings=list(dict.fromkeys(warnings)),
+        metadata={
+            **parsed.metadata,
+            "codex_supervision_status": status,
+            "codex_supervision_model": model,
+            "codex_supervision_rounds": rounds,
+            "codex_supervision_repair_count": repair_count,
+            "codex_supervision_summary": _compact(summary, 800),
+            "codex_supervision_issues": [_compact(issue, 500) for issue in issues[:20]],
+        },
+    )
+
+
+def _structure_is_publishable_after_supervision(parsed: ParsedSourceDocument) -> bool:
+    status = str(parsed.metadata.get("codex_supervision_status") or "")
+    return not status or status == "passed"
+
+
+def _can_preserve_previous_after_supervision(
+    previous: SourceStructure | None,
+    parsed: ParsedSourceDocument,
+) -> bool:
+    candidate_status = str(parsed.metadata.get("codex_supervision_status") or "")
+    if not candidate_status:
+        return True
+    return bool(
+        previous is not None
+        and str(previous.metadata.get("codex_supervision_status") or "") == "passed"
+    )
+
+
 def _source_structure_quality_rank(result: SourceStructureQualityResult) -> tuple[float, ...]:
     return _source_structure_quality_value(result.quality)
 
@@ -2801,8 +3203,15 @@ def _environment_flag(name: str, *, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _source_codex_processor(owner_user_id: str) -> SourceCodexProcessor:
-    return build_source_codex_processor(owner_user_id, store=source_structure_store.codex_store)
+def _optional_codex_source_structure_analyzer(
+    owner_user_id: str,
+) -> SourceStructureAnalyzer | None:
+    if not _environment_flag(
+        "OPENCLASS_CODEX_SOURCE_SUPERVISION_ENABLED",
+        default=False,
+    ):
+        return None
+    return build_codex_source_structure_analyzer(owner_user_id)
 
 
 source_structure_indexer = SourceStructureIndexer(
@@ -2810,5 +3219,5 @@ source_structure_indexer = SourceStructureIndexer(
         "OPENCLASS_SOURCE_VISUAL_INDEX_ENABLED",
         default=False,
     ),
-    codex_processor_factory=_source_codex_processor,
+    structure_analyzer_factory=_optional_codex_source_structure_analyzer,
 )

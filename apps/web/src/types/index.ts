@@ -281,7 +281,6 @@ export type SourceStructureQualityLevel =
   | "search_only";
 export type SourceTextReadiness = "unknown" | "ready" | "sparse" | "very_sparse" | "empty";
 export type SourceStructureStrategy =
-  | "codex_catalog"
   | "epub_navigation"
   | "epub_heading"
   | "pdf_outline"
@@ -291,7 +290,8 @@ export type SourceStructureStrategy =
   | "pdf_codex_toc"
   | "docx_heading"
   | "markdown_heading"
-  | "linear_text";
+  | "linear_text"
+  | "open_notebook_search_only";
 
 export interface SourceStructureQuality {
   evaluator_version: number;
@@ -349,10 +349,6 @@ export interface SourceIngestionRecord {
   structure_quality?: SourceStructureQuality | null;
   structure_error: string;
   structure_updated_at?: string | null;
-  reference_ready: boolean;
-  source_processing_run_id: string;
-  source_processing_worker_count: number;
-  source_processing_completed_worker_count: number;
   ingestion_job?: SourceIngestionJob | null;
   created_at: string;
   updated_at: string;
@@ -415,64 +411,6 @@ export interface SourceChapter {
   anchor_status: "verified" | "unverified";
   confidence: number;
   excerpt: string;
-  metadata: Record<string, unknown>;
-}
-
-export type SourceDocumentPartKind =
-  | "front_cover"
-  | "half_title"
-  | "title_page"
-  | "copyright"
-  | "dedication"
-  | "foreword"
-  | "preface"
-  | "introduction"
-  | "acknowledgements"
-  | "table_of_contents"
-  | "list_of_figures"
-  | "list_of_tables"
-  | "body"
-  | "epilogue"
-  | "afterword"
-  | "appendix"
-  | "notes"
-  | "glossary"
-  | "bibliography"
-  | "index"
-  | "colophon"
-  | "back_cover"
-  | "unknown";
-
-export interface SourceDocumentPart {
-  id: string;
-  owner_user_id: string;
-  package_id: string;
-  source_ingestion_id: string;
-  kind: SourceDocumentPartKind;
-  title: string;
-  order_index: number;
-  source_locator: string;
-  body_start_offset?: number | null;
-  body_end_offset?: number | null;
-  page_start?: number | null;
-  page_end?: number | null;
-  anchor_status: "verified" | "unverified";
-  confidence: number;
-  evidence_page_numbers: number[];
-  metadata: Record<string, unknown>;
-}
-
-export interface SourceCodexRun {
-  id: string;
-  source_ingestion_id: string;
-  status: string;
-  model: string;
-  worker_count: number;
-  completed_worker_count: number;
-  error: string;
-  created_at: string;
-  updated_at: string;
-  finished_at?: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -561,11 +499,9 @@ export interface SourceVisualEvidence {
 export interface SourceStructureView {
   source: SourceIngestionRecord;
   structure?: SourceStructure | null;
-  parts: SourceDocumentPart[];
   chapters: SourceChapter[];
   chunks: SourceChunk[];
   visuals: SourceVisualAsset[];
-  processing_run?: SourceCodexRun | null;
 }
 
 export interface SourceContentView {

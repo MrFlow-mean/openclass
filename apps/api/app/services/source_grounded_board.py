@@ -91,8 +91,25 @@ def resolve_source_grounded_board_plan(
     if source is None or source.status != "ready":
         raise SourceGroundedBoardError("这份资料尚未准备好，暂时不能据此生成板书。")
     if is_whole_source:
-        raise SourceGroundedBoardError(
-            "请先从这份资料的可交互目录中选择具体章节，再发送板书要求。"
+        from app.services.open_notebook_source_grounding import (
+            OpenNotebookSourceGroundingError,
+            resolve_open_notebook_source_plan,
+        )
+
+        try:
+            plan = resolve_open_notebook_source_plan(
+                owner_user_id=owner_user_id,
+                package_id=package.id,
+                lesson=lesson,
+                source=source,
+                query=query.strip() or selection.excerpt,
+            )
+        except OpenNotebookSourceGroundingError as exc:
+            raise SourceGroundedBoardError(str(exc)) from exc
+        return SourceGroundedBoardPlan(
+            requirement=plan.requirement,
+            clarification=plan.clarification,
+            teaching_plan=plan.teaching_plan,
         )
 
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
@@ -238,7 +255,6 @@ def resolve_source_grounded_board_plan(
             "source_chapter_id": chapter.id if chapter else "",
             "source_scope_kind": selection.source_scope_kind,
             "source_structure_id": view.structure.id,
-            "source_codex_run_id": view.processing_run.id if view.processing_run else "",
         },
     )
     source_evidence_store.save_bundle(bundle)

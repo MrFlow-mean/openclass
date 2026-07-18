@@ -33,7 +33,9 @@ from app.services.source_structure_indexer import (
     _find_pdf_toc_node_offset,
     _pdf_outline_chapters,
     _printed_page_offset_from_margins,
+    _proposal_node_title,
     _pdf_structure_ocr_page_limit,
+    _pdf_toc_evidence_pages,
     _pdf_toc_chapters,
     _looks_like_toc_page,
     _parse_toc_line,
@@ -118,7 +120,6 @@ def test_epub_ncx_preserves_native_parent_child_hierarchy(tmp_path: Path) -> Non
     assert chapters[1].source_locator == "epub:OEBPS/overview.xhtml#overview"
     assert chapters[0].body_start_offset == chapters[1].body_start_offset
     assert chapters[0].body_end_offset == chapters[3].body_start_offset
-    assert [chapter.page_start for chapter in chapters] == [1, 2, 3, 4]
 
 
 def test_epub_target_file_without_fragment_or_title_remains_unverified() -> None:
@@ -321,6 +322,28 @@ def test_toc_page_detection_stops_before_body_pages() -> None:
     ]
 
     assert [page.page_no for page in _detected_pdf_toc_pages(pages)] == [2, 3]
+
+
+def test_supervision_evidence_expands_stale_toc_metadata_to_continuation_pages() -> None:
+    pages = [
+        PageText(page_no=1, text="Cover"),
+        PageText(
+            page_no=2,
+            text="目录\n第一章 总论……1\n第一节 基础……2\n第二节 后续……4",
+        ),
+        PageText(
+            page_no=3,
+            text="第二章 继续……8\n第一节 更多……8\n第二节 细节……12",
+        ),
+        PageText(page_no=4, text="第一章 总论\n这里是没有目录页码行的正文。"),
+    ]
+
+    evidence = _pdf_toc_evidence_pages(
+        pages,
+        metadata={"toc_page_start": 2, "toc_page_end": 2},
+    )
+
+    assert [page.page_no for page in evidence] == [2, 3]
 
 
 def test_repeated_contents_heading_keeps_english_continuation_page() -> None:
@@ -718,6 +741,13 @@ def test_chapter_relative_body_number_can_anchor_a_toc_section() -> None:
     assert _find_pdf_toc_node_offset("4.4 Orbit spaces\nBody", node) == 0
 
 
+def test_proposal_title_does_not_duplicate_textual_number_prefix() -> None:
+    assert (
+        _proposal_node_title("Appendix", "Appendix: Generators and relations")
+        == "Appendix: Generators and relations"
+    )
+
+
 def test_layout_toc_infers_a_missing_printed_page_from_body_anchor() -> None:
     nodes = [
         pdf_toc_parser.PdfTocNode(title="第一章 总论", printed_page=1, toc_page=2, level=1),
@@ -921,7 +951,7 @@ def test_missing_codex_supervisor_preserves_deterministic_pdf_directory(
         store=store,
         visual_extractor=UnexpectedVisualExtractor(),
         visual_index_enabled=False,
-        codex_processor_factory=None,
+        structure_analyzer_factory=lambda _owner: None,
     )
     monkeypatch.setattr(indexer, "_parse_record", lambda *_args, **_kwargs: parsed)
 
@@ -931,7 +961,7 @@ def test_missing_codex_supervisor_preserves_deterministic_pdf_directory(
     assert structure.status == "ready"
     assert structure.strategy == "pdf_outline"
     assert structure.visual_index_status == "unsupported"
-    assert "source_codex_run_id" not in structure.metadata
+    assert "codex_supervision_status" not in structure.metadata
     assert [chapter.normalized_number for chapter in view.chapters] == ["1"]
 
 

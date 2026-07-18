@@ -54,9 +54,15 @@ class SourceVisualAnalysisResponse(BaseModel):
 
 
 def source_visual_analysis_enabled() -> bool:
+    default_enabled = (
+        "0"
+        if os.getenv("OPENCLASS_SOURCE_BACKEND", "open_notebook").strip().lower()
+        == "open_notebook"
+        else "1"
+    )
     value = os.getenv(
         "OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED",
-        "1",
+        default_enabled,
     ).strip().lower()
     return value not in {"0", "false", "no", "off"}
 
