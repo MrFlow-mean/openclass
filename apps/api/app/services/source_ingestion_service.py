@@ -652,6 +652,7 @@ class SourceIngestionService:
         if not is_native_text and "original_source_path" not in metadata and current_path is not None:
             metadata["original_source_path"] = str(current_path)
             metadata["original_mime_type"] = record.mime_type
+            metadata["original_file_name"] = record.file_name
 
         editable_record = record.model_copy(
             update={
@@ -738,6 +739,7 @@ class SourceIngestionService:
         return self._retry_source_unlocked(record)
 
     def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+        record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
             raise SourceIngestionError("Source content is unavailable; import the source again.")
@@ -826,6 +828,7 @@ class SourceIngestionService:
     ) -> SourceIngestionRecord:
         if not supports_directory_catalog(record):
             raise SourceIngestionError("This source format does not support a directory catalog.")
+        record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
             raise SourceIngestionError("Source content is unavailable; import the source again.")
@@ -1509,10 +1512,9 @@ def _supported_directory_file_name(file_name: str) -> bool:
 
 
 def _save_local_source_file(record: SourceIngestionRecord, content: bytes) -> dict[str, str]:
-    safe_name = _safe_file_name(record.file_name or record.id)
     source_dir = workspace_state.UPLOAD_DIR / "sources"
     source_dir.mkdir(parents=True, exist_ok=True)
-    path = source_dir / f"{record.id}_{safe_name}"
+    path = source_dir / _stored_source_file_name(record)
     path.write_bytes(content)
     return {"local_source_path": str(path)}
 
@@ -1539,6 +1541,42 @@ def source_download_path(record: SourceIngestionRecord) -> Path | None:
     path = Path(raw_path).expanduser().resolve()
     allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
     return path if allowed_root in path.parents and path.is_file() else None
+
+
+def _stored_source_file_name(record: SourceIngestionRecord) -> str:
+    suffix = Path(record.file_name).suffix.lower()
+    return f"{record.id}{suffix}"
+
+
+def _repair_local_source_storage(record: SourceIngestionRecord) -> SourceIngestionRecord:
+    raw_path = record.metadata.get("local_source_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return record
+    current_path = Path(raw_path).expanduser().resolve()
+    allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
+    if allowed_root not in current_path.parents or not current_path.is_file():
+        return record
+    expected_path = allowed_root / _stored_source_file_name(record)
+    if current_path == expected_path:
+        return record
+    if expected_path.exists():
+        raise SourceIngestionError(
+            "The stable storage target for this source already exists."
+        )
+    try:
+        current_path.replace(expected_path)
+    except OSError as exc:
+        raise SourceIngestionError(
+            "The stored source could not be moved to its stable identity path."
+        ) from exc
+    return record.model_copy(
+        update={
+            "metadata": {
+                **record.metadata,
+                "local_source_path": str(expected_path),
+            }
+        }
+    )
 
 
 def _delete_local_source_file(record: SourceIngestionRecord) -> None:
@@ -1636,7 +1674,7 @@ def _as_directory_catalog_record(record: SourceIngestionRecord) -> SourceIngesti
 
 def _safe_file_name(file_name: str) -> str:
     name = Path(file_name).name.strip() or "source"
-    return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:180]
+    return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)
 
 
 def _structure_store_for_source_store(

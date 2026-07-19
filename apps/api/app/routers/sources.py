@@ -229,7 +229,7 @@ def download_package_source(
     return FileResponse(
         Path(path),
         media_type=str(source.metadata.get("original_mime_type") or source.mime_type or "application/octet-stream"),
-        filename=path.name.split("_", 1)[-1] if "_" in path.name else (source.file_name or path.name),
+        filename=str(source.metadata.get("original_file_name") or source.file_name or path.name),
     )
 
 

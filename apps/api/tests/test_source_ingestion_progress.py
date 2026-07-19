@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from pathlib import Path
 
 from app.models import (
     AgentActivityEvent,
@@ -15,6 +16,7 @@ from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator, SourceIngestionJobStore
 from app.services.source_ingestion_service import SourceIngestionService
+from app.services import source_ingestion_service as ingestion_module
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
 
@@ -30,6 +32,62 @@ def test_source_ingestion_defaults_to_native_backend(tmp_path, monkeypatch) -> N
     )
 
     assert service.source_backend == "native"
+
+
+def test_local_source_storage_does_not_truncate_the_original_file_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", upload_dir)
+    original_name = f"{'very-long-title-' * 80}.pdf"
+    record = SourceIngestionRecord(
+        id="source_long_name",
+        owner_user_id="user_1",
+        package_id="course_1",
+        title=original_name,
+        source_type="local_file",
+        file_name=original_name,
+        mime_type="application/pdf",
+        size_bytes=3,
+    )
+
+    metadata = ingestion_module._save_local_source_file(record, b"pdf")
+    stored_path = Path(metadata["local_source_path"])
+
+    assert record.file_name == original_name
+    assert stored_path.name == "source_long_name.pdf"
+    assert stored_path.read_bytes() == b"pdf"
+
+
+def test_retry_storage_repair_restores_suffix_lost_by_legacy_name_truncation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    upload_dir = tmp_path / "uploads"
+    source_dir = upload_dir / "sources"
+    source_dir.mkdir(parents=True)
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", upload_dir)
+    legacy_path = source_dir / "source_legacy_long_title."
+    legacy_path.write_bytes(b"valid pdf bytes")
+    record = SourceIngestionRecord(
+        id="source_legacy",
+        owner_user_id="user_1",
+        package_id="course_1",
+        title="Long source",
+        source_type="local_file",
+        file_name=f"{'long-title-' * 80}.pdf",
+        mime_type="application/pdf",
+        size_bytes=legacy_path.stat().st_size,
+        metadata={"local_source_path": str(legacy_path)},
+    )
+
+    repaired = ingestion_module._repair_local_source_storage(record)
+    repaired_path = Path(str(repaired.metadata["local_source_path"]))
+
+    assert repaired_path.name == "source_legacy.pdf"
+    assert repaired_path.read_bytes() == b"valid pdf bytes"
+    assert not legacy_path.exists()
 
 
 def test_source_ingestion_job_persists_live_codex_activity(tmp_path) -> None:
