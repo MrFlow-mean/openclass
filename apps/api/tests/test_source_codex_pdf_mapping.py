@@ -11,6 +11,7 @@ from app.services import source_codex_pdf_mapping as mapping_module
 from app.services.source_codex_pdf_mapping import (
     CodexPdfPageCalibration,
     CodexPdfPrintedPageAnchor,
+    CodexPdfPrintedPageSegment,
     PdfPageCalibrationResult,
     PdfPrintedPageSequenceCandidate,
     SourceCodexPdfMappingError,
@@ -105,6 +106,45 @@ def _sequence_candidate(*, final_printed: int = 514, final_pdf: int = 530):
         printed_page_end=final_printed,
         pdf_page_start=17,
         pdf_page_end=final_pdf,
+    )
+
+
+def _segmented_calibration_model() -> CodexPdfPageCalibration:
+    return CodexPdfPageCalibration(
+        complete=True,
+        continuous_arabic_numbering=False,
+        printed_page_start=1,
+        printed_page_end=250,
+        pdf_page_start=17,
+        pdf_page_end=266,
+        anchors=[
+            CodexPdfPrintedPageAnchor(printed_page=1, pdf_page=17),
+            CodexPdfPrintedPageAnchor(printed_page=201, pdf_page=217),
+            CodexPdfPrintedPageAnchor(printed_page=204, pdf_page=218),
+            CodexPdfPrintedPageAnchor(printed_page=215, pdf_page=229),
+            CodexPdfPrintedPageAnchor(printed_page=216, pdf_page=232),
+            CodexPdfPrintedPageAnchor(printed_page=250, pdf_page=266),
+        ],
+        segments=[
+            CodexPdfPrintedPageSegment(
+                printed_page_start=1,
+                printed_page_end=201,
+                pdf_page_start=17,
+                pdf_page_end=217,
+            ),
+            CodexPdfPrintedPageSegment(
+                printed_page_start=204,
+                printed_page_end=215,
+                pdf_page_start=218,
+                pdf_page_end=229,
+            ),
+            CodexPdfPrintedPageSegment(
+                printed_page_start=216,
+                printed_page_end=250,
+                pdf_page_start=232,
+                pdf_page_end=266,
+            ),
+        ],
     )
 
 
@@ -221,6 +261,47 @@ def test_pdf_calibration_accepts_arbitrary_verified_anchors_without_page_one(
     )
 
 
+def test_pdf_calibration_investigates_empty_mechanical_candidates_and_returns_segments(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"pdf bytes")
+    source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    client = FakeCalibrationClient(
+        _segmented_calibration_model(),
+        source_sha256=source_hash,
+    )
+    monkeypatch.setattr(mapping_module, "_pdf_page_count", lambda _path: 280)
+    monkeypatch.setattr(
+        mapping_module,
+        "_printed_page_sequence_candidates",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        mapping_module,
+        "_verify_printed_footer_anchors",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = generate_pdf_page_calibration(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=source_hash,
+        required_printed_page_min=1,
+        required_printed_page_max=246,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert len(client.calls) == 1
+    assert result.page_offset is None
+    assert len(result.segments) == 3
+    assert result.audit_metadata["pdf_printed_page_offsets"] == [14, 16]
+    assert "can be empty" in str(client.calls[0]["user_prompt"])
+    assert "instead of stopping" in str(client.calls[0]["system_prompt"])
+
+
 def test_pdf_calibration_rejects_inconsistent_or_insufficient_coverage(
     monkeypatch,
     tmp_path: Path,
@@ -238,7 +319,7 @@ def test_pdf_calibration_rejects_inconsistent_or_insufficient_coverage(
     )
     client = FakeCalibrationClient(inconsistent, source_sha256=source_hash)
 
-    with pytest.raises(SourceCodexPdfMappingError, match="endpoints do not share one offset"):
+    with pytest.raises(SourceCodexPdfMappingError, match="segment does not share one offset"):
         generate_pdf_page_calibration(
             record=_record(path),
             source_path=path,
@@ -309,6 +390,40 @@ def test_mechanical_mapping_keeps_shared_boundary_page_inside_parent() -> None:
     assert mapped[1].range.end <= mapped[0].range.end
 
 
+def test_segmented_mapping_uses_each_verified_offset_and_leaves_missing_pages_unmapped() -> None:
+    model = _segmented_calibration_model()
+    calibration = PdfPageCalibrationResult(
+        printed_page_start=model.printed_page_start,
+        printed_page_end=model.printed_page_end,
+        pdf_page_start=model.pdf_page_start,
+        pdf_page_end=model.pdf_page_end,
+        page_offset=None,
+        page_count=280,
+        anchors=tuple(model.anchors),
+        turn_count=1,
+        raw_output="{}",
+        raw_output_sha256="c" * 64,
+        audit_metadata={},
+        segments=tuple(model.segments),
+    )
+    chapters = [
+        _chapter("before-gap", title="Before gap", locator="p. 201", level=1, order_index=0),
+        _chapter("missing", title="Missing", locator="p. 202", level=1, order_index=1),
+        _chapter("middle", title="Middle", locator="p. 204", level=1, order_index=2),
+        _chapter("after-duplicate", title="After duplicate", locator="p. 216", level=1, order_index=3),
+    ]
+
+    mapped = map_pdf_printed_page_ranges(chapters, calibration=calibration)
+
+    assert mapped[0].range is not None and mapped[0].range.start == 217
+    assert mapped[1].range is None
+    assert mapped[1].mapping_status == "unmapped"
+    assert mapped[2].range is not None and mapped[2].range.start == 218
+    assert mapped[3].range is not None and mapped[3].range.start == 232
+    assert mapped[2].metadata["pdf_page_offset"] == 14
+    assert mapped[3].metadata["pdf_page_offset"] == 16
+
+
 def test_footer_page_number_verification_reads_only_margin_label(tmp_path: Path) -> None:
     import fitz
 
@@ -323,6 +438,28 @@ def test_footer_page_number_verification_reads_only_margin_label(tmp_path: Path)
     reopened = fitz.open(path)
     try:
         assert mapping_module._footer_page_numbers(reopened.load_page(0)) == {244}
+    finally:
+        reopened.close()
+
+
+def test_page_number_verification_accepts_centered_footer_and_outer_header(
+    tmp_path: Path,
+) -> None:
+    import fitz
+
+    path = tmp_path / "margin-labels.pdf"
+    document = fitz.open()
+    centered_footer = document.new_page(width=500, height=700)
+    centered_footer.insert_text((245, 680), "12")
+    outer_header = document.new_page(width=500, height=700)
+    outer_header.insert_text((440, 35), "13")
+    document.save(path)
+    document.close()
+
+    reopened = fitz.open(path)
+    try:
+        assert mapping_module._footer_page_numbers(reopened.load_page(0)) == {12}
+        assert mapping_module._footer_page_numbers(reopened.load_page(1)) == {13}
     finally:
         reopened.close()
 
