@@ -99,8 +99,8 @@ function SourceChapterNode({
           ) : null}
         </button>
         {!isVerified ? (
-          <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录条目已识别，正文范围尚未验证">
-            正文待验证
+          <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录已识别，正文范围未映射">
+            范围未映射
           </span>
         ) : null}
         {onSourceReference && isVerified ? (

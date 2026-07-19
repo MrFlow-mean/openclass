@@ -739,6 +739,11 @@ function SourceRow({
   }
 
   const hasChapters = Boolean(catalog?.chapters.length);
+  const canViewDirectory = Boolean(
+    hasChapters ||
+      source.structure_has_verified_toc ||
+      source.structure_quality?.total_chapter_count
+  );
   function toggleChapter(chapterId: string) {
     setExpandedChapterIds((current) => {
       const next = new Set(current);
@@ -888,12 +893,12 @@ function SourceRow({
                   onClick={toggleStructure}
                   className={clsx(
                     "flex min-w-10 flex-col items-center justify-center gap-0.5 rounded-md border border-transparent px-1 py-1 text-[10px] leading-none transition disabled:cursor-not-allowed disabled:opacity-50",
-                    source.structure_has_verified_toc
+                    canViewDirectory
                       ? "text-blue-600 hover:border-blue-100 hover:bg-blue-50"
                       : "text-gray-400 hover:border-gray-200 hover:bg-gray-50 hover:text-gray-600"
                   )}
-                  title={source.structure_has_verified_toc ? "查看目录" : "查看目录状态"}
-                  aria-label={`${source.structure_has_verified_toc ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
+                  title={canViewDirectory ? "查看目录" : "查看目录状态"}
+                  aria-label={`${canViewDirectory ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
                 >
                   {isCatalogLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
                   <span>{isStructureOpen ? "收起" : "展开"}</span>
@@ -1035,7 +1040,7 @@ function SourceStructureEmptyState({
     status === "failed"
       ? catalog?.error || source.structure_error || "目录建立失败。上一个可用目录会继续保留。"
       : status === "linear_only"
-        ? "未发现可验证的目录节点。可以明确点击重建，但普通展开不会重新处理资料。"
+        ? "未识别到目录节点。可以明确点击重建，但普通展开不会重新处理资料。"
         : status === "pending" || status === "building"
           ? "目录正在建立并保存，完成后会自动更新。"
           : "这份资料当前没有已保存的目录节点。";

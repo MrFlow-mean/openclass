@@ -47,6 +47,9 @@ export function sourceStructureBadgeLabel(
   if (quality?.text_readiness === "empty") {
     return "范围不可用";
   }
+  if (level === "unverified" && isDirectoryOnlyCatalog(source)) {
+    return "目录已识别";
+  }
   return QUALITY_LABELS[level];
 }
 
@@ -85,7 +88,7 @@ export function sourceStructureQualityNote(
     return "目录建立失败；如果之前已有可用版本，系统会继续保留它。";
   }
   if (source.structure_status === "pending" || source.structure_status === "building") {
-    return "正在解析目录节点并验证它们对应的正文边界。";
+    return "正在读取文件并生成目录。";
   }
   if (quality?.text_readiness === "empty") {
     return "没有得到可验证的目录范围；请检查文件文字层或明确重建。";
@@ -105,6 +108,9 @@ export function sourceStructureQualityNote(
   if (level === "unverified") {
     if (quality?.verified_chapter_count && quality.total_chapter_count) {
       return `仅 ${quality.verified_chapter_count}/${quality.total_chapter_count} 个节点可验证，整份目录暂不可信；已验证章节仍可单独引用。`;
+    }
+    if (isDirectoryOnlyCatalog(source) && quality?.total_chapter_count) {
+      return "目录已识别，正文范围未映射；当前仅用于查看目录。";
     }
     return "识别到目录候选，但尚未建立可靠正文边界，当前不会把整份目录标为可信。";
   }
@@ -147,7 +153,9 @@ export function SourceStructureQualitySummary({
       {showMetrics && quality ? (
         <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-gray-600">
           <span className="rounded bg-gray-50 px-1.5 py-1">
-            节点 {quality.verified_chapter_count}/{quality.total_chapter_count}
+            {directoryOnlyCatalog && quality.verified_chapter_count === 0
+              ? `目录节点 ${quality.total_chapter_count}`
+              : `节点 ${quality.verified_chapter_count}/${quality.total_chapter_count}`}
           </span>
           <span className="rounded bg-gray-50 px-1.5 py-1">
             边界 {formatPercent(quality.boundary_valid_ratio)}

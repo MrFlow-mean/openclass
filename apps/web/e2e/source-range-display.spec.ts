@@ -132,3 +132,22 @@ test("describes directory-only trust without claiming full-body coverage", () =>
   expect(note).toContain("正文将在引用章节后按需读取");
   expect(note).not.toContain("整体覆盖已通过验证");
 });
+
+test("describes an unmapped Source Codex catalog as viewable but not citable", () => {
+  const note = sourceStructureQualityNote(
+    {
+      structure_status: "ready",
+      structure_strategy: "codex_directory_v1",
+      metadata: { catalog_pipeline: "codex_directory_v1" },
+    } as unknown as SourceIngestionRecord,
+    {
+      level: "unverified",
+      total_chapter_count: 12,
+      verified_chapter_count: 0,
+      text_readiness: "unknown",
+    } as never,
+    "unverified"
+  );
+
+  expect(note).toBe("目录已识别，正文范围未映射；当前仅用于查看目录。");
+});
