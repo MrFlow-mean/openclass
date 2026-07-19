@@ -155,12 +155,14 @@ def _chapter(
     locator: str,
     level: int,
     order_index: int,
+    parent_id: str | None = None,
 ) -> SourceChapter:
     return SourceChapter(
         id=chapter_id,
         owner_user_id="user_pdf_mapping",
         package_id="course_pdf_mapping",
         source_ingestion_id="source_pdf_mapping",
+        parent_id=parent_id,
         title=title,
         source_locator=locator,
         level=level,
@@ -418,6 +420,126 @@ def test_mechanical_mapping_keeps_shared_boundary_page_inside_parent() -> None:
     assert (mapped[0].range.start, mapped[0].range.end) == (79, 80)
     assert (mapped[1].range.start, mapped[1].range.end) == (80, 80)
     assert mapped[1].range.end <= mapped[0].range.end
+
+
+def test_mechanical_mapping_derives_parent_range_from_boundary_children() -> None:
+    chapters = [
+        _chapter("chapter-4", title="Chapter 4", locator="", level=1, order_index=0),
+        _chapter(
+            "section-1",
+            title="Constructing a Mobius strip",
+            locator="printed-page:65",
+            level=2,
+            order_index=1,
+            parent_id="chapter-4",
+        ),
+        _chapter(
+            "section-2",
+            title="The identification topology",
+            locator="printed-page:66",
+            level=2,
+            order_index=2,
+            parent_id="chapter-4",
+        ),
+        _chapter(
+            "section-3",
+            title="Topological groups",
+            locator="printed-page:73",
+            level=2,
+            order_index=3,
+            parent_id="chapter-4",
+        ),
+        _chapter(
+            "section-4",
+            title="Orbit spaces",
+            locator="printed-page:78",
+            level=2,
+            order_index=4,
+            parent_id="chapter-4",
+        ),
+        _chapter("chapter-5", title="Chapter 5", locator="", level=1, order_index=5),
+        _chapter(
+            "next-section",
+            title="Homotopic maps",
+            locator="printed-page:87",
+            level=2,
+            order_index=6,
+            parent_id="chapter-5",
+        ),
+    ]
+
+    mapped = map_pdf_printed_page_ranges(chapters, calibration=_result())
+
+    parent = mapped[0]
+    assert parent.range is not None
+    assert (parent.range.start, parent.range.end) == (81, 102)
+    assert parent.range.display_label == "PDF pp. 81-102"
+    assert parent.mapping_status == "verified"
+    assert parent.metadata["range_derived_from_children"] is True
+    assert parent.catalog_evidence[-1].method == "verified_child_range_union"
+    assert parent.page_end == 103
+
+
+def test_parent_range_allows_an_unmapped_middle_child_but_requires_mapped_boundaries() -> None:
+    chapters = [
+        _chapter("parent", title="Parent", locator="", level=1, order_index=0),
+        _chapter(
+            "first",
+            title="First",
+            locator="printed-page:195",
+            level=2,
+            order_index=1,
+            parent_id="parent",
+        ),
+        _chapter(
+            "missing-middle",
+            title="Missing middle",
+            locator="printed-page:202",
+            level=2,
+            order_index=2,
+            parent_id="parent",
+        ),
+        _chapter(
+            "last",
+            title="Last",
+            locator="printed-page:210",
+            level=2,
+            order_index=3,
+            parent_id="parent",
+        ),
+    ]
+    model = _segmented_calibration_model()
+    calibration = PdfPageCalibrationResult(
+        printed_page_start=model.printed_page_start,
+        printed_page_end=model.printed_page_end,
+        pdf_page_start=model.pdf_page_start,
+        pdf_page_end=model.pdf_page_end,
+        page_offset=None,
+        page_count=280,
+        anchors=tuple(model.anchors),
+        turn_count=1,
+        raw_output="{}",
+        raw_output_sha256="d" * 64,
+        audit_metadata={},
+        segments=tuple(model.segments),
+    )
+
+    mapped = map_pdf_printed_page_ranges(chapters, calibration=calibration)
+
+    assert mapped[0].range is not None
+    assert (mapped[0].range.start, mapped[0].range.end) == (211, 266)
+    assert mapped[1].mapping_status == "verified"
+    assert mapped[2].mapping_status == "unmapped"
+    assert mapped[3].mapping_status == "verified"
+
+    missing_first = [
+        chapters[0],
+        chapters[2].model_copy(update={"parent_id": "parent", "order_index": 1}),
+        chapters[3].model_copy(update={"parent_id": "parent", "order_index": 2}),
+    ]
+    remapped = map_pdf_printed_page_ranges(missing_first, calibration=calibration)
+    assert remapped[0].mapping_status == "unmapped"
+    assert remapped[0].range is None
 
 
 def test_segmented_mapping_uses_each_verified_offset_and_leaves_missing_pages_unmapped() -> None:

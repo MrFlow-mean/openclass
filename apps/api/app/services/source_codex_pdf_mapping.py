@@ -338,7 +338,91 @@ def map_pdf_printed_page_ranges(
                 }
             )
         )
-    return mapped
+    return _aggregate_verified_child_ranges(mapped)
+
+
+def _aggregate_verified_child_ranges(chapters: Sequence[SourceChapter]) -> list[SourceChapter]:
+    """Derive an unmapped parent's PDF range from its verified boundary children."""
+
+    aggregated = list(chapters)
+    children_by_parent: dict[str, list[int]] = {}
+    for index, chapter in enumerate(aggregated):
+        if chapter.parent_id:
+            children_by_parent.setdefault(chapter.parent_id, []).append(index)
+
+    for index in range(len(aggregated) - 1, -1, -1):
+        parent = aggregated[index]
+        if parent.mapping_status == "verified" or parent.range is not None:
+            continue
+        child_indexes = children_by_parent.get(parent.id, [])
+        if not child_indexes:
+            continue
+        children = [aggregated[child_index] for child_index in child_indexes]
+        boundary_children = (children[0], children[-1])
+        if any(not _has_verified_pdf_range(child) for child in boundary_children):
+            continue
+        verified_children = [child for child in children if _has_verified_pdf_range(child)]
+        pdf_page_start = min(int(child.range.start) for child in verified_children if child.range)
+        pdf_page_end = max(int(child.range.end) for child in verified_children if child.range)
+        confidence = min(child.confidence for child in boundary_children)
+        source_range = SourceRange(
+            kind="pdf_pages",
+            start=pdf_page_start,
+            end=pdf_page_end,
+            display_label=_pdf_page_label(pdf_page_start, pdf_page_end),
+            metadata={
+                "index_base": 1,
+                "physical_pages": True,
+                "calibration_method": "verified_child_range_union",
+                "derived_from_children": True,
+                "child_count": len(children),
+                "verified_child_count": len(verified_children),
+            },
+        )
+        evidence = SourceCatalogEvidence(
+            method="verified_child_range_union",
+            source_locator=parent.source_locator,
+            page_start=pdf_page_start,
+            page_end=pdf_page_end,
+            excerpt=parent.title,
+            confidence=confidence,
+            metadata={
+                "first_child_id": boundary_children[0].id,
+                "last_child_id": boundary_children[-1].id,
+                "verified_child_count": len(verified_children),
+            },
+        )
+        aggregated[index] = parent.model_copy(
+            update={
+                "page_start": pdf_page_start,
+                "page_end": pdf_page_end + 1,
+                "anchor_status": "verified",
+                "range": source_range,
+                "mapping_status": "verified",
+                "catalog_evidence": [*parent.catalog_evidence, evidence],
+                "confidence": confidence,
+                "metadata": {
+                    **parent.metadata,
+                    "source_range_mapped": True,
+                    "range_derived_from_children": True,
+                    "range_derivation_method": "verified_child_range_union",
+                },
+            }
+        )
+    return aggregated
+
+
+def _has_verified_pdf_range(chapter: SourceChapter) -> bool:
+    source_range = chapter.range
+    return (
+        chapter.mapping_status == "verified"
+        and source_range is not None
+        and source_range.kind == "pdf_pages"
+        and isinstance(source_range.start, int)
+        and not isinstance(source_range.start, bool)
+        and isinstance(source_range.end, int)
+        and not isinstance(source_range.end, bool)
+    )
 
 
 def printed_page_from_locator(value: str) -> int | None:
