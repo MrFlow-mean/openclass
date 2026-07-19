@@ -90,7 +90,7 @@ export function SourceCodexActivity({
   events,
   className,
   title = "后端实时 OpenClass 输出",
-  expandedByDefault = true,
+  expandedByDefault = false,
 }: {
   events: AgentActivityEvent[];
   className?: string;
