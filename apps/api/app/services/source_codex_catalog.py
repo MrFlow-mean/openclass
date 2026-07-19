@@ -839,8 +839,16 @@ tool loop. Inspect metadata and native navigation first, then extract bounded
 page text or render selected pages into scratch when evidence is missing. Keep
 investigating when an initial page-number hypothesis is uncertain. Do not stop
 only because the first inspected page, first offset, native outline, or text
-layer is incomplete. Emit concise progress commentary before each investigation
-stage so the learner can see what you are checking.
+layer is incomplete. Before and after each bounded investigation stage, emit one
+concise commentary line in exactly this form:
+OPENCLASS_PROGRESS {"phase":"scan_pages","completed":12,"total":280,"unit":"pages","detail":"checking the printed contents against physical PDF pages"}
+Send this as assistant commentary; do not print it by running a shell command.
+Allowed phase values are scan_pages, map_nodes, verify_ranges, and write_catalog.
+Report only counts you have actually observed; never invent a total or advance a
+count for planned work. Once the directory is known, map_nodes and verify_ranges
+must use the real directory-node total. For non-paginated sources, use nodes,
+ranges, spine_items, sections, checks, or artifacts as the unit. These commentary
+lines are progress telemetry and are not part of the final catalog artifact.
 
 For PDF sources, source_range.kind must be pdf_pages and start/end are inclusive,
 1-based physical PDF file pages. A relation such as physical PDF page minus

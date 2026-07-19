@@ -42,6 +42,7 @@ from app.services.source_ingestion_jobs import (
     SourceIngestionJobStore,
     source_ingestion_job_store,
 )
+from app.services.source_codex_progress import SourceCodexProgressTracker
 from app.services.source_structure_indexer import (
     SourceStructureIndexer,
     source_structure_indexer,
@@ -1200,6 +1201,7 @@ class SourceIngestionService:
         )
         activity_by_id: dict[str, AgentActivityEvent] = {}
         activity_order: list[str] = []
+        codex_progress_tracker: SourceCodexProgressTracker | None = None
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -1215,18 +1217,27 @@ class SourceIngestionService:
             )
 
         def report_codex_activity(event: AgentActivityEvent) -> None:
-            nonlocal indexing_job
+            nonlocal saved, indexing_job
+            progress = indexing_job.progress
+            phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
+            if codex_progress_tracker is not None:
+                observation = codex_progress_tracker.observe(event)
+                event = observation.event
+                progress = observation.progress
+                phase = observation.phase
+            next_status = "indexing" if progress >= 60 else "parsing"
+            if saved.status != next_status:
+                saved = self.store.save_source(saved.model_copy(update={"status": next_status}))
             if event.id not in activity_by_id:
                 activity_order.append(event.id)
             activity_by_id[event.id] = event
             current_activity = [activity_by_id[event_id] for event_id in activity_order]
-            current_phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
             indexing_job = self._update_job(
                 indexing_job,
                 record=saved,
-                status=indexing_job.status,
-                progress=indexing_job.progress,
-                phase=current_phase,
+                status=next_status,
+                progress=progress,
+                phase=phase,
                 agent_activity=current_activity,
             )
 
@@ -1248,6 +1259,7 @@ class SourceIngestionService:
                 local_path = source_local_path(saved)
                 if local_path is None:
                     raise SourceIngestionError("Source file is unavailable for directory cataloging.")
+                codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 raw_catalog_model = saved.metadata.get("catalog_model")
                 try:
                     catalog_model = AIModelSelection.model_validate(raw_catalog_model)

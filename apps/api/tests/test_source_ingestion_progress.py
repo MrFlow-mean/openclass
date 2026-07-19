@@ -17,6 +17,7 @@ from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_ingestion_jobs import SourceIngestionCoordinator, SourceIngestionJobStore
 from app.services.source_ingestion_service import SourceIngestionService
 from app.services import source_ingestion_service as ingestion_module
+from app.services import source_codex_progress
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
 
@@ -416,6 +417,113 @@ def test_file_ingestion_exposes_durable_progress_while_indexing(tmp_path, monkey
     assert completed.ingestion_job is not None
     assert completed.ingestion_job.progress == 100
     assert completed.ingestion_job.phase_history[-1] == "ready"
+
+
+def test_directory_ingestion_persists_real_codex_work_progress(tmp_path, monkeypatch) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    job_store = SourceIngestionJobStore(database)
+    reached_node_mapping = threading.Event()
+    allow_completion = threading.Event()
+
+    class BlockingDirectoryProcessor:
+        def process(
+            self,
+            *,
+            record,
+            path,
+            catalog_model,
+            progress_callback=None,
+            activity_callback=None,
+        ):
+            del path, catalog_model
+            assert progress_callback is not None
+            assert activity_callback is not None
+            progress_callback("source_codex_investigation", 30)
+            activity_callback(
+                AgentActivityEvent(
+                    id="mapping_34",
+                    turn_id="turn_1",
+                    stage="execute_role",
+                    label="OpenClass 工作进展",
+                    status="completed",
+                    role="OpenClass",
+                    metadata={
+                        "kind": "commentary",
+                        "detail": (
+                            'OPENCLASS_PROGRESS {"phase":"map_nodes","completed":34,'
+                            '"total":68,"unit":"nodes","detail":"matching headings"}'
+                        ),
+                    },
+                )
+            )
+            reached_node_mapping.set()
+            assert allow_completion.wait(timeout=5)
+            return structure_store.save_structure_bundle(
+                structure=SourceStructure(
+                    owner_user_id=record.owner_user_id,
+                    package_id=record.package_id,
+                    source_ingestion_id=record.id,
+                    status="ready",
+                    strategy="codex_directory_v1",
+                ),
+                chapters=[],
+                chunks=[],
+            )
+
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(source_codex_progress, "_pdf_page_count", lambda _path: 100)
+    service = SourceIngestionService(
+        source_backend="native",
+        store=source_store,
+        job_store=job_store,
+        structure_store=structure_store,
+        directory_processor=BlockingDirectoryProcessor(),
+    )
+    package = CoursePackage(id="course_codex_progress", title="Progress", summary="", lessons=[])
+    queued = service.queue_file_source(
+        owner_user_id="user_codex_progress",
+        package=package,
+        file_name="source.pdf",
+        content=b"pdf",
+        mime_type="application/pdf",
+    )
+
+    worker = threading.Thread(
+        target=service.process_file_source,
+        kwargs={
+            "owner_user_id": queued.owner_user_id,
+            "package_id": queued.package_id,
+            "source_id": queued.id,
+        },
+    )
+    worker.start()
+    assert reached_node_mapping.wait(timeout=5)
+
+    processing = service.list_sources(
+        owner_user_id=queued.owner_user_id,
+        package_id=queued.package_id,
+    )[0]
+    assert processing.status == "indexing"
+    assert processing.ingestion_job is not None
+    assert processing.ingestion_job.progress == 65
+    assert processing.ingestion_job.phase_history[-1] == "source_codex_mapping_nodes"
+    live_progress = processing.ingestion_job.agent_activity[-1].metadata["source_progress"]
+    assert live_progress["label"] == "正在映射目录节点：34/68 个目录节点"
+    assert live_progress["detail"] == "matching headings · 文件共 100 页"
+
+    allow_completion.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    completed = service.list_sources(
+        owner_user_id=queued.owner_user_id,
+        package_id=queued.package_id,
+    )[0]
+    assert completed.status == "ready"
+    assert completed.ingestion_job is not None
+    assert completed.ingestion_job.progress == 100
 
 
 def test_open_notebook_mode_skips_local_structure_pipeline(tmp_path, monkeypatch) -> None:

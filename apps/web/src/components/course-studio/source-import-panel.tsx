@@ -938,6 +938,7 @@ function SourceRow({
             <SourceProcessingProgress
               className="mt-2"
               label={processingState.label}
+              detail={processingState.detail}
               value={processingState.value}
               activity={processingState.activity}
             />

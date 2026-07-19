@@ -229,7 +229,7 @@ class SourceDirectoryProcessor:
                 # Source Codex owns both directory semantics and range
                 # investigation. The host validates and persists its exact
                 # authored result without deriving page offsets or parent ranges.
-                _report(progress_callback, "source_codex_investigation", 64)
+                _report(progress_callback, "source_codex_investigation", 30)
                 direct_catalog = generate_codex_direct_catalog(
                     record=record,
                     source_path=path,
@@ -351,7 +351,7 @@ class SourceDirectoryProcessor:
                 if self.normalizer_factory is not None or has_authoritative_ranges
                 else "validating_directory"
             )
-            _report(progress_callback, validation_stage, 82)
+            _report(progress_callback, validation_stage, 92)
             _validate_chapters(chapters)
             verified_count = sum(chapter.mapping_status == "verified" for chapter in chapters)
             quality = _catalog_quality(
@@ -412,7 +412,7 @@ class SourceDirectoryProcessor:
                     },
                 }
             )
-            _report(progress_callback, "publishing_catalog", 94)
+            _report(progress_callback, "publishing_catalog", 97)
             if _file_hash(path) != content_hash:
                 raise SourceDirectoryProcessingError(
                     "The source file changed while its directory catalog was being built."
@@ -426,7 +426,7 @@ class SourceDirectoryProcessor:
             # auxiliary after that point and must never turn an already
             # committed catalog into an apparent processing failure.
             try:
-                _report(progress_callback, "catalog_ready", 97)
+                _report(progress_callback, "catalog_ready", 99)
             except Exception:
                 pass
             return published

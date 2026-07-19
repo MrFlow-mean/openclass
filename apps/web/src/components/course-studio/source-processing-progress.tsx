@@ -6,6 +6,7 @@ import type { AgentActivityEvent, SourceIngestionRecord } from "@/types";
 
 type SourceProcessingProgressProps = {
   label: string;
+  detail?: string;
   value?: number;
   className?: string;
   activity?: AgentActivityEvent[];
@@ -13,6 +14,7 @@ type SourceProcessingProgressProps = {
 
 type SourceProcessingState = {
   label: string;
+  detail?: string;
   value: number;
   activity?: AgentActivityEvent[];
 };
@@ -55,6 +57,10 @@ const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
   scanning_heading_regions: "正在检查页面标题区域",
   normalizing_directory: "Codex 任务：读取原文件并生成目录",
   source_codex_investigation: "Codex 任务：调查目录与正文范围",
+  source_codex_scanning_pages: "Codex 任务：扫描文件页面",
+  source_codex_mapping_nodes: "Codex 任务：映射目录节点",
+  source_codex_verifying_ranges: "Codex 任务：验证正文范围",
+  source_codex_writing_catalog: "Codex 任务：写入目录结果",
   source_codex_ranges_authored: "Codex 已提交目录与正文范围",
   reusing_directory_catalog: "后端任务：复用已完成目录",
   calibrating_pdf_pages: "Codex 任务：核对印刷页码与 PDF 页码",
@@ -147,7 +153,7 @@ export function SourceCodexActivity({
   );
 }
 
-export function SourceProcessingProgress({ label, value, className, activity = [] }: SourceProcessingProgressProps) {
+export function SourceProcessingProgress({ label, detail, value, className, activity = [] }: SourceProcessingProgressProps) {
   const isDeterminate = typeof value === "number";
   const normalizedValue = isDeterminate ? Math.max(0, Math.min(100, Math.round(value))) : undefined;
 
@@ -174,6 +180,7 @@ export function SourceProcessingProgress({ label, value, className, activity = [
           style={isDeterminate ? { width: `${normalizedValue}%` } : undefined}
         />
       </div>
+      {detail ? <p className="mt-1.5 text-[10px] leading-4 text-gray-500">{detail}</p> : null}
       <SourceCodexActivity events={activity} />
     </div>
   );
@@ -190,11 +197,14 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
   const job = source.ingestion_job;
   if (job && ACTIVE_JOB_STATUSES.has(job.status)) {
     const phase = job.phase_history.at(-1) ?? "";
+    const sourceProgress = latestSourceProgress(job.agent_activity ?? []);
     return {
       label:
+        sourceProgress?.label ??
         phaseLabels[phase] ??
         statusProgress[job.status]?.label ??
         (isDirectoryCatalog ? "正在建立目录" : "正在处理资料"),
+      detail: sourceProgress?.detail,
       value: job.progress,
       activity: job.agent_activity ?? [],
     };
@@ -219,6 +229,22 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
       value: 94,
       activity: [],
     };
+  }
+  return null;
+}
+
+function latestSourceProgress(events: AgentActivityEvent[]): { label: string; detail?: string } | null {
+  for (const event of events.toReversed()) {
+    const value = event.metadata.source_progress;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+    const progress = value as Record<string, unknown>;
+    const label = typeof progress.label === "string" ? progress.label.trim() : "";
+    const detail = typeof progress.detail === "string" ? progress.detail.trim() : "";
+    if (label) {
+      return { label, detail: detail || undefined };
+    }
   }
   return null;
 }
