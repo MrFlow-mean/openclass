@@ -87,7 +87,7 @@ function activityDetail(event: AgentActivityEvent): string {
 export function SourceCodexActivity({
   events,
   className,
-  title = "后端 Codex 实时输出",
+  title = "后端实时 OpenClass 输出",
   expandedByDefault = true,
 }: {
   events: AgentActivityEvent[];
