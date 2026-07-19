@@ -59,7 +59,6 @@ from app.services.rich_document import (
     document_changed,
     looks_like_html_content,
     rebuild_document_from_content_json,
-    would_flatten_rich_document,
 )
 from app.services.source_grounded_board import (
     SOURCE_BOARD_TOKEN_BUDGET,
@@ -67,6 +66,14 @@ from app.services.source_grounded_board import (
     resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
+from app.services.turn_intent import (
+    BoardWriteDecision,
+    board_write_decision_trace,
+    board_write_policy_prompt,
+    decide_board_write_action,
+    pending_board_write_offer as load_pending_board_write_offer,
+    pending_board_write_offer_after as build_pending_board_write_offer_after,
+)
 
 
 BOARD_FILE_NAME = "board.md"
@@ -105,15 +112,20 @@ networked, spatial, ambiguous, or partially unreadable visual, write its `marker
 standalone line so the backend can insert the complete verified original. Never use both markers,
 never crop a visual yourself, and never omit both.
 
-For a non-empty board, keep every teaching action grounded in the current `board.md`. If the
-learner asks for teaching material that is absent, add it to the board before discussing it. Never
-put a standalone lesson, exercise, example set, or course text only in the left conversation
-panel. After a board update, keep the learner-facing response brief and do not duplicate the
-board's substantive content in chat.
+For a non-empty board, obey the backend-provided `Board write policy` on every turn. When the policy
+is `answer_then_offer`, fully answer the learner's question in the left conversation panel first,
+leave `board.md` unchanged, satisfy the immediate learning need, and then naturally ask whether the
+learner wants the newly explained content written into the board. Do not edit merely because the
+answer concerns teaching material that is absent from the board.
 
-For non-teaching conversation, answer normally and leave `board.md` unchanged. If an intended
-board change lacks a safe target or enough information, ask one concise clarification and leave the
-board unchanged.
+When the policy is `confirm_offered_write`, the learner has explicitly accepted the immediately
+preceding write offer. Add that offered material to an appropriate location in `board.md`, preserving
+unrelated content. When the policy is `decline_offered_write`, leave `board.md` unchanged, acknowledge
+the choice naturally, and do not repeat the same offer. When the policy is `chat_without_offer`,
+respond naturally, leave `board.md` unchanged, and do not introduce a board-write offer. When the
+policy is `edit_now`, carry out the explicit board change requested in the current message. If an
+authorized board change lacks a safe target or enough information, ask one concise clarification and
+leave the board unchanged.
 
 Do not inspect parent directories, source code, environment variables, hidden files, other local
 paths, network resources, plugins, or external tools. Do not create, rename, or delete files. Never
@@ -579,10 +591,19 @@ def _turn_prompt(
     is_new_thread: bool,
     board_state: BoardState,
     verified_source_context: str = "",
+    board_write_decision: BoardWriteDecision | None = None,
+    pending_board_write_offer: dict[str, str] | None = None,
 ) -> str:
     sections: list[str] = []
     sections.append(f"Interaction mode: {request.interaction_mode}")
     sections.append(_board_state_context(board_state))
+    if board_write_decision is not None:
+        sections.append(
+            board_write_policy_prompt(
+                board_write_decision,
+                pending_board_write_offer,
+            )
+        )
     if is_new_thread:
         conversation = _conversation_context(request.conversation)
         if conversation:
@@ -1524,6 +1545,16 @@ def process_codex_chat_on_lesson(
                 ),
             )
 
+        pending_write_offer = load_pending_board_write_offer(initial_lesson)
+        board_write_decision = decide_board_write_action(
+            message=request.message,
+            interaction_mode=request.interaction_mode,
+            has_pending_offer=pending_write_offer is not None,
+            has_board_selection=bool(
+                request.selection is not None and request.selection.kind == "board"
+            ),
+        )
+
         source_context = None
         if request.selection is not None and request.selection.kind == "source":
             try:
@@ -1571,6 +1602,8 @@ def process_codex_chat_on_lesson(
                 is_new_thread=prior_thread_id is None,
                 board_state=board_state_before,
                 verified_source_context=verified_context,
+                board_write_decision=board_write_decision,
+                pending_board_write_offer=pending_write_offer,
             )
             codex_reasoning_effort = _codex_reasoning_effort(request)
             codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
@@ -1606,6 +1639,8 @@ def process_codex_chat_on_lesson(
                             is_new_thread=True,
                             board_state=board_state_before,
                             verified_source_context=verified_context,
+                            board_write_decision=board_write_decision,
+                            pending_board_write_offer=pending_write_offer,
                         )
                         if prior_thread_id is not None
                         else user_prompt
@@ -1653,7 +1688,15 @@ def process_codex_chat_on_lesson(
                     raise CodexAppServerError("The lesson changed while Codex was working")
 
                 current_document = lesson.board_document
-                if codex_content == codex_board_text:
+                document_change_attempted = codex_content != codex_board_text
+                document_write_authorized = board_write_decision.action in {
+                    "edit_now",
+                    "confirm_offered_write",
+                }
+                unauthorized_document_change_blocked = (
+                    document_change_attempted and not document_write_authorized
+                )
+                if not document_change_attempted or not document_write_authorized:
                     next_document = current_document
                 else:
                     rebuilt_document = build_document(
@@ -1685,14 +1728,6 @@ def process_codex_chat_on_lesson(
                             preserved_document=current_document,
                         )
                         next_document = visual_result.document
-                    if would_flatten_rich_document(
-                        current_document=current_document,
-                        new_document=next_document,
-                        operation="replace_document",
-                    ):
-                        raise CodexAppServerError(
-                            "Codex board output would flatten the existing document structure"
-                        )
                 changed = document_changed(current_document, next_document)
                 follow_up_suggestions = generate_follow_up_suggestions(
                     adapter=CodexAIExecutionAdapter(
@@ -1709,6 +1744,11 @@ def process_codex_chat_on_lesson(
                 lesson.learning_requirements = None
                 lesson.board_task_requirements = None
                 clarification = _neutral_clarification()
+                pending_write_offer_after = build_pending_board_write_offer_after(
+                    board_write_decision,
+                    question=request.message,
+                    content=result.final_response,
+                )
                 metadata = {
                     "kind": "board_document_edit" if changed else "basic_chat",
                     "user_message": request.message,
@@ -1749,6 +1789,10 @@ def process_codex_chat_on_lesson(
                         else []
                     ),
                     "document_changed": changed,
+                    "document_change_attempted": document_change_attempted,
+                    "document_write_authorized": document_write_authorized,
+                    "unauthorized_document_change_blocked": unauthorized_document_change_blocked,
+                    "pending_board_write_offer_after": pending_write_offer_after,
                     "board_state_before": board_state_before,
                     "board_state_after": _board_state(next_document.content_text),
                     "document_hash_before": _text_hash(current_document.content_text),
@@ -1771,6 +1815,11 @@ def process_codex_chat_on_lesson(
                     "learning_clarification_after": clarification.model_dump(mode="json"),
                     "requirement_cleared": True,
                     "board_task_cleared": True,
+                    "decision_trace": board_write_decision_trace(
+                        board_write_decision,
+                        document_write_authorized=document_write_authorized,
+                        document_changed=changed,
+                    ),
                 }
                 commit_operations(
                     lesson,
@@ -1803,9 +1852,9 @@ def process_codex_chat_on_lesson(
                     board_decision=BoardDecision(
                         action="edit_board" if changed else "no_change",
                         reason=(
-                            "Codex changed the right-side document."
+                            "The user authorized a board change and Codex changed the document."
                             if changed
-                            else "Codex left the right-side document unchanged."
+                            else board_write_decision.reason
                         ),
                     ),
                     needs_clarification=False,
