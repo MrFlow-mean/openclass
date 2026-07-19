@@ -499,6 +499,12 @@ def test_production_pdf_processor_uses_a_second_turn_for_verified_page_ranges(
         raw_output_sha256="b" * 64,
         audit_metadata={"pdf_page_calibration_status": "verified"},
     )
+    calibration_calls: list[dict[str, object]] = []
+
+    def fake_pdf_page_calibration(**kwargs):
+        calibration_calls.append(kwargs)
+        return calibration
+
     monkeypatch.setattr(
         directory_processor_module,
         "generate_codex_direct_catalog",
@@ -507,7 +513,7 @@ def test_production_pdf_processor_uses_a_second_turn_for_verified_page_ranges(
     monkeypatch.setattr(
         directory_processor_module,
         "generate_pdf_page_calibration",
-        lambda **_kwargs: calibration,
+        fake_pdf_page_calibration,
     )
     store = SourceStructureStore(tmp_path / "openclass.sqlite3")
 
@@ -530,6 +536,8 @@ def test_production_pdf_processor_uses_a_second_turn_for_verified_page_ranges(
         (180, 530),
     ]
     assert runs[-1].turn_count == 2
+    assert calibration_calls[0]["required_printed_page_min"] == 22
+    assert calibration_calls[0]["required_printed_page_max"] == 164
     assert "calibrating_pdf_pages" in runs[-1].stage_history
     assert "validating_directory_ranges" in runs[-1].stage_history
 

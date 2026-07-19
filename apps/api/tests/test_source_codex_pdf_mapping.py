@@ -149,8 +149,8 @@ def test_pdf_calibration_runs_one_isolated_turn_and_validates_constant_offset(
         record=_record(path),
         source_path=path,
         source_content_hash=source_hash,
+        required_printed_page_min=22,
         required_printed_page_max=487,
-        printed_page_one_titles=["Chapter One"],
         selection=_model(),
         client_factory=lambda _user_id: client,
     )
@@ -162,6 +162,63 @@ def test_pdf_calibration_runs_one_isolated_turn_and_validates_constant_offset(
     assert result.pdf_page_end == 530
     assert result.audit_metadata["pdf_page_calibration_status"] == "verified"
     assert "Visually inspect" in str(client.calls[0]["system_prompt"])
+
+
+def test_pdf_calibration_accepts_arbitrary_verified_anchors_without_page_one(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"pdf bytes")
+    source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    calibration = CodexPdfPageCalibration(
+        complete=True,
+        continuous_arabic_numbering=True,
+        printed_page_start=22,
+        printed_page_end=244,
+        pdf_page_start=29,
+        pdf_page_end=251,
+        anchors=[
+            CodexPdfPrintedPageAnchor(printed_page=22, pdf_page=29),
+            CodexPdfPrintedPageAnchor(printed_page=164, pdf_page=171),
+            CodexPdfPrintedPageAnchor(printed_page=244, pdf_page=251),
+        ],
+    )
+    candidate = PdfPrintedPageSequenceCandidate(
+        printed_page_start=22,
+        printed_page_end=244,
+        pdf_page_start=29,
+        pdf_page_end=251,
+    )
+    client = FakeCalibrationClient(calibration, source_sha256=source_hash)
+    monkeypatch.setattr(mapping_module, "_pdf_page_count", lambda _path: 251)
+    monkeypatch.setattr(
+        mapping_module,
+        "_printed_page_sequence_candidates",
+        lambda *_args, **_kwargs: [candidate],
+    )
+    monkeypatch.setattr(
+        mapping_module,
+        "_verify_printed_footer_anchors",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = generate_pdf_page_calibration(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=source_hash,
+        required_printed_page_min=22,
+        required_printed_page_max=224,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert result.page_offset == 7
+    assert result.printed_page_start == 22
+    assert all(anchor.printed_page != 1 for anchor in result.anchors)
+    assert "Do not search specifically for printed page 1" in str(
+        client.calls[0]["user_prompt"]
+    )
 
 
 def test_pdf_calibration_rejects_inconsistent_or_insufficient_coverage(
@@ -186,8 +243,8 @@ def test_pdf_calibration_rejects_inconsistent_or_insufficient_coverage(
             record=_record(path),
             source_path=path,
             source_content_hash=source_hash,
+            required_printed_page_min=22,
             required_printed_page_max=487,
-            printed_page_one_titles=["Chapter One"],
             selection=_model(),
             client_factory=lambda _user_id: client,
         )
@@ -203,8 +260,8 @@ def test_pdf_calibration_rejects_inconsistent_or_insufficient_coverage(
             record=_record(path),
             source_path=path,
             source_content_hash=source_hash,
+            required_printed_page_min=22,
             required_printed_page_max=600,
-            printed_page_one_titles=["Chapter One"],
             selection=_model(),
             client_factory=lambda _user_id: client,
         )
@@ -285,6 +342,7 @@ def test_mechanical_footer_scan_discovers_continuous_printed_page_sequence(tmp_p
     candidates = mapping_module._printed_page_sequence_candidates(
         path,
         page_count=6,
+        required_printed_page_min=1,
         required_printed_page_max=4,
     )
 
@@ -292,6 +350,35 @@ def test_mechanical_footer_scan_discovers_continuous_printed_page_sequence(tmp_p
         PdfPrintedPageSequenceCandidate(
             printed_page_start=1,
             printed_page_end=5,
+            pdf_page_start=2,
+            pdf_page_end=6,
+        )
+    ]
+
+
+def test_mechanical_footer_scan_derives_offset_without_printed_page_one(tmp_path: Path) -> None:
+    import fitz
+
+    path = tmp_path / "sequence-without-page-one.pdf"
+    document = fitz.open()
+    document.new_page(width=500, height=700).insert_text((200, 350), "front matter")
+    for printed_page in range(22, 27):
+        page = document.new_page(width=500, height=700)
+        page.insert_text((45 if printed_page % 2 == 0 else 440, 680), str(printed_page))
+    document.save(path)
+    document.close()
+
+    candidates = mapping_module._printed_page_sequence_candidates(
+        path,
+        page_count=6,
+        required_printed_page_min=22,
+        required_printed_page_max=25,
+    )
+
+    assert candidates == [
+        PdfPrintedPageSequenceCandidate(
+            printed_page_start=22,
+            printed_page_end=26,
             pdf_page_start=2,
             pdf_page_end=6,
         )

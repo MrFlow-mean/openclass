@@ -33,7 +33,7 @@ from app.services.source_codex_pdf_mapping import (
     generate_pdf_page_calibration,
     map_pdf_printed_page_ranges,
     maximum_printed_page,
-    printed_page_one_titles,
+    minimum_printed_page,
 )
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
@@ -266,14 +266,22 @@ class SourceDirectoryProcessor:
                     if path.suffix.lower() == ".pdf"
                     else None
                 )
-                if required_printed_page_max is not None:
+                required_printed_page_min = (
+                    minimum_printed_page(chapters)
+                    if required_printed_page_max is not None
+                    else None
+                )
+                if (
+                    required_printed_page_min is not None
+                    and required_printed_page_max is not None
+                ):
                     _report(progress_callback, "calibrating_pdf_pages", 74)
                     calibration = generate_pdf_page_calibration(
                         record=record,
                         source_path=path,
                         source_content_hash=content_hash,
+                        required_printed_page_min=required_printed_page_min,
                         required_printed_page_max=required_printed_page_max,
-                        printed_page_one_titles=printed_page_one_titles(chapters),
                         selection=catalog_model,
                     )
                     chapters = map_pdf_printed_page_ranges(
