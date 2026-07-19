@@ -29,6 +29,10 @@ export function sameSelection(left: SelectionRef | null, right: SelectionRef | n
     left.source_locator === right.source_locator &&
     left.source_page_start === right.source_page_start &&
     left.source_page_end === right.source_page_end &&
+    left.source_scope_kind === right.source_scope_kind &&
+    left.catalog_version === right.catalog_version &&
+    left.source_content_hash === right.source_content_hash &&
+    JSON.stringify(left.source_range ?? null) === JSON.stringify(right.source_range ?? null) &&
     (left.heading_path ?? []).join("\n") === (right.heading_path ?? []).join("\n") &&
     left.excerpt === right.excerpt
   );

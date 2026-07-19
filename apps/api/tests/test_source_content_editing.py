@@ -8,6 +8,10 @@ from app.models import CoursePackage
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_ingestion_jobs import SourceIngestionJobStore
+from app.services.source_directory_processor import (
+    DirectoryNormalizationResult,
+    SourceDirectoryProcessor,
+)
 from app.services.source_ingestion_service import (
     SourceImportAutomationOutcome,
     SourceIngestionError,
@@ -20,16 +24,30 @@ from app.services.source_structure_store import SourceStructureStore
 def _service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SourceIngestionService:
     database_path = tmp_path / "openclass.sqlite3"
     monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    structure_store = SourceStructureStore(database_path)
     return SourceIngestionService(
         source_backend="native",
         store=SourceEvidenceStore(database_path),
         job_store=SourceIngestionJobStore(database_path),
-        structure_store=SourceStructureStore(database_path),
+        structure_store=structure_store,
+        directory_processor=SourceDirectoryProcessor(
+            store=structure_store,
+            normalizer_factory=lambda _record: _PassthroughDirectoryNormalizer(),
+        ),
         import_automation_runner=lambda **_kwargs: SourceImportAutomationOutcome(artifact_ids=[], errors=[]),
     )
 
 
-def test_editing_extracted_content_reindexes_and_preserves_original_download(
+class _PassthroughDirectoryNormalizer:
+    def normalize(self, *, record, candidates, selection):
+        return DirectoryNormalizationResult(
+            candidates=tuple(candidates),
+            turn_count=1 if candidates else 0,
+            metadata={"test_adapter": "passthrough"},
+        )
+
+
+def test_editing_extracted_content_rebuilds_catalog_and_preserves_original_download(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -70,8 +88,11 @@ def test_editing_extracted_content_reindexes_and_preserves_original_download(
         token_budget=2000,
         source_ingestion_ids=[source.id],
     )
-    assert evidence
-    assert "Replacement searchable evidence" in evidence[0].expanded_text
+    assert evidence == []
+    catalog = service.structure_store.get_catalog_view(source=updated)
+    assert catalog.strategy == "codex_directory_v1"
+    assert catalog.catalog_version == 2
+    assert [chapter.title for chapter in catalog.chapters] == ["Revised"]
     original_path = source_download_path(updated)
     assert original_path is not None
     assert original_path.read_bytes() == original

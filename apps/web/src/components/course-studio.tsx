@@ -684,6 +684,10 @@ export function CourseStudio() {
           geometryReference={geometryReference}
           onGeometryReferenceClear={() => setGeometryReference(null)}
           textModel={selectedTextModel}
+          catalogModelOptions={modelCatalog.text.filter(
+            (option) => option.provider === "openai_codex"
+          )}
+          defaultCatalogModel={modelCatalog.defaults.text}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsLoading={chatSpeech.isSpeechLoading}
           speechIsPlaying={chatSpeech.isSpeechPlaying}

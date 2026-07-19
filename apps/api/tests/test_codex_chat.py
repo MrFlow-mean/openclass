@@ -36,6 +36,7 @@ from app.services import (
     codex_app_server,
     codex_chat,
     source_scope_ocr,
+    turn_intent,
     workspace_state,
 )
 from app.services.board_asset_store import BoardAssetStore
@@ -392,6 +393,63 @@ def test_codex_turn_prompt_keeps_current_board_selection_for_editing() -> None:
     assert "kind: board" in prompt
     assert "excerpt: Current board paragraph" in prompt
     assert "heading path: Section" in prompt
+
+
+def test_turn_intent_requires_explicit_board_write_authorization() -> None:
+    explicit = turn_intent.decide_board_write_action(
+        message="把这段的结论写入板书",
+        interaction_mode="ask",
+        has_pending_offer=False,
+        has_board_selection=True,
+    )
+    question = turn_intent.decide_board_write_action(
+        message="这项投资应该怎么分类？",
+        interaction_mode="ask",
+        has_pending_offer=False,
+    )
+    advice_only = turn_intent.decide_board_write_action(
+        message="是否应该把这些内容写入板书？",
+        interaction_mode="ask",
+        has_pending_offer=False,
+    )
+    conversation = turn_intent.decide_board_write_action(
+        message="谢谢，我明白了",
+        interaction_mode="ask",
+        has_pending_offer=False,
+    )
+
+    assert explicit.action == "edit_now"
+    assert question.action == "answer_then_offer"
+    assert advice_only.action == "answer_then_offer"
+    assert conversation.action == "chat_without_offer"
+
+
+def test_turn_intent_only_accepts_standalone_pending_offer_replies() -> None:
+    confirmed = turn_intent.decide_board_write_action(
+        message="可以，写进去吧",
+        interaction_mode="ask",
+        has_pending_offer=True,
+    )
+    declined = turn_intent.decide_board_write_action(
+        message="先不写",
+        interaction_mode="ask",
+        has_pending_offer=True,
+    )
+    follow_up_question = turn_intent.decide_board_write_action(
+        message="可以再解释一下判断依据吗？",
+        interaction_mode="ask",
+        has_pending_offer=True,
+    )
+    disagreement = turn_intent.decide_board_write_action(
+        message="我不同意这个结论，为什么？",
+        interaction_mode="ask",
+        has_pending_offer=True,
+    )
+
+    assert confirmed.action == "confirm_offered_write"
+    assert declined.action == "decline_offered_write"
+    assert follow_up_question.action == "answer_then_offer"
+    assert disagreement.action == "answer_then_offer"
 
 
 def test_board_state_detector_treats_whitespace_as_empty() -> None:
@@ -1391,43 +1449,12 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         "read_visual_bytes",
         lambda **_kwargs: (stored_visual, visual_bytes),
     )
-    monkeypatch.setattr(
-        source_structure_store,
-        "save_visual_codex_analysis",
-        lambda **kwargs: stored_visual.model_copy(
-            update={
-                "metadata": {
-                    "codex_visual_analysis": kwargs["analysis"],
-                }
-            }
-        ),
-    )
 
     def fail_if_intake_runs(**_kwargs):
         raise AssertionError("a verified source selection must bypass requirement questions")
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
         prompt = kwargs["user_prompt"]
-        if kwargs["developer_instructions"] == codex_chat.SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS:
-            visual_id = json.loads(prompt)["visuals"][0]["visual_id"]
-            return CodexTurnResult(
-                thread_id="thread_source_visual_analysis",
-                turn_id="turn_source_visual_analysis",
-                final_response=json.dumps(
-                    {
-                        "visuals": [
-                            {
-                                "visual_id": visual_id,
-                                "description": "A selected source diagram.",
-                                "visible_text": "",
-                                "relationships": "",
-                                "recommended_handling": "original_asset",
-                                "confidence": 0.9,
-                            }
-                        ]
-                    }
-                ),
-            )
         assert '"granularity":"source_chapter"' in prompt
         assert "The selected source explains a durable concept" in prompt
         assert "为我讲解" not in prompt
@@ -2096,7 +2123,6 @@ def test_source_generation_batches_all_text_and_visual_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED", "true")
     chunk_one = SourceChunk(
         id="chunk_one",
         package_id="package",
@@ -2174,32 +2200,9 @@ def test_source_generation_batches_all_text_and_visual_evidence(
             visual_bytes,
         ),
     )
-    saved_analyses: list[str] = []
-
-    def save_analysis(**kwargs):
-        saved_analyses.append(kwargs["visual_id"])
-        return SourceVisualAsset(
-            id=kwargs["visual_id"],
-            owner_user_id=TEST_USER_ID,
-            package_id="package",
-            source_ingestion_id="source",
-            kind="diagram",
-            anchor_status="verified",
-            mime_type="image/png",
-            content_hash=kwargs["content_hash"],
-            position_hash=kwargs["position_hash"],
-            metadata={"codex_visual_analysis": kwargs["analysis"]},
-        )
-
-    monkeypatch.setattr(
-        source_structure_store,
-        "save_visual_codex_analysis",
-        save_analysis,
-    )
 
     class FakeAdapter:
         def __init__(self) -> None:
-            self.model = "test-visual-model"
             self.summary_batches: list[list[str]] = []
             self.visual_batch_sizes: list[int] = []
 
@@ -2214,21 +2217,7 @@ def test_source_generation_batches_all_text_and_visual_evidence(
 
         def analyze_image_batch(self, **kwargs):
             self.visual_batch_sizes.append(len(kwargs["image_inputs"]))
-            visual_id = json.loads(kwargs["prompt"])["visuals"][0]["visual_id"]
-            return json.dumps(
-                {
-                    "visuals": [
-                        {
-                            "visual_id": visual_id,
-                            "description": f"Analysis for {visual_id}",
-                            "visible_text": "Visible label",
-                            "relationships": "One directed relationship",
-                            "recommended_handling": "original_asset",
-                            "confidence": 0.9,
-                        }
-                    ]
-                }
-            )
+            return f"Analysis batch {len(self.visual_batch_sizes)}"
 
     adapter = FakeAdapter()
     prepared, image_inputs = codex_chat._prepare_source_generation_inputs(
@@ -2244,13 +2233,9 @@ def test_source_generation_batches_all_text_and_visual_evidence(
         [chunk_one.id],
         [chunk_two.id],
     ]
-    assert adapter.visual_batch_sizes == [1] * 9
-    assert sorted(saved_analyses) == [f"visual_{index}" for index in range(9)]
+    assert adapter.visual_batch_sizes == [8, 1]
     assert len(prepared.source_grounding.frozen_visual_evidence) == 9
-    assert all(
-        item.extracted_text.startswith(f"Analysis for {item.visual_id}")
-        for item in prepared.source_grounding.frozen_visual_evidence
-    )
+    assert all(item.extracted_text.startswith("Analysis batch") for item in prepared.source_grounding.frozen_visual_evidence)
     assert image_inputs == []
 
 
@@ -2431,8 +2416,10 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "additional mandatory source of truth" in instructions
     assert "Never ignore a `Verified source context`" in instructions
     assert "For a non-empty board" in instructions
-    assert "Never put a standalone lesson" in normalized_instructions
-    assert "do not duplicate the board's substantive content in chat" in normalized_instructions
+    assert "fully answer the learner's question in the left conversation panel first" in normalized_instructions
+    assert "naturally ask whether the learner wants the newly explained content written" in normalized_instructions
+    assert "Do not edit merely because the answer concerns teaching material" in normalized_instructions
+    assert "policy is `confirm_offered_write`" in normalized_instructions
     assert "use fenced code blocks only for executable or source code" in normalized_instructions
     assert "Write display formulas as `$$` on their own lines with LaTeX inside" in instructions
     assert "do not create or change the learning requirement sheet" in normalized_intake
@@ -2487,7 +2474,6 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
 def codex_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setenv("OPENCLASS_CODEX_VISUAL_ANALYSIS_ENABLED", "true")
     monkeypatch.setenv("OPENCLASS_CODEX_WORKSPACE_ROOT", str(tmp_path / "codex-workspaces"))
     monkeypatch.setattr(
         codex_chat,
@@ -2591,6 +2577,142 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     assert configured_commit.metadata["codex_service_tier"] == "priority"
     assert configured_commit.metadata["codex_service_tier_is_set"] is True
     assert commit.metadata["codex_service_tier_is_set"] is False
+
+
+def test_existing_board_question_answers_first_and_blocks_unapproved_write(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    original = "# Existing board\n\n## Preserved section\n\n| A | B |\n| --- | --- |\n| 1 | 2 |"
+    lesson = _seed_workspace(codex_store, content_text=original)
+
+    def fake_turn(**kwargs) -> CodexTurnResult:
+        prompt = kwargs["user_prompt"]
+        assert "action: answer_then_offer" in prompt
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("Unauthorized replacement", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_question_first",
+            turn_id="turn_question_first",
+            final_response="A complete explanation followed by a natural board-write question.",
+        )
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+    monkeypatch.setattr(codex_chat, "generate_follow_up_suggestions", lambda **_kwargs: [])
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="How should this investment be classified?"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.chatbot_message.startswith("A complete explanation")
+    assert response.board_document_operation_status == "none"
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert saved_lesson.board_document.content_text == original
+    commit = current_head_commit(saved_lesson)
+    assert commit.metadata["pending_board_write_offer_after"] == {
+        "status": "awaiting_confirmation",
+        "question": "How should this investment be classified?",
+        "content": response.chatbot_message,
+    }
+    assert commit.metadata["document_change_attempted"] is True
+    assert commit.metadata["document_write_authorized"] is False
+    assert commit.metadata["unauthorized_document_change_blocked"] is True
+    assert commit.metadata["decision_trace"]["selected_action"] == "answer_then_offer"
+    assert commit.metadata["decision_trace"]["role_executed"] == "chatbot"
+
+
+def test_pending_write_confirmation_reuses_offered_content_and_then_edits(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store)
+    prompts: list[str] = []
+
+    def fake_turn(**kwargs) -> CodexTurnResult:
+        prompts.append(kwargs["user_prompt"])
+        if len(prompts) == 1:
+            return CodexTurnResult(
+                thread_id="thread_pending_write",
+                turn_id="turn_answer",
+                final_response="The new explanation. Would you like it added to the board?",
+            )
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text(
+            "# Existing board\n\n## Added explanation\n\nThe new explanation.",
+            encoding="utf-8",
+        )
+        return CodexTurnResult(
+            thread_id="thread_pending_write",
+            turn_id="turn_confirmed_write",
+            final_response="The approved content has been added.",
+        )
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+    monkeypatch.setattr(codex_chat, "generate_follow_up_suggestions", lambda **_kwargs: [])
+
+    first = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Why does this rule work?"),
+        user_id=TEST_USER_ID,
+    )
+    second = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="可以，写进去吧"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert first.board_document_operation_status == "none"
+    assert "action: confirm_offered_write" in prompts[1]
+    assert "The new explanation." in prompts[1]
+    assert second.board_document_operation_status == "succeeded"
+    assert "Added explanation" in second.course_package.lessons[0].board_document.content_text
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit = current_head_commit(saved_lesson)
+    assert commit.metadata["pending_board_write_offer_after"] is None
+    assert commit.metadata["decision_trace"]["selected_action"] == "confirm_offered_write"
+    assert commit.metadata["decision_trace"]["role_executed"] == "board_editor"
+
+
+def test_explicit_edit_can_replace_rich_board_without_flatten_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    rich_board = (
+        "# Existing board\n\n## Detail\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n"
+        "- First\n- Second"
+    )
+    lesson = _seed_workspace(codex_store, content_text=rich_board)
+    flattened = "\n\n".join(f"Plain paragraph {index}." for index in range(1, 10))
+
+    def fake_turn(**kwargs) -> CodexTurnResult:
+        assert "action: edit_now" in kwargs["user_prompt"]
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text(flattened, encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_explicit_flatten",
+            turn_id="turn_explicit_flatten",
+            final_response="The explicit board change is complete.",
+        )
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+    monkeypatch.setattr(codex_chat, "generate_follow_up_suggestions", lambda **_kwargs: [])
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Rewrite the board document as plain paragraphs."),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.board_document_operation_status == "succeeded"
+    assert response.course_package.lessons[0].board_document.content_text == flattened
+    commit = current_head_commit(
+        codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    )
+    assert commit.metadata["document_write_authorized"] is True
+    assert commit.metadata["unauthorized_document_change_blocked"] is False
+    assert commit.metadata["decision_trace"]["selected_action"] == "edit_now"
 
 
 def test_codex_chat_writes_only_final_markdown_back_to_rich_document(
@@ -2829,7 +2951,7 @@ def test_codex_chat_serializes_turns_and_reloads_latest_document(
         try:
             codex_chat.process_codex_chat_on_lesson(
                 lesson.id,
-                ChatRequest(message=message),
+                ChatRequest(message=message, interaction_mode="direct_edit"),
                 user_id=TEST_USER_ID,
             )
         except BaseException as exc:  # pragma: no cover - asserted below

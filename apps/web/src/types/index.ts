@@ -273,6 +273,7 @@ export type SourceIngestionStatus = "queued" | "fetching" | "parsing" | "indexin
 export type EvidenceBundleStatus = "candidate" | "confirmed" | "consumed" | "archived";
 export type EvidencePurpose = "chat" | "board_generation" | "board_edit" | "board_explain" | "board_chat";
 export type SourceStructureStatus = "pending" | "building" | "ready" | "linear_only" | "failed";
+export type SourceChapterMappingStatus = "verified" | "partial" | "unverified" | "unmapped";
 export type SourceStructureQualityLevel =
   | "unassessed"
   | "fully_verified"
@@ -281,13 +282,14 @@ export type SourceStructureQualityLevel =
   | "search_only";
 export type SourceTextReadiness = "unknown" | "ready" | "sparse" | "very_sparse" | "empty";
 export type SourceStructureStrategy =
+  | "codex_directory_v1"
+  | "codex_catalog"
   | "epub_navigation"
   | "epub_heading"
   | "pdf_outline"
   | "pdf_toc"
   | "pdf_merged_toc"
   | "pdf_layout_toc"
-  | "pdf_codex_toc"
   | "docx_heading"
   | "markdown_heading"
   | "linear_text"
@@ -327,6 +329,7 @@ export interface SourceIngestionJob {
   progress: number;
   error: string;
   phase_history: string[];
+  agent_activity: AgentActivityEvent[];
   created_at: string;
   updated_at: string;
 }
@@ -409,9 +412,82 @@ export interface SourceChapter {
   page_start?: number | null;
   page_end?: number | null;
   anchor_status: "verified" | "unverified";
+  range?: SourceRange | null;
+  mapping_status?: SourceChapterMappingStatus;
+  source_content_hash?: string;
+  catalog_evidence?: SourceCatalogEvidence[];
+  catalog_version?: number;
   confidence: number;
   excerpt: string;
   metadata: Record<string, unknown>;
+}
+
+export interface SourceCatalogEvidence {
+  method: string;
+  source_locator: string;
+  page_start?: number | null;
+  page_end?: number | null;
+  excerpt: string;
+  confidence: number;
+  metadata: Record<string, unknown>;
+}
+
+export type SourceRangeKind =
+  | "pdf_pages"
+  | "epub_spine"
+  | "docx_paragraphs"
+  | "ppt_slides"
+  | "sheet_rows"
+  | "text_lines"
+  | "dom_anchor"
+  | "structured_path";
+
+export interface SourceRange {
+  kind: SourceRangeKind;
+  start: number | string | null;
+  end: number | string | null;
+  container: string;
+  start_anchor: string;
+  end_anchor: string;
+  path: string[];
+  display_label: string;
+  end_inclusive: true;
+  metadata: Record<string, unknown>;
+}
+
+export interface SourceCatalogSourceSummary {
+  id: string;
+  title: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  status: SourceIngestionStatus;
+  structure_status: SourceStructureStatus;
+}
+
+export interface SourceCatalogView {
+  source: SourceCatalogSourceSummary;
+  structure_id: string | null;
+  status: SourceStructureStatus;
+  strategy: SourceStructureStrategy | null;
+  has_verified_toc: boolean;
+  catalog_version: number;
+  catalog_updated_at: string | null;
+  source_content_hash: string;
+  catalog_schema_version: string;
+  catalog_model: string;
+  chapter_count: number;
+  verified_chapter_count: number;
+  confidence: number;
+  quality: SourceStructureQuality;
+  error: string;
+  warnings: string[];
+  chapters: SourceChapter[];
+}
+
+export interface SourceCatalogBatchView {
+  package_id: string;
+  catalogs: SourceCatalogView[];
 }
 
 export interface SourceChunk {
@@ -761,7 +837,10 @@ export interface SelectionRef {
   source_locator?: string;
   source_page_start?: number | null;
   source_page_end?: number | null;
-  source_scope_kind?: "chapter" | "page_range";
+  source_scope_kind?: "source" | "chapter" | "page_range";
+  source_range?: SourceRange | null;
+  catalog_version?: number | null;
+  source_content_hash?: string;
 }
 
 export type FormulaInkAction = "reference" | "replace";

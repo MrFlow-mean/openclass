@@ -6,6 +6,7 @@ import type {
   LearningRequirementKeyFact,
   LearningRequirementSheet,
 } from "@/types";
+import { sourceReferenceRangeDisplayLabel } from "@/lib/source-range-display";
 
 export type LearningRequirementDisplayStatus = "collecting" | "ready" | "unknown";
 export type LearningRequirementTeachingType = "新知识点教学" | "练习" | "未确定";
@@ -72,7 +73,10 @@ export function buildLearningRequirementDisplay({
       teachingType: "新知识点教学",
       status: displayStatus(coreFactors, clarification),
       progress: displayProgress(progress, coreFactors, clarification),
-      summary: compactText(clarification?.summary || clarification?.reason || learningGoal || ""),
+      summary: requirementSummary(
+        requirementSheet,
+        clarification?.summary || clarification?.reason || learningGoal || ""
+      ),
       coreFactors,
       auxiliaryFactors: buildAuxiliaryFactors({
         requirementSheet,
@@ -111,7 +115,10 @@ export function buildLearningRequirementDisplay({
       teachingType: "练习",
       status: displayStatus(coreFactors, clarification),
       progress: displayProgress(progress, coreFactors, clarification),
-      summary: compactText(clarification?.summary || clarification?.reason || learningGoal || ""),
+      summary: requirementSummary(
+        requirementSheet,
+        clarification?.summary || clarification?.reason || learningGoal || ""
+      ),
       coreFactors,
       auxiliaryFactors: buildAuxiliaryFactors({
         requirementSheet,
@@ -134,7 +141,10 @@ export function buildLearningRequirementDisplay({
     teachingType: "未确定",
     status: "unknown",
     progress,
-    summary: compactText(clarification?.summary || clarification?.reason || ""),
+    summary: requirementSummary(
+      requirementSheet,
+      clarification?.summary || clarification?.reason || ""
+    ),
     coreFactors,
     auxiliaryFactors: buildAuxiliaryFactors({
       requirementSheet,
@@ -269,11 +279,38 @@ function confirmedSourceLabel(requirementSheet?: LearningRequirementSheet | null
     return "";
   }
   const reference = grounding.confirmed_references[0];
-  const location = [reference.source_title, reference.section_path.join(" > "), reference.page_range]
+  const location = [
+    reference.source_title,
+    reference.section_path.join(" > "),
+    sourceReferenceRangeDisplayLabel({
+      pageRange: reference.page_range,
+      sourceLocator: reference.source_locator,
+    }),
+  ]
     .filter(Boolean)
     .join(" / ");
   const remaining = grounding.confirmed_references.length - 1;
   return remaining > 0 ? `${location} 等 ${grounding.confirmed_references.length} 处` : location;
+}
+
+function requirementSummary(
+  requirementSheet: LearningRequirementSheet | null | undefined,
+  value: string
+) {
+  let summary = compactText(value);
+  const references = requirementSheet?.source_grounding?.confirmed_references ?? [];
+  for (const reference of references) {
+    const storedRange = reference.page_range.trim();
+    if (!storedRange || !summary.includes(storedRange)) {
+      continue;
+    }
+    const displayRange = sourceReferenceRangeDisplayLabel({
+      pageRange: storedRange,
+      sourceLocator: reference.source_locator,
+    });
+    summary = summary.replaceAll(storedRange, displayRange);
+  }
+  return summary;
 }
 
 function pushAuxiliary(

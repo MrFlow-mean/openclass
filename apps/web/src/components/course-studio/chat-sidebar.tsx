@@ -71,7 +71,7 @@ function boardTaskLocationLabel(task: BoardTaskRequirementSheet) {
 
 function composerSelectionLabel(selection: SelectionRef) {
   if (selection.kind === "source") {
-    return "资料章节";
+    return selection.source_scope_kind === "source" ? "整份资料" : "资料章节";
   }
   if (selection.kind === "board" && selection.location_kind === "target_range") {
     return "TargetRange";

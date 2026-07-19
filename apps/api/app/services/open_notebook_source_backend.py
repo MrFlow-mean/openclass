@@ -12,7 +12,7 @@ from app.services.source_evidence_store import SourceEvidenceStore
 
 
 class OpenNotebookSourceBackend:
-    """Own Open Notebook synchronization without owning local structure parsing."""
+    """Let Open Notebook own source processing without local structure parsing."""
 
     def __init__(
         self,
@@ -100,7 +100,7 @@ class OpenNotebookSourceBackend:
         return self.store.save_source(
             record.model_copy(
                 update={
-                    "status": "parsing",
+                    "status": status_from_open_notebook(result.status),
                     "error": "",
                     "open_notebook_notebook_id": notebook_id,
                     "open_notebook_source_id": result.source_id,
@@ -108,6 +108,7 @@ class OpenNotebookSourceBackend:
                     "metadata": {
                         **record.metadata,
                         "adapter": "open_notebook",
+                        "source_processing_owner": "open_notebook",
                         "open_notebook_sync_status": status_from_open_notebook(
                             result.status
                         ),
@@ -162,9 +163,25 @@ class OpenNotebookSourceBackend:
         )
         return notebook_id, ""
 
-    def refresh(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
+    def refresh(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        mirror_status: bool = False,
+    ) -> SourceIngestionRecord:
         sync_status = str(record.metadata.get("open_notebook_sync_status") or "")
-        if not record.open_notebook_command_id or sync_status in {"ready", "failed"}:
+        if not record.open_notebook_command_id:
+            return record
+        if sync_status in {"ready", "failed"}:
+            if mirror_status and record.status != sync_status:
+                return self.store.save_source(
+                    record.model_copy(
+                        update={
+                            "status": sync_status,
+                            "error": record.error if sync_status == "failed" else "",
+                        }
+                    )
+                )
             return record
         try:
             command = self.adapter.get_command(record.open_notebook_command_id)
@@ -185,7 +202,7 @@ class OpenNotebookSourceBackend:
         return self.store.save_source(
             record.model_copy(
                 update={
-                    "status": "failed" if status == "failed" else record.status,
+                    "status": status if mirror_status else "failed" if status == "failed" else record.status,
                     "error": error if status == "failed" else record.error,
                     "open_notebook_source_id": command_source_id(command)
                     or record.open_notebook_source_id,

@@ -457,6 +457,7 @@ def process_blank_board_turn(
                 owner_user_id=user_id,
                 lesson=lesson,
                 selection=request.selection,
+                query=request.message,
             )
         except SourceGroundedBoardError as exc:
             source_error = str(exc)

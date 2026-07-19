@@ -21,6 +21,11 @@ from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
 from app.services.source_chapter_identity import rebind_stale_source_chapter_selection
 from app.services.source_evidence_store import source_evidence_store
+from app.services.source_range_reader import (
+    SourceRangeReadError,
+    is_codex_directory_catalog,
+    read_verified_source_range,
+)
 from app.services.source_structure_indexer import (
     source_structure_needs_upgrade,
 )
@@ -54,6 +59,7 @@ def resolve_source_grounded_board_plan(
     owner_user_id: str,
     lesson: Lesson,
     selection: SelectionRef | None,
+    query: str = "",
 ) -> SourceGroundedBoardPlan | None:
     """Turn one verified source selection into a frozen-ready blank-board input.
 
@@ -67,8 +73,9 @@ def resolve_source_grounded_board_plan(
         return None
     if not selection.source_ingestion_id:
         raise SourceGroundedBoardError("这份资料引用缺少可验证的章节位置，请重新从资料目录中选择章节。")
+    is_whole_source = selection.source_scope_kind == "source"
     is_page_range = selection.source_scope_kind == "page_range"
-    if is_page_range:
+    if is_page_range and selection.source_range is None:
         if (
             selection.source_page_start is None
             or selection.source_page_end is None
@@ -76,7 +83,7 @@ def resolve_source_grounded_board_plan(
             or selection.source_page_end <= selection.source_page_start
         ):
             raise SourceGroundedBoardError("这份资料引用缺少有效的页段边界。")
-    elif not selection.source_chapter_id:
+    elif not is_whole_source and not selection.source_chapter_id:
         raise SourceGroundedBoardError("这份资料引用缺少可验证的章节位置。")
 
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
@@ -88,30 +95,71 @@ def resolve_source_grounded_board_plan(
     )
     if source is None or source.status != "ready":
         raise SourceGroundedBoardError("这份资料尚未准备好，暂时不能据此生成板书。")
+    source_catalog_pipeline = str(
+        source.metadata.get("catalog_pipeline")
+        or source.metadata.get("structure_pipeline")
+        or ""
+    )
+    if is_whole_source and source_catalog_pipeline == "codex_directory_v1":
+        raise SourceGroundedBoardError("新目录资料需要先选择一个已验证的章节范围。")
+    if is_whole_source:
+        stored_structure = source_structure_store.get_structure(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            source_id=source.id,
+        )
+        if stored_structure is not None and is_codex_directory_catalog(stored_structure):
+            raise SourceGroundedBoardError("新目录资料需要先选择一个已验证的章节范围。")
+        from app.services.open_notebook_source_grounding import (
+            OpenNotebookSourceGroundingError,
+            resolve_open_notebook_source_plan,
+        )
+
+        try:
+            plan = resolve_open_notebook_source_plan(
+                owner_user_id=owner_user_id,
+                package_id=package.id,
+                lesson=lesson,
+                source=source,
+                query=query.strip() or selection.excerpt,
+            )
+        except OpenNotebookSourceGroundingError as exc:
+            raise SourceGroundedBoardError(str(exc)) from exc
+        return SourceGroundedBoardPlan(
+            requirement=plan.requirement,
+            clarification=plan.clarification,
+            teaching_plan=plan.teaching_plan,
+        )
 
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
-    structure_upgrade_deferred = source_structure_needs_upgrade(view.structure)
-    visual_upgrade_deferred = _needs_visual_index_upgrade(
-        source.mime_type,
-        source.file_name,
-        view.structure.metadata,
-    )
-    if structure_upgrade_deferred and not is_page_range:
-        ai_usage_logger.log_event(
-            "source_structure_upgrade_required",
+    uses_on_demand_range = is_codex_directory_catalog(view.structure)
+    if uses_on_demand_range and is_whole_source:
+        raise SourceGroundedBoardError("新目录资料需要先选择一个已验证的章节范围。")
+    authoritative_chapter = None
+    if uses_on_demand_range:
+        catalog_pair = source_structure_store.get_catalog_chapter(
             owner_user_id=owner_user_id,
             package_id=package.id,
-            source_ingestion_id=source.id,
-            structure_status=view.structure.status,
-            structure_index_version=view.structure.metadata.get(
-                "structure_index_version"
-            ),
+            source_id=source.id,
+            chapter_id=selection.source_chapter_id or "",
         )
-        raise SourceGroundedBoardError(
-            "这份资料的目录索引需要按新版规则重新构建；完成后请重新选择章节。"
+        if catalog_pair is None:
+            raise SourceGroundedBoardError("找不到这份引用对应的已验证目录范围，请重新选择。")
+        view.structure, authoritative_chapter = catalog_pair
+    structure_upgrade_deferred = (
+        False if uses_on_demand_range else source_structure_needs_upgrade(view.structure)
+    )
+    visual_upgrade_deferred = (
+        False
+        if uses_on_demand_range
+        else _needs_visual_index_upgrade(
+            source.mime_type,
+            source.file_name,
+            view.structure.metadata,
         )
+    )
     if structure_upgrade_deferred or visual_upgrade_deferred:
         # A verified, usable index is sufficient to honor the learner's selected
         # source boundary. Rebuilding a large source belongs to the ingestion or
@@ -130,16 +178,22 @@ def resolve_source_grounded_board_plan(
             ),
             visual_index_version=view.structure.metadata.get("visual_index_version"),
         )
-    chapter = None if is_page_range else next(
+    chapter = authoritative_chapter or next(
         (
             candidate
             for candidate in view.chapters
             if candidate.id == selection.source_chapter_id
-            and candidate.anchor_status == "verified"
+            and (
+                candidate.mapping_status == "verified"
+                if uses_on_demand_range
+                else candidate.anchor_status == "verified"
+            )
         ),
         None,
     )
-    if chapter is None and not is_page_range:
+    if chapter is None and uses_on_demand_range:
+        raise SourceGroundedBoardError("找不到这份引用对应的已验证目录范围，请重新选择。")
+    if chapter is None and not is_page_range and not uses_on_demand_range:
         rebound = rebind_stale_source_chapter_selection(
             selection=selection,
             source_ingestion_id=source.id,
@@ -162,7 +216,22 @@ def resolve_source_grounded_board_plan(
             None,
         )
 
-    if is_page_range:
+    range_read = None
+    if uses_on_demand_range:
+        assert chapter is not None
+        try:
+            range_read = read_verified_source_range(
+                owner_user_id=owner_user_id,
+                package_id=package.id,
+                source=source,
+                structure=view.structure,
+                chapter=chapter,
+                selection=selection,
+            )
+        except SourceRangeReadError as exc:
+            raise SourceGroundedBoardError(str(exc)) from exc
+        evidence = range_read.evidence_items
+    elif is_page_range:
         assert selection.source_page_start is not None
         assert selection.source_page_end is not None
         evidence = source_structure_store.page_range_evidence(
@@ -182,7 +251,9 @@ def resolve_source_grounded_board_plan(
             limit=SOURCE_BOARD_EVIDENCE_LIMIT,
             token_budget=SOURCE_FREEZE_TOKEN_BUDGET,
         )
-    if not any(has_usable_source_text(item.expanded_text) for item in evidence):
+    if not uses_on_demand_range and not any(
+        has_usable_source_text(item.expanded_text) for item in evidence
+    ):
         try:
             evidence = recover_pdf_scope_evidence(
                 source=source,
@@ -201,16 +272,31 @@ def resolve_source_grounded_board_plan(
             )
         except SourceScopeOcrError as exc:
             raise SourceGroundedBoardError(str(exc)) from exc
-    if not any(has_usable_source_text(item.expanded_text) for item in evidence):
+    if not evidence or (
+        not uses_on_demand_range
+        and not any(has_usable_source_text(item.expanded_text) for item in evidence)
+    ):
         raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")
 
-    visual_evidence = source_structure_store.visual_evidence_for_scope(
-        owner_user_id=owner_user_id,
-        package_id=package.id,
-        source_ingestion_id=source.id,
-        chapter_id=chapter.id if chapter else None,
-        page_start=selection.source_page_start if is_page_range else chapter.page_start if chapter else None,
-        page_end=selection.source_page_end if is_page_range else chapter.page_end if chapter else None,
+    visual_evidence = (
+        []
+        if uses_on_demand_range
+        else source_structure_store.visual_evidence_for_scope(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            source_ingestion_id=source.id,
+            chapter_id=chapter.id if chapter else None,
+            page_start=(
+                selection.source_page_start
+                if is_page_range
+                else chapter.page_start if chapter else None
+            ),
+            page_end=(
+                selection.source_page_end
+                if is_page_range
+                else chapter.page_end if chapter else None
+            ),
+        )
     )
 
     bundle = EvidenceBundle(
@@ -232,6 +318,12 @@ def resolve_source_grounded_board_plan(
             "source_chapter_id": chapter.id if chapter else "",
             "source_scope_kind": selection.source_scope_kind,
             "source_structure_id": view.structure.id,
+            "catalog_pipeline": (
+                "codex_directory_v1" if uses_on_demand_range else "legacy_structure"
+            ),
+            "catalog_version": range_read.catalog_version if range_read else None,
+            "source_content_hash": range_read.source_content_hash if range_read else "",
+            "source_range": range_read.source_range if range_read else None,
         },
     )
     source_evidence_store.save_bundle(bundle)
@@ -262,9 +354,21 @@ def resolve_source_grounded_board_plan(
         scope_chapter_title=chapter.title if chapter else "",
         section_path=chapter.path if chapter else evidence[0].section_path,
         source_locator=chapter.source_locator if chapter else selection.source_locator,
-        page_range=evidence[0].page_range,
-        page_start=selection.source_page_start if is_page_range else chapter.page_start if chapter else None,
-        page_end=selection.source_page_end if is_page_range else chapter.page_end if chapter else None,
+        page_range=(
+            _source_range_display_label(range_read.source_range)
+            if range_read
+            else evidence[0].page_range
+        ),
+        page_start=(
+            _pdf_range_endpoint(range_read.source_range, "start")
+            if range_read
+            else selection.source_page_start if is_page_range else chapter.page_start if chapter else None
+        ),
+        page_end=(
+            _pdf_range_endpoint(range_read.source_range, "end")
+            if range_read
+            else selection.source_page_end if is_page_range else chapter.page_end if chapter else None
+        ),
         body_start_offset=chapter.body_start_offset if chapter else None,
         body_end_offset=chapter.body_end_offset if chapter else None,
         chunk_ids=_dedupe_chunk_ids(evidence),
@@ -370,6 +474,27 @@ def _dedupe_chunk_ids(evidence: list[RetrievalEvidence]) -> list[str]:
 def _evidence_hash(evidence: list[RetrievalEvidence]) -> str:
     content = "\n".join(item.expanded_text for item in evidence if item.expanded_text)
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _pdf_range_endpoint(source_range: dict[str, object], key: str) -> int | None:
+    if source_range.get("kind") != "pdf_pages":
+        return None
+    value = source_range.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _source_range_display_label(source_range: dict[str, object]) -> str:
+    display_label = source_range.get("display_label")
+    if isinstance(display_label, str) and display_label.strip():
+        return display_label.strip()
+    if source_range.get("kind") == "pdf_pages":
+        start = _pdf_range_endpoint(source_range, "start")
+        end = _pdf_range_endpoint(source_range, "end")
+        if start is not None and end is not None:
+            return f"PDF p. {start}" if start == end else f"PDF pp. {start}-{end}"
+    start = source_range.get("start")
+    end = source_range.get("end")
+    return str(start) if start == end else f"{start}-{end}"
 
 
 def _needs_visual_index_upgrade(

@@ -75,24 +75,8 @@ func recognizeText(from cgImage: CGImage) throws -> [OCRLine] {
     }
 }
 
-func recognizePDFText(from cgImage: CGImage) throws -> [OCRLine] {
-    var lines = try recognizeText(from: cgImage)
-    let cropStart = 0.68
-    let cropX = Int(Double(cgImage.width) * cropStart)
-    let cropRect = CGRect(x: cropX, y: 0, width: cgImage.width - cropX, height: cgImage.height)
-    guard let rightImage = cgImage.cropping(to: cropRect) else {
-        return lines
-    }
-    let rightLines = try recognizeText(from: rightImage).map { line in
-        OCRLine(
-            text: line.text,
-            x: cropStart + line.x * (1 - cropStart),
-            y: line.y,
-            width: line.width * (1 - cropStart),
-            height: line.height
-        )
-    }
-    for candidate in rightLines {
+func appendUniqueOCRLines(_ candidates: [OCRLine], to lines: inout [OCRLine]) {
+    for candidate in candidates {
         let duplicate = lines.contains { existing in
             existing.text == candidate.text
                 && abs(existing.y - candidate.y) < 0.006
@@ -100,6 +84,68 @@ func recognizePDFText(from cgImage: CGImage) throws -> [OCRLine] {
         }
         if !duplicate {
             lines.append(candidate)
+        }
+    }
+}
+
+func recognizePDFText(
+    from cgImage: CGImage,
+    trailingColumnLinePass: Bool = false
+) throws -> [OCRLine] {
+    let fullPageLines = try recognizeText(from: cgImage)
+    var lines = fullPageLines
+    let cropStart = 0.68
+    let cropX = Int(Double(cgImage.width) * cropStart)
+    let cropRect = CGRect(x: cropX, y: 0, width: cgImage.width - cropX, height: cgImage.height)
+    if let rightImage = cgImage.cropping(to: cropRect) {
+        let rightLines = try recognizeText(from: rightImage).map { line in
+            OCRLine(
+                text: line.text,
+                x: cropStart + line.x * (1 - cropStart),
+                y: line.y,
+                width: line.width * (1 - cropStart),
+                height: line.height
+            )
+        }
+        appendUniqueOCRLines(rightLines, to: &lines)
+    }
+
+    if trailingColumnLinePass {
+        let anchorLines = fullPageLines
+            .filter { $0.x < 0.50 && $0.width >= 0.025 }
+        if
+            let minimumAnchorY = anchorLines.map(\.y).min(),
+            let maximumAnchorY = anchorLines.map(\.y).max()
+        {
+            let bandCropStart = 0.70
+            let bandCropEnd = 0.94
+            let lowerY = max(0.0, minimumAnchorY - 0.035)
+            let upperY = min(1.0, maximumAnchorY + 0.035)
+            let bandCropX = Int(Double(cgImage.width) * bandCropStart)
+            let bandCropRight = Int(Double(cgImage.width) * bandCropEnd)
+            let cropTop = Int(Double(cgImage.height) * (1 - upperY))
+            let cropBottom = Int(Double(cgImage.height) * (1 - lowerY))
+            let bandRect = CGRect(
+                x: bandCropX,
+                y: max(0, cropTop),
+                width: max(1, bandCropRight - bandCropX),
+                height: max(1, cropBottom - cropTop)
+            )
+            if
+                let bandImage = cgImage.cropping(to: bandRect),
+                let recognized = try? recognizeText(from: bandImage)
+            {
+                let remapped = recognized.map { line in
+                    OCRLine(
+                        text: line.text,
+                        x: bandCropStart + line.x * (bandCropEnd - bandCropStart),
+                        y: lowerY + line.y * (upperY - lowerY),
+                        width: line.width * (bandCropEnd - bandCropStart),
+                        height: line.height * (upperY - lowerY)
+                    )
+                }
+                appendUniqueOCRLines(remapped, to: &lines)
+            }
         }
     }
     return lines
@@ -176,6 +222,7 @@ do {
         let requestedStart = max(Int(arguments.dropFirst(2).first ?? "1") ?? 1, 1)
         let requestedEnd = max(Int(arguments.dropFirst(3).first ?? "\(requestedStart)") ?? requestedStart, requestedStart)
         let maxPages = max(Int(arguments.dropFirst(4).first ?? "4") ?? 4, 1)
+        let trailingColumnLinePass = arguments.dropFirst(5).first == "trailing-column-lines"
         let startPage = min(requestedStart, document.pageCount)
         let endPage = min(requestedEnd, document.pageCount)
 
@@ -190,7 +237,10 @@ do {
                 guard let page = document.page(at: pageNumber - 1) else {
                     continue
                 }
-                let recognizedLines = try recognizePDFText(from: renderPDFPage(page))
+                let recognizedLines = try recognizePDFText(
+                    from: renderPDFPage(page),
+                    trailingColumnLinePass: trailingColumnLinePass
+                )
                 let pageLines = orderedTextLines(recognizedLines)
                 if !pageLines.isEmpty {
                     textLines.append(contentsOf: pageLines)

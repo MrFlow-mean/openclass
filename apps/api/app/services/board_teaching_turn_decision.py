@@ -16,6 +16,7 @@ from app.services.board_heading_outline import (
     build_board_heading_teaching_units,
 )
 from app.services.rich_document import document_to_markdown
+from app.services.turn_intent import has_explicit_document_mutation_request
 
 
 TEACHING_TURN_DECISION_INSTRUCTIONS = """
@@ -53,7 +54,10 @@ def decide_board_teaching_turn(
 ) -> BoardTeachingDecisionResult:
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
-    if _has_explicit_document_mutation_request(user_message):
+    if has_explicit_document_mutation_request(
+        user_message,
+        has_board_selection=has_selection,
+    ):
         return BoardTeachingDecisionResult()
     if not lesson.board_teaching_progress and not _may_be_ordered_teaching_request(user_message):
         return BoardTeachingDecisionResult()
@@ -138,19 +142,4 @@ def _may_be_ordered_teaching_request(message: str) -> bool:
             r"teach(?:the)?next(?:section|item)|restart(?:the)?teaching|teach|explain",
             normalized,
         )
-    )
-
-
-def _has_explicit_document_mutation_request(message: str) -> bool:
-    normalized = re.sub(r"[\s，。！？,.!?、；;：:]+", "", message or "").casefold()
-    if not normalized:
-        return False
-    action = (
-        r"(?:生成|补写|写入|新增|添加|扩展|完善|修改|改写|重写|删除|"
-        r"generate|write|append|add|edit|rewrite|delete)"
-    )
-    target = r"(?:板书|文档|讲义|章节|小节|内容|board|document|lesson|section|content)"
-    return bool(
-        re.search(rf"{action}.{{0,16}}{target}", normalized)
-        or re.search(rf"{target}.{{0,16}}{action}", normalized)
     )

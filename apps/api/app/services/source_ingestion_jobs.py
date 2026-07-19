@@ -99,16 +99,21 @@ class SourceIngestionJobStore:
     def path(self) -> Path:
         return self._path or workspace_state.get_store().path
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA journal_mode = WAL")
-        self._initialize_connection(conn, path)
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            self._initialize_connection(conn, path)
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _initialize_connection(self, conn: sqlite3.Connection, path: Path) -> None:
         with self._lock:
@@ -129,6 +134,7 @@ class SourceIngestionJobStore:
                     progress INTEGER NOT NULL,
                     error TEXT NOT NULL,
                     phase_history_json TEXT NOT NULL DEFAULT '[]',
+                    agent_activity_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -138,6 +144,15 @@ class SourceIngestionJobStore:
                     ON source_ingestion_jobs(owner_user_id, package_id, source_ingestion_id, updated_at);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(source_ingestion_jobs)").fetchall()
+            }
+            if "agent_activity_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE source_ingestion_jobs "
+                    "ADD COLUMN agent_activity_json TEXT NOT NULL DEFAULT '[]'"
+                )
             self._initialized_paths.add(key)
 
     def save(
@@ -155,13 +170,15 @@ class SourceIngestionJobStore:
                     """
                     INSERT INTO source_ingestion_jobs(
                         id, owner_user_id, package_id, source_ingestion_id, source_type, source_uri,
-                        adapter, status, progress, error, phase_history_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        adapter, status, progress, error, phase_history_json, agent_activity_json,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         status = excluded.status,
                         progress = excluded.progress,
                         error = excluded.error,
                         phase_history_json = excluded.phase_history_json,
+                        agent_activity_json = excluded.agent_activity_json,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -176,6 +193,10 @@ class SourceIngestionJobStore:
                         job.progress,
                         job.error,
                         json.dumps(job.phase_history, ensure_ascii=False),
+                        json.dumps(
+                            [event.model_dump(mode="json") for event in job.agent_activity],
+                            ensure_ascii=False,
+                        ),
                         job.created_at,
                         job.updated_at,
                     ),
@@ -230,6 +251,10 @@ class SourceIngestionJobStore:
             phases = json.loads(row["phase_history_json"] or "[]")
         except json.JSONDecodeError:
             phases = []
+        try:
+            activity = json.loads(row["agent_activity_json"] or "[]")
+        except (json.JSONDecodeError, IndexError):
+            activity = []
         return SourceIngestionJob(
             id=row["id"],
             resource_id=row["source_ingestion_id"],
@@ -240,6 +265,7 @@ class SourceIngestionJobStore:
             progress=row["progress"],
             error=row["error"],
             phase_history=phases,
+            agent_activity=activity,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

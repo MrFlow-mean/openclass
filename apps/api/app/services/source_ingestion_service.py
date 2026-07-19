@@ -5,12 +5,21 @@ import ipaddress
 import os
 import re
 import socket
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import urlparse
 
-from app.models import CoursePackage, SourceIngestionJob, SourceIngestionRecord
+from app.models import (
+    AgentActivityEvent,
+    AIModelSelection,
+    CoursePackage,
+    SourceIngestionJob,
+    SourceIngestionRecord,
+)
+from app.services.ai_model_catalog import default_text_selection
 from app.services.open_notebook_adapter import (
     OpenNotebookAdapter,
     OpenNotebookAdapterError,
@@ -24,10 +33,16 @@ from app.services.source_evidence_store import (
     SourceEvidenceStore,
     source_evidence_store,
 )
+from app.services.source_directory_extractor import supports_directory_catalog
+from app.services.source_directory_processor import (
+    CATALOG_SCHEMA_VERSION,
+    SourceDirectoryProcessor,
+)
 from app.services.source_ingestion_jobs import (
     SourceIngestionJobStore,
     source_ingestion_job_store,
 )
+from app.services.source_codex_progress import SourceCodexProgressTracker
 from app.services.source_structure_indexer import (
     SourceStructureIndexer,
     source_structure_indexer,
@@ -59,6 +74,27 @@ SUPPORTED_FILE_MIME_PREFIXES = (
     "image/",
 )
 
+_DIRECTORY_CATALOG_LOCKS_GUARD = threading.Lock()
+_DIRECTORY_CATALOG_LOCKS: dict[tuple[str, str, str, str], threading.RLock] = {}
+
+
+@contextmanager
+def _directory_catalog_processing_slot(
+    *,
+    database_path: Path,
+    record: SourceIngestionRecord,
+) -> Iterator[None]:
+    key = (
+        str(database_path.resolve()),
+        record.owner_user_id,
+        record.package_id,
+        record.id,
+    )
+    with _DIRECTORY_CATALOG_LOCKS_GUARD:
+        lock = _DIRECTORY_CATALOG_LOCKS.setdefault(key, threading.RLock())
+    with lock:
+        yield
+
 
 class SourceIngestionError(RuntimeError):
     pass
@@ -84,6 +120,7 @@ class SourceIngestionService:
         job_store: SourceIngestionJobStore = source_ingestion_job_store,
         structure_indexer: SourceStructureIndexer | None = None,
         structure_store: SourceStructureStore | None = None,
+        directory_processor: SourceDirectoryProcessor | None = None,
         import_automation_runner: SourceImportAutomationRunner | None = None,
         media_transcription_provider: object | None = None,
     ) -> None:
@@ -93,7 +130,7 @@ class SourceIngestionService:
             store=store,
             local_path=source_local_path,
         )
-        self.source_backend = (source_backend or os.getenv("OPENCLASS_SOURCE_BACKEND", "open_notebook")).strip().lower()
+        self.source_backend = (source_backend or os.getenv("OPENCLASS_SOURCE_BACKEND", "native")).strip().lower()
         if self.source_backend not in {"open_notebook", "native"}:
             raise ValueError("OPENCLASS_SOURCE_BACKEND must be open_notebook or native")
         self.youtube_adapter = youtube_adapter
@@ -101,13 +138,23 @@ class SourceIngestionService:
         self.job_store = job_store
         self.structure_store = structure_store or _structure_store_for_source_store(store)
         self.structure_indexer = structure_indexer or SourceStructureIndexer(store=self.structure_store)
+        self.directory_processor = directory_processor or SourceDirectoryProcessor(store=self.structure_store)
+        # Explicit indexer injection remains a compatibility seam for parser
+        # tests and legacy adapters. The platform singleton does not inject one,
+        # so every supported UI file upload uses codex_directory_v1.
+        self.directory_catalog_enabled = directory_processor is not None or structure_indexer is None
         self.import_automation_runner = import_automation_runner
         self.media_transcription_provider = media_transcription_provider
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
         if self.source_backend == "open_notebook":
-            records = [self.open_notebook_backend.refresh(record) for record in records]
+            records = [
+                record
+                if _uses_directory_catalog(record)
+                else self._refresh_open_notebook_source(record)
+                for record in records
+            ]
         return [self._attach_job(self.structure_store.attach_summary(record)) for record in records]
 
     def add_url_source(
@@ -185,6 +232,7 @@ class SourceIngestionService:
         content: bytes,
         mime_type: str,
         title: str = "",
+        catalog_model: AIModelSelection | None = None,
     ) -> SourceIngestionRecord:
         queued = self.queue_file_source(
             owner_user_id=owner_user_id,
@@ -193,6 +241,7 @@ class SourceIngestionService:
             content=content,
             mime_type=mime_type,
             title=title,
+            catalog_model=catalog_model,
         )
         return self.process_file_source(
             owner_user_id=owner_user_id,
@@ -209,6 +258,7 @@ class SourceIngestionService:
         content: bytes,
         mime_type: str,
         title: str = "",
+        catalog_model: AIModelSelection | None = None,
     ) -> SourceIngestionRecord:
         if not file_name.strip():
             raise SourceIngestionError("File name is required.")
@@ -216,6 +266,12 @@ class SourceIngestionService:
             raise SourceIngestionError("This file type is not supported by the native source importer.")
         display_title = title.strip() or file_name
         source_type = _source_type_for_upload(mime_type=mime_type, file_name=file_name)
+        selected_catalog_model = catalog_model or default_text_selection()
+        use_directory_catalog = (
+            source_type == "local_file"
+            and _supported_directory_file_name(file_name)
+            and self.directory_catalog_enabled
+        )
         record = SourceIngestionRecord(
             owner_user_id=owner_user_id,
             package_id=package.id,
@@ -225,10 +281,30 @@ class SourceIngestionService:
             file_name=file_name,
             mime_type=mime_type or "application/octet-stream",
             size_bytes=len(content),
-            status="queued" if self.source_backend == "open_notebook" else "parsing",
+            status=(
+                "parsing"
+                if use_directory_catalog
+                else "queued"
+                if self.source_backend == "open_notebook"
+                else "parsing"
+            ),
             metadata={
-                "adapter": "open_notebook" if self.source_backend == "open_notebook" else "openclass_native",
+                "adapter": (
+                    "codex_directory_v1"
+                    if use_directory_catalog
+                    else "open_notebook"
+                    if self.source_backend == "open_notebook"
+                    else "openclass_native"
+                ),
                 "package_title": package.title,
+                **(
+                    {
+                        "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                        "catalog_model": selected_catalog_model.model_dump(mode="json"),
+                    }
+                    if use_directory_catalog
+                    else {}
+                ),
             },
         )
         file_metadata = _save_local_source_file(record, content)
@@ -266,6 +342,33 @@ class SourceIngestionService:
         )
         if record is None:
             raise SourceIngestionError("Source not found.")
+        if supports_directory_catalog(record):
+            with _directory_catalog_processing_slot(
+                database_path=self.store.path,
+                record=record,
+            ):
+                current = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+                if current is None:
+                    raise SourceIngestionError("Source not found.")
+                return self._process_file_source_unlocked(current)
+        return self._process_file_source_unlocked(record)
+
+    def _process_file_source_unlocked(
+        self,
+        record: SourceIngestionRecord,
+    ) -> SourceIngestionRecord:
+        owner_user_id = record.owner_user_id
+        package_id = record.package_id
+        source_id = record.id
+        use_directory_catalog = _uses_directory_catalog(record)
+        if use_directory_catalog:
+            record = _as_directory_catalog_record(record)
+        elif self.source_backend == "native":
+            record = _detach_open_notebook_state(record)
         job = self.job_store.latest_for_source(
             owner_user_id=owner_user_id,
             package_id=package_id,
@@ -356,7 +459,7 @@ class SourceIngestionService:
                 },
             }
         )
-        if self.source_backend == "open_notebook":
+        if self.source_backend == "open_notebook" and not use_directory_catalog:
             synced = self.open_notebook_backend.sync_file(ready)
             if synced.status == "failed":
                 self._finish_job(
@@ -368,7 +471,8 @@ class SourceIngestionService:
                     error=synced.error,
                 )
                 return self._attach_job(self.structure_store.attach_summary(synced))
-            ready = synced
+            self._update_open_notebook_job(job, synced)
+            return self._attach_job(self.structure_store.attach_summary(synced))
         return self._save_and_index(ready, job)
 
     def add_text_source(
@@ -412,6 +516,14 @@ class SourceIngestionService:
             if record.status == "failed":
                 job = self._start_job(record, adapter="open_notebook", phase="failed", progress=100)
                 return self._attach_job(self.structure_store.attach_summary(record))
+            job = self._start_job(
+                record,
+                adapter="open_notebook",
+                phase="open_notebook_processing",
+                progress=35,
+            )
+            self._update_open_notebook_job(job, record)
+            return self._attach_job(self.structure_store.attach_summary(record))
         job = self._start_job(
             record,
             adapter=str(record.metadata.get("adapter") or "openclass_native_text"),
@@ -424,15 +536,43 @@ class SourceIngestionService:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
+        if supports_directory_catalog(record):
+            with _directory_catalog_processing_slot(
+                database_path=self.store.path,
+                record=record,
+            ):
+                current = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+                if current is None:
+                    return None
+                return self._remove_source_unlocked(current)
+        return self._remove_source_unlocked(record)
+
+    def _remove_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
         if self.source_backend == "open_notebook" and record.open_notebook_source_id:
             try:
                 self.adapter.delete_source(record.open_notebook_source_id)
             except OpenNotebookAdapterError:
                 # Local deletion remains possible when the sidecar is temporarily unavailable.
                 pass
-        self.structure_store.delete_for_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
-        removed = self.store.delete_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
-        self.job_store.delete_for_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        self.structure_store.delete_for_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        removed = self.store.delete_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        self.job_store.delete_for_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
         _delete_local_source_file(record)
         return removed
 
@@ -448,7 +588,29 @@ class SourceIngestionService:
         normalized = title.strip()
         if record is None or not normalized:
             return None
-        return self.structure_store.attach_summary(self.store.save_source(record.model_copy(update={"title": normalized})))
+        if supports_directory_catalog(record):
+            with _directory_catalog_processing_slot(
+                database_path=self.store.path,
+                record=record,
+            ):
+                current = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+                if current is None:
+                    return None
+                return self._rename_source_unlocked(current, normalized)
+        return self._rename_source_unlocked(record, normalized)
+
+    def _rename_source_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        title: str,
+    ) -> SourceIngestionRecord:
+        return self.structure_store.attach_summary(
+            self.store.save_source(record.model_copy(update={"title": title}))
+        )
 
     def update_source_content(
         self,
@@ -464,6 +626,26 @@ class SourceIngestionService:
         normalized = content.strip()
         if not normalized:
             raise SourceIngestionError("Source content cannot be empty.")
+        if supports_directory_catalog(record):
+            with _directory_catalog_processing_slot(
+                database_path=self.store.path,
+                record=record,
+            ):
+                current = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+                if current is None:
+                    return None
+                return self._update_source_content_unlocked(current, normalized)
+        return self._update_source_content_unlocked(record, normalized)
+
+    def _update_source_content_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        normalized: str,
+    ) -> SourceIngestionRecord:
 
         current_path = source_local_path(record)
         metadata = dict(record.metadata)
@@ -471,6 +653,7 @@ class SourceIngestionService:
         if not is_native_text and "original_source_path" not in metadata and current_path is not None:
             metadata["original_source_path"] = str(current_path)
             metadata["original_mime_type"] = record.mime_type
+            metadata["original_file_name"] = record.file_name
 
         editable_record = record.model_copy(
             update={
@@ -495,13 +678,22 @@ class SourceIngestionService:
                 }
             }
         )
+        use_directory_catalog = _uses_directory_catalog(editable_record)
+        if use_directory_catalog:
+            editable_record = _as_directory_catalog_record(editable_record)
         job = self._start_job(
             editable_record,
-            adapter=("open_notebook" if self.source_backend == "open_notebook" else "openclass_native_text"),
+            adapter=(
+                "codex_directory_v1"
+                if use_directory_catalog
+                else "open_notebook"
+                if self.source_backend == "open_notebook"
+                else "openclass_native_text"
+            ),
             phase="parsing",
             progress=25,
         )
-        if self.source_backend == "open_notebook":
+        if self.source_backend == "open_notebook" and not use_directory_catalog:
             editable_record = self.open_notebook_backend.replace_file(editable_record)
             if editable_record.status == "failed":
                 self._finish_job(
@@ -513,6 +705,13 @@ class SourceIngestionService:
                     error=editable_record.error,
                 )
                 return self._attach_job(self.structure_store.attach_summary(editable_record))
+            self.structure_store.delete_for_source(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
+            self._update_open_notebook_job(job, editable_record)
+            return self._attach_job(self.structure_store.attach_summary(editable_record))
         return self._save_and_index(editable_record, job, rebuild=True)
 
     def retry_source(
@@ -525,18 +724,52 @@ class SourceIngestionService:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
+        if supports_directory_catalog(record):
+            with _directory_catalog_processing_slot(
+                database_path=self.store.path,
+                record=record,
+            ):
+                current = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+                if current is None:
+                    return None
+                return self._retry_source_unlocked(current)
+        return self._retry_source_unlocked(record)
+
+    def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+        record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
             raise SourceIngestionError("Source content is unavailable; import the source again.")
         retrying = record.model_copy(update={"status": "queued", "error": ""})
+        use_directory_catalog = _uses_directory_catalog(retrying)
+        if use_directory_catalog:
+            retrying = _as_directory_catalog_record(retrying)
+        elif self.source_backend == "native":
+            retrying = _detach_open_notebook_state(retrying)
         self.store.save_source(retrying)
         job = self._start_job(
             retrying,
-            adapter=("open_notebook" if self.source_backend == "open_notebook" else str(record.metadata.get("adapter") or "openclass_native")),
-            phase="queued" if self.source_backend == "open_notebook" else "parsing",
+            adapter=(
+                "codex_directory_v1"
+                if use_directory_catalog
+                else "open_notebook"
+                if self.source_backend == "open_notebook"
+                else str(record.metadata.get("adapter") or "openclass_native")
+            ),
+            phase=(
+                "parsing"
+                if use_directory_catalog
+                else "queued"
+                if self.source_backend == "open_notebook"
+                else "parsing"
+            ),
             progress=20,
         )
-        if self.source_backend == "open_notebook":
+        if self.source_backend == "open_notebook" and not use_directory_catalog:
             retrying = self.open_notebook_backend.replace_file(retrying)
             if retrying.status == "failed":
                 self._finish_job(
@@ -548,7 +781,83 @@ class SourceIngestionService:
                     error=retrying.error,
                 )
                 return self._attach_job(self.structure_store.attach_summary(retrying))
+            self.structure_store.delete_for_source(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
+            self._update_open_notebook_job(job, retrying)
+            return self._attach_job(self.structure_store.attach_summary(retrying))
         return self._save_and_index(retrying, job, rebuild=True)
+
+    def rebuild_catalog(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        catalog_model: AIModelSelection | None = None,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None:
+            return None
+        with _directory_catalog_processing_slot(
+            database_path=self.store.path,
+            record=record,
+        ):
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if current is None:
+                return None
+            return self._rebuild_catalog_unlocked(
+                current,
+                catalog_model=catalog_model,
+            )
+
+    def _rebuild_catalog_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        catalog_model: AIModelSelection | None,
+    ) -> SourceIngestionRecord:
+        if not supports_directory_catalog(record):
+            raise SourceIngestionError("This source format does not support a directory catalog.")
+        record = _repair_local_source_storage(record)
+        local_path = source_local_path(record)
+        if local_path is None:
+            raise SourceIngestionError("Source content is unavailable; import the source again.")
+        selected_model = catalog_model
+        if selected_model is None:
+            try:
+                selected_model = AIModelSelection.model_validate(record.metadata.get("catalog_model"))
+            except Exception:
+                selected_model = default_text_selection()
+        rebuilding = _as_directory_catalog_record(record).model_copy(
+            update={
+                "status": "parsing",
+                "error": "",
+                "metadata": {
+                    **record.metadata,
+                    "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+                    "catalog_model": selected_model.model_dump(mode="json"),
+                },
+            }
+        )
+        self.store.save_source(rebuilding)
+        job = self._start_job(
+            rebuilding,
+            adapter="codex_directory_v1",
+            phase="reading_directory_metadata",
+            progress=20,
+        )
+        return self._save_and_index(rebuilding, job, rebuild=True)
 
     def list_jobs(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionJob]:
         return self.job_store.list(owner_user_id=owner_user_id, package_id=package_id)
@@ -587,6 +896,7 @@ class SourceIngestionService:
             owner_user_id=owner_user_id,
             package_id=package_id,
         )
+        records = [record for record in records if not _uses_directory_catalog(record)]
         try:
             return self.open_notebook_backend.search(
                 owner_user_id=owner_user_id,
@@ -661,56 +971,72 @@ class SourceIngestionService:
             )
             return self._attach_job(self.structure_store.attach_summary(failed))
 
+        remote_status = status_from_open_notebook(result.status)
         metadata: dict[str, object] = {
             **record.metadata,
-            "open_notebook_sync_status": status_from_open_notebook(result.status),
+            "source_processing_owner": "open_notebook",
+            "open_notebook_sync_status": remote_status,
             "open_notebook_response": result.raw or {},
         }
-        synced = record.model_copy(
+        saved = self.store.save_source(record.model_copy(
             update={
-                "status": "fetching",
+                "status": remote_status,
                 "open_notebook_notebook_id": notebook_id,
                 "open_notebook_source_id": result.source_id,
                 "open_notebook_command_id": result.command_id,
                 "metadata": metadata,
             }
-        )
-        try:
-            snapshot_metadata = fetch_url_source_snapshot(synced, source_uri)
-        except SourceUrlSnapshotError as exc:
-            saved = self.store.save_source(
-                synced.model_copy(
+        ))
+        self._update_open_notebook_job(job, saved)
+        return self._attach_job(saved)
+
+    def _refresh_open_notebook_source(
+        self,
+        record: SourceIngestionRecord,
+    ) -> SourceIngestionRecord:
+        if (
+            record.open_notebook_source_id
+            and record.metadata.get("source_processing_owner") != "open_notebook"
+        ):
+            record = self.store.save_source(
+                record.model_copy(
                     update={
-                        "status": status_from_open_notebook(result.status),
                         "metadata": {
-                            **metadata,
-                            "local_structure_warning": str(exc),
-                        },
+                            **record.metadata,
+                            "source_processing_owner": "open_notebook",
+                        }
                     }
                 )
             )
-            self._update_job(
-                job,
-                record=saved,
-                status=saved.status,
-                progress=35,
-                phase="open_notebook_indexing",
-            )
-            return self._attach_job(self.structure_store.attach_summary(saved))
-        local_path = Path(str(snapshot_metadata.get("local_source_path") or ""))
-        prepared = synced.model_copy(
-            update={
-                "status": "parsing",
-                "size_bytes": local_path.stat().st_size if local_path.is_file() else 0,
-                "metadata": {
-                    **metadata,
-                    **snapshot_metadata,
-                    "content_hash": _file_content_hash(local_path),
-                    "native_index_version": 1,
-                },
-            }
+        refreshed = self.open_notebook_backend.refresh(record, mirror_status=True)
+        job = self.job_store.latest_for_source(
+            owner_user_id=refreshed.owner_user_id,
+            package_id=refreshed.package_id,
+            source_id=refreshed.id,
         )
-        return self._save_and_index(prepared, job)
+        if job is not None:
+            self._update_open_notebook_job(job, refreshed)
+        return refreshed
+
+    def _update_open_notebook_job(
+        self,
+        job: SourceIngestionJob,
+        record: SourceIngestionRecord,
+    ) -> None:
+        if record.status == "ready":
+            phase, progress = "ready", 100
+        elif record.status == "failed":
+            phase, progress = "failed", 100
+        else:
+            phase, progress = "open_notebook_processing", 35
+        self._update_job(
+            job,
+            record=record,
+            status=record.status,
+            progress=progress,
+            phase=phase,
+            error=record.error,
+        )
 
     def _start_job(
         self,
@@ -762,6 +1088,7 @@ class SourceIngestionService:
         progress: int,
         phase: str,
         error: str = "",
+        agent_activity: list[AgentActivityEvent] | None = None,
     ) -> SourceIngestionJob:
         phases = job.phase_history
         if not phases or phases[-1] != phase:
@@ -773,6 +1100,9 @@ class SourceIngestionService:
                     "progress": max(job.progress, min(100, progress)),
                     "error": error,
                     "phase_history": phases,
+                    "agent_activity": (
+                        job.agent_activity if agent_activity is None else agent_activity
+                    ),
                 }
             ),
             owner_user_id=record.owner_user_id,
@@ -794,6 +1124,73 @@ class SourceIngestionService:
         *,
         rebuild: bool = False,
     ) -> SourceIngestionRecord:
+        if not _uses_directory_catalog(record):
+            return self._save_and_index_unlocked(record, job, rebuild=rebuild)
+        with _directory_catalog_processing_slot(
+            database_path=self.store.path,
+            record=record,
+        ):
+            current = self.store.get_source(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
+            if current is None:
+                raise SourceIngestionError(
+                    "Source was removed before directory processing could start."
+                )
+            if not rebuild:
+                completed = self._reuse_completed_directory_catalog(record, job)
+                if completed is not None:
+                    return completed
+            return self._save_and_index_unlocked(record, job, rebuild=rebuild)
+
+    def _reuse_completed_directory_catalog(
+        self,
+        record: SourceIngestionRecord,
+        job: SourceIngestionJob,
+    ) -> SourceIngestionRecord | None:
+        structure = self.structure_store.get_structure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        path = source_local_path(record)
+        actual_hash = _file_content_hash(path) if path is not None else ""
+        metadata_hash = str(record.metadata.get("content_hash") or "").strip()
+        if not (
+            structure is not None
+            and structure.status in {"ready", "linear_only"}
+            and structure.catalog_schema_version == CATALOG_SCHEMA_VERSION
+            and actual_hash
+            and metadata_hash == actual_hash
+            and structure.source_content_hash == actual_hash
+        ):
+            return None
+        completed = self.store.save_source(
+            record.model_copy(update={"status": "ready", "error": ""})
+        )
+        latest_job = self.job_store.latest_for_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        ) or job
+        self._update_job(
+            latest_job,
+            record=completed,
+            status="ready",
+            progress=100,
+            phase="ready",
+        )
+        return self._attach_job(self.structure_store.attach_summary(completed))
+
+    def _save_and_index_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        job: SourceIngestionJob,
+        *,
+        rebuild: bool = False,
+    ) -> SourceIngestionRecord:
         saved = self.store.save_source(record.model_copy(update={"status": "parsing", "error": ""}))
         indexing_job = self._update_job(
             job,
@@ -802,6 +1199,9 @@ class SourceIngestionService:
             progress=25,
             phase="parsing",
         )
+        activity_by_id: dict[str, AgentActivityEvent] = {}
+        activity_order: list[str] = []
+        codex_progress_tracker: SourceCodexProgressTracker | None = None
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -816,14 +1216,86 @@ class SourceIngestionService:
                 phase=phase,
             )
 
-        try:
-            structure = (
-                self.structure_indexer.rebuild_structure(saved, progress_callback=report_progress)
-                if rebuild
-                else self.structure_indexer.ensure_structure(saved, progress_callback=report_progress)
+        def report_codex_activity(event: AgentActivityEvent) -> None:
+            nonlocal saved, indexing_job
+            progress = indexing_job.progress
+            phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
+            if codex_progress_tracker is not None:
+                observation = codex_progress_tracker.observe(event)
+                event = observation.event
+                progress = observation.progress
+                phase = observation.phase
+            next_status = "indexing" if progress >= 60 else "parsing"
+            if saved.status != next_status:
+                saved = self.store.save_source(saved.model_copy(update={"status": next_status}))
+            if event.id not in activity_by_id:
+                activity_order.append(event.id)
+            activity_by_id[event.id] = event
+            current_activity = [activity_by_id[event_id] for event_id in activity_order]
+            indexing_job = self._update_job(
+                indexing_job,
+                record=saved,
+                status=next_status,
+                progress=progress,
+                phase=phase,
+                agent_activity=current_activity,
             )
+
+        use_directory_catalog = (
+            saved.metadata.get("catalog_pipeline") == CATALOG_SCHEMA_VERSION
+            and supports_directory_catalog(saved)
+        )
+        previous_structure = (
+            self.structure_store.get_structure(
+                owner_user_id=saved.owner_user_id,
+                package_id=saved.package_id,
+                source_id=saved.id,
+            )
+            if use_directory_catalog
+            else None
+        )
+        try:
+            if use_directory_catalog:
+                local_path = source_local_path(saved)
+                if local_path is None:
+                    raise SourceIngestionError("Source file is unavailable for directory cataloging.")
+                codex_progress_tracker = SourceCodexProgressTracker(local_path)
+                raw_catalog_model = saved.metadata.get("catalog_model")
+                try:
+                    catalog_model = AIModelSelection.model_validate(raw_catalog_model)
+                except Exception as exc:
+                    raise SourceIngestionError("The selected catalog model is invalid.") from exc
+                structure = self.directory_processor.process(
+                    record=saved,
+                    path=local_path,
+                    catalog_model=catalog_model,
+                    progress_callback=report_progress,
+                    activity_callback=report_codex_activity,
+                )
+            else:
+                structure = (
+                    self.structure_indexer.rebuild_structure(saved, progress_callback=report_progress)
+                    if rebuild
+                    else self.structure_indexer.ensure_structure(saved, progress_callback=report_progress)
+                )
         except Exception as exc:
-            failed = self.store.save_source(saved.model_copy(update={"status": "failed", "error": str(exc)}))
+            preserve_previous_catalog = (
+                previous_structure is not None
+                and previous_structure.status in {"ready", "linear_only"}
+            )
+            if preserve_previous_catalog:
+                self.structure_store.record_rebuild_failure(
+                    structure=previous_structure,
+                    error=str(exc),
+                )
+            failed = self.store.save_source(
+                saved.model_copy(
+                    update={
+                        "status": "ready" if preserve_previous_catalog else "failed",
+                        "error": "" if preserve_previous_catalog else str(exc),
+                    }
+                )
+            )
             self._update_job(
                 indexing_job,
                 record=failed,
@@ -836,7 +1308,11 @@ class SourceIngestionService:
         final_status = "ready" if structure.status in {"ready", "linear_only"} else "failed"
         error = structure.error if final_status == "failed" else ""
         automation_outcome = SourceImportAutomationOutcome(artifact_ids=[], errors=[])
-        if final_status == "ready" and self.import_automation_runner is not None:
+        if (
+            final_status == "ready"
+            and self.import_automation_runner is not None
+            and not use_directory_catalog
+        ):
             transforming_job = self._update_job(
                 indexing_job,
                 record=saved,
@@ -866,7 +1342,13 @@ class SourceIngestionService:
                     "metadata": {
                         **saved.metadata,
                         "import_transformation_status": (
-                            "failed" if automation_outcome.errors else "ready" if automation_outcome.artifact_ids else "not_configured"
+                            "not_applicable"
+                            if use_directory_catalog
+                            else "failed"
+                            if automation_outcome.errors
+                            else "ready"
+                            if automation_outcome.artifact_ids
+                            else "not_configured"
                         ),
                         "import_transformation_artifact_ids": automation_outcome.artifact_ids,
                     },
@@ -970,6 +1452,14 @@ class SourceIngestionService:
             if ready.status == "failed":
                 job = self._start_job(ready, adapter="open_notebook", phase="failed", progress=100)
                 return self._attach_job(self.structure_store.attach_summary(ready))
+            job = self._start_job(
+                ready,
+                adapter="open_notebook",
+                phase="open_notebook_processing",
+                progress=35,
+            )
+            self._update_open_notebook_job(job, ready)
+            return self._attach_job(self.structure_store.attach_summary(ready))
         job = self._start_job(
             ready,
             adapter=str(ready.metadata.get("adapter") or "youtube_transcript"),
@@ -1015,11 +1505,28 @@ def _supported_mime(mime_type: str, file_name: str) -> bool:
     return any((mime_type or "").startswith(prefix) for prefix in SUPPORTED_FILE_MIME_PREFIXES)
 
 
+def _supported_directory_file_name(file_name: str) -> bool:
+    return Path(file_name).suffix.lower() in {
+        ".pdf",
+        ".epub",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".csv",
+        ".txt",
+        ".md",
+        ".markdown",
+        ".html",
+        ".htm",
+        ".json",
+        ".xml",
+    }
+
+
 def _save_local_source_file(record: SourceIngestionRecord, content: bytes) -> dict[str, str]:
-    safe_name = _safe_file_name(record.file_name or record.id)
     source_dir = workspace_state.UPLOAD_DIR / "sources"
     source_dir.mkdir(parents=True, exist_ok=True)
-    path = source_dir / f"{record.id}_{safe_name}"
+    path = source_dir / _stored_source_file_name(record)
     path.write_bytes(content)
     return {"local_source_path": str(path)}
 
@@ -1046,6 +1553,42 @@ def source_download_path(record: SourceIngestionRecord) -> Path | None:
     path = Path(raw_path).expanduser().resolve()
     allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
     return path if allowed_root in path.parents and path.is_file() else None
+
+
+def _stored_source_file_name(record: SourceIngestionRecord) -> str:
+    suffix = Path(record.file_name).suffix.lower()
+    return f"{record.id}{suffix}"
+
+
+def _repair_local_source_storage(record: SourceIngestionRecord) -> SourceIngestionRecord:
+    raw_path = record.metadata.get("local_source_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return record
+    current_path = Path(raw_path).expanduser().resolve()
+    allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
+    if allowed_root not in current_path.parents or not current_path.is_file():
+        return record
+    expected_path = allowed_root / _stored_source_file_name(record)
+    if current_path == expected_path:
+        return record
+    if expected_path.exists():
+        raise SourceIngestionError(
+            "The stable storage target for this source already exists."
+        )
+    try:
+        current_path.replace(expected_path)
+    except OSError as exc:
+        raise SourceIngestionError(
+            "The stored source could not be moved to its stable identity path."
+        ) from exc
+    return record.model_copy(
+        update={
+            "metadata": {
+                **record.metadata,
+                "local_source_path": str(expected_path),
+            }
+        }
+    )
 
 
 def _delete_local_source_file(record: SourceIngestionRecord) -> None:
@@ -1098,9 +1641,52 @@ def _text_title(text: str, limit: int = 80) -> str:
     return first_line[:limit] or "Pasted text"
 
 
+def _detach_open_notebook_state(record: SourceIngestionRecord) -> SourceIngestionRecord:
+    metadata = {
+        key: value
+        for key, value in record.metadata.items()
+        if key != "source_processing_owner"
+        and not key.startswith("open_notebook_")
+        and not key.startswith("last_open_notebook_")
+    }
+    metadata["adapter"] = (
+        "openclass_native_text"
+        if record.source_type == "pasted_text" or record.mime_type == "text/markdown"
+        else "openclass_native"
+    )
+    return record.model_copy(
+        update={
+            "open_notebook_notebook_id": "",
+            "open_notebook_source_id": "",
+            "open_notebook_command_id": "",
+            "metadata": metadata,
+        }
+    )
+
+
+def _uses_directory_catalog(record: SourceIngestionRecord) -> bool:
+    return (
+        record.metadata.get("catalog_pipeline") == CATALOG_SCHEMA_VERSION
+        and supports_directory_catalog(record)
+    )
+
+
+def _as_directory_catalog_record(record: SourceIngestionRecord) -> SourceIngestionRecord:
+    detached = _detach_open_notebook_state(record)
+    return detached.model_copy(
+        update={
+            "metadata": {
+                **detached.metadata,
+                "adapter": "codex_directory_v1",
+                "catalog_pipeline": CATALOG_SCHEMA_VERSION,
+            }
+        }
+    )
+
+
 def _safe_file_name(file_name: str) -> str:
     name = Path(file_name).name.strip() or "source"
-    return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:180]
+    return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)
 
 
 def _structure_store_for_source_store(
@@ -1129,4 +1715,4 @@ def _validate_public_url(raw_uri: str) -> str:
     return uri
 
 
-source_ingestion_service = SourceIngestionService(structure_indexer=source_structure_indexer)
+source_ingestion_service = SourceIngestionService()

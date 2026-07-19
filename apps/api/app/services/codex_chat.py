@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import (
     AgentActivityEvent,
@@ -59,7 +59,6 @@ from app.services.rich_document import (
     document_changed,
     looks_like_html_content,
     rebuild_document_from_content_json,
-    would_flatten_rich_document,
 )
 from app.services.source_grounded_board import (
     SOURCE_BOARD_TOKEN_BUDGET,
@@ -67,11 +66,14 @@ from app.services.source_grounded_board import (
     resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
-from app.services.source_visual_analysis import (
-    analyze_frozen_source_visuals,
-    source_visual_analysis_enabled,
+from app.services.turn_intent import (
+    BoardWriteDecision,
+    board_write_decision_trace,
+    board_write_policy_prompt,
+    decide_board_write_action,
+    pending_board_write_offer as load_pending_board_write_offer,
+    pending_board_write_offer_after as build_pending_board_write_offer_after,
 )
-from app.services.source_visual_region_resolution import resolve_visual_clues_for_requirement
 
 
 BOARD_FILE_NAME = "board.md"
@@ -81,6 +83,9 @@ CODEX_BOARD_GENERATION_TIMEOUT_SECONDS = 300
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
 MAX_SOURCE_VISUAL_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_VISUALS_PER_BATCH = 8
+SOURCE_RANGE_BATCH_BYTE_BUDGET = 32_000
+MAX_SOURCE_BATCH_SUMMARY_CHARS = 8_000
+MAX_SOURCE_RANGE_SUMMARY_PASSES = 4
 _PRESERVED_VISUAL_MARKER_RE = re.compile(
     r"\[\[OPENCLASS_PRESERVED_VISUAL_[0-9a-f]{12}_\d{4}\]\]"
 )
@@ -107,15 +112,20 @@ networked, spatial, ambiguous, or partially unreadable visual, write its `marker
 standalone line so the backend can insert the complete verified original. Never use both markers,
 never crop a visual yourself, and never omit both.
 
-For a non-empty board, keep every teaching action grounded in the current `board.md`. If the
-learner asks for teaching material that is absent, add it to the board before discussing it. Never
-put a standalone lesson, exercise, example set, or course text only in the left conversation
-panel. After a board update, keep the learner-facing response brief and do not duplicate the
-board's substantive content in chat.
+For a non-empty board, obey the backend-provided `Board write policy` on every turn. When the policy
+is `answer_then_offer`, fully answer the learner's question in the left conversation panel first,
+leave `board.md` unchanged, satisfy the immediate learning need, and then naturally ask whether the
+learner wants the newly explained content written into the board. Do not edit merely because the
+answer concerns teaching material that is absent from the board.
 
-For non-teaching conversation, answer normally and leave `board.md` unchanged. If an intended
-board change lacks a safe target or enough information, ask one concise clarification and leave the
-board unchanged.
+When the policy is `confirm_offered_write`, the learner has explicitly accepted the immediately
+preceding write offer. Add that offered material to an appropriate location in `board.md`, preserving
+unrelated content. When the policy is `decline_offered_write`, leave `board.md` unchanged, acknowledge
+the choice naturally, and do not repeat the same offer. When the policy is `chat_without_offer`,
+respond naturally, leave `board.md` unchanged, and do not introduce a board-write offer. When the
+policy is `edit_now`, carry out the explicit board change requested in the current message. If an
+authorized board change lacks a safe target or enough information, ask one concise clarification and
+leave the board unchanged.
 
 Do not inspect parent directories, source code, environment variables, hidden files, other local
 paths, network resources, plugins, or external tools. Do not create, rename, or delete files. Never
@@ -182,19 +192,20 @@ turn. Return only a brief completion acknowledgement after the file is written.
 SOURCE_BATCH_SUMMARY_INSTRUCTIONS = """
 Summarize one consecutive source batch for later board generation. Preserve definitions,
 relationships, examples, qualifications, formulas, and section order. Use only the supplied text.
-The summary must remain traceable to the supplied chunk IDs and must not add outside knowledge.
+The summary must remain traceable to the supplied evidence or chunk IDs and their page/locator
+provenance. Do not add outside knowledge.
 """.strip()
 
 SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS = """
-You are analyzing exactly one source visual for later board generation. Do not edit board.md.
-Preserve its labels, axes, table relationships, spatial relationships, and visible qualifications,
-and identify the result with the visual ID from the prompt. Do not add facts that are not visible
-in the image or its supplied metadata. Return only the requested JSON object.
+You are analyzing a bounded batch of source visuals for later board generation. Do not edit
+board.md. Describe every image in the supplied order, preserve labels, axes, table relationships,
+and visible qualifications, and identify each description with the corresponding visual ID from
+the prompt. Do not add facts that are not visible in the image or its supplied metadata.
 """.strip()
 
 
 class _SourceBatchSummary(BaseModel):
-    summary: str
+    summary: str = Field(min_length=1, max_length=MAX_SOURCE_BATCH_SUMMARY_CHARS)
 
 
 @dataclass(frozen=True)
@@ -580,10 +591,19 @@ def _turn_prompt(
     is_new_thread: bool,
     board_state: BoardState,
     verified_source_context: str = "",
+    board_write_decision: BoardWriteDecision | None = None,
+    pending_board_write_offer: dict[str, str] | None = None,
 ) -> str:
     sections: list[str] = []
     sections.append(f"Interaction mode: {request.interaction_mode}")
     sections.append(_board_state_context(board_state))
+    if board_write_decision is not None:
+        sections.append(
+            board_write_policy_prompt(
+                board_write_decision,
+                pending_board_write_offer,
+            )
+        )
     if is_new_thread:
         conversation = _conversation_context(request.conversation)
         if conversation:
@@ -791,91 +811,92 @@ def _prepare_source_generation_inputs(
     on_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> tuple[LearningRequirementSheet, list[str]]:
     prepared = requirement.model_copy(deep=True)
-    prepared = resolve_visual_clues_for_requirement(
-        adapter=adapter,
-        requirement=prepared,
-        owner_user_id=owner_user_id,
-        is_cancelled=is_cancelled,
-        on_activity=on_activity,
-    )
     grounding = prepared.source_grounding
     evidence = grounding.frozen_evidence
-    if sum(item.token_count for item in evidence) > SOURCE_BOARD_TOKEN_BUDGET:
-        chunk_ids = list(
-            dict.fromkeys(
-                chunk_id
-                for reference in grounding.confirmed_references
-                for chunk_id in reference.chunk_ids
-            )
-        )
-        chunks = source_structure_store.source_chunks_by_ids(
-            owner_user_id=owner_user_id,
-            chunk_ids=chunk_ids,
-        )
-        if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
-            raise CodexAppServerError(
-                "The frozen source range cannot be fully reconstructed from its chunk IDs"
-            )
-        prototype = evidence[0]
-        summaries: list[RetrievalEvidence] = []
-        for batch_index, batch in enumerate(_source_text_batches(chunks)):
-            batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
-            response = adapter.parse_structured(
-                system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
-                user_prompt=json.dumps(
-                    {
-                        "batch_index": batch_index,
-                        "chunks": [
-                            {"chunk_id": chunk_id, "text": text}
-                            for chunk_id, text in batch
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-                schema=_SourceBatchSummary,
-            )
-            if on_activity is not None:
-                for event in response.activity:
-                    on_activity(event)
-            summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
-            if not summary:
-                raise CodexAppServerError("Source batch summarization returned empty content")
-            summaries.append(
-                prototype.model_copy(
-                    update={
-                        "id": f"{prototype.id}:summary:{batch_index}",
-                        "chunk_ids": batch_chunk_ids,
-                        "excerpt": summary[:360],
-                        "expanded_text": summary,
-                        "token_count": max(1, (len(summary) + 3) // 4),
-                        "reason": "Provider-generated summary of one consecutive frozen source batch.",
-                        "metadata": {
-                            **prototype.metadata,
-                            "retrieval_mode": "frozen_source_batch_summary",
-                            "batch_index": batch_index,
-                            "covered_chunk_ids": batch_chunk_ids,
-                        },
-                    }
+    uses_on_demand_range = _is_on_demand_range_evidence(evidence)
+    evidence_cost = (
+        _conservative_text_tokens(item.expanded_text) for item in evidence
+    ) if uses_on_demand_range else (item.token_count for item in evidence)
+    if sum(evidence_cost) > SOURCE_BOARD_TOKEN_BUDGET:
+        if uses_on_demand_range:
+            compacted = evidence
+            for summary_pass in range(MAX_SOURCE_RANGE_SUMMARY_PASSES):
+                compacted = _summarize_frozen_range_evidence(
+                    adapter=adapter,
+                    evidence=compacted,
+                    on_activity=on_activity,
+                    summary_pass=summary_pass,
+                )
+                if sum(
+                    _conservative_text_tokens(item.expanded_text)
+                    for item in compacted
+                ) <= SOURCE_BOARD_TOKEN_BUDGET:
+                    grounding.frozen_evidence = compacted
+                    break
+            else:
+                raise CodexAppServerError(
+                    "The selected source range could not be compacted within the board token budget"
+                )
+        else:
+            chunk_ids = list(
+                dict.fromkeys(
+                    chunk_id
+                    for reference in grounding.confirmed_references
+                    for chunk_id in reference.chunk_ids
                 )
             )
-        grounding.frozen_evidence = summaries
+            chunks = source_structure_store.source_chunks_by_ids(
+                owner_user_id=owner_user_id,
+                chunk_ids=chunk_ids,
+            )
+            if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
+                raise CodexAppServerError(
+                    "The frozen source range cannot be fully reconstructed from its chunk IDs"
+                )
+            prototype = evidence[0]
+            summaries: list[RetrievalEvidence] = []
+            for batch_index, batch in enumerate(_source_text_batches(chunks)):
+                batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
+                response = adapter.parse_structured(
+                    system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
+                    user_prompt=json.dumps(
+                        {
+                            "batch_index": batch_index,
+                            "chunks": [
+                                {"chunk_id": chunk_id, "text": text}
+                                for chunk_id, text in batch
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    schema=_SourceBatchSummary,
+                )
+                if on_activity is not None:
+                    for event in response.activity:
+                        on_activity(event)
+                summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
+                if not summary:
+                    raise CodexAppServerError("Source batch summarization returned empty content")
+                summaries.append(
+                    prototype.model_copy(
+                        update={
+                            "id": f"{prototype.id}:summary:{batch_index}",
+                            "chunk_ids": batch_chunk_ids,
+                            "excerpt": summary[:360],
+                            "expanded_text": summary,
+                            "token_count": max(1, (len(summary) + 3) // 4),
+                            "reason": "Provider-generated summary of one consecutive frozen source batch.",
+                            "metadata": {
+                                **prototype.metadata,
+                                "retrieval_mode": "frozen_source_batch_summary",
+                                "batch_index": batch_index,
+                                "covered_chunk_ids": batch_chunk_ids,
+                            },
+                        }
+                    )
+                )
+            grounding.frozen_evidence = summaries
 
-    if not source_visual_analysis_enabled():
-        return prepared, []
-    try:
-        prepared = analyze_frozen_source_visuals(
-            adapter=adapter,
-            requirement=prepared,
-            owner_user_id=owner_user_id,
-            model=adapter.model,
-            is_cancelled=is_cancelled,
-            on_activity=on_activity,
-        )
-    except CodexAppServerError:
-        raise
-    except RuntimeError as exc:
-        raise CodexAppServerError(str(exc)) from exc
-    grounding = prepared.source_grounding
     visuals = grounding.frozen_visual_evidence
     raster_visuals = [item for item in visuals if not _is_structured_table_evidence(item)]
     if len(raster_visuals) <= MAX_SOURCE_VISUALS_PER_BATCH:
@@ -883,6 +904,54 @@ def _prepare_source_generation_inputs(
             user_id=owner_user_id,
             requirement=prepared,
         )
+    analyzed_visuals: dict[str, SourceVisualEvidence] = {}
+    for batch_start in range(0, len(raster_visuals), MAX_SOURCE_VISUALS_PER_BATCH):
+        visual_batch = raster_visuals[batch_start : batch_start + MAX_SOURCE_VISUALS_PER_BATCH]
+        image_inputs = [
+            _image_data_url(
+                _read_frozen_source_visual(user_id=owner_user_id, evidence=item)
+            )
+            for item in visual_batch
+        ]
+        if any(not image_input for image_input in image_inputs):
+            raise CodexAppServerError("A frozen source visual cannot be safely loaded")
+        analysis = adapter.analyze_image_batch(
+            prompt=json.dumps(
+                {
+                    "visuals": [item.model_dump(mode="json") for item in visual_batch],
+                },
+                ensure_ascii=False,
+            ),
+            image_inputs=image_inputs,
+            is_cancelled=is_cancelled,
+            on_activity=on_activity,
+        ).strip()
+        if not analysis:
+            raise CodexAppServerError("Source visual analysis returned empty content")
+        visual_ids = [item.visual_id for item in visual_batch]
+        analyzed_visuals.update(
+            {
+                item.visual_id: item.model_copy(
+                update={
+                    "extracted_text": "\n\n".join(
+                        part for part in [item.extracted_text, analysis] if part
+                    ),
+                    "surrounding_text": "\n\n".join(
+                        part
+                        for part in [
+                            item.surrounding_text,
+                            f"Analyzed visual batch: {', '.join(visual_ids)}",
+                        ]
+                        if part
+                    ),
+                }
+                )
+                for item in visual_batch
+            }
+        )
+    grounding.frozen_visual_evidence = [
+        analyzed_visuals.get(item.visual_id, item) for item in visuals
+    ]
     return prepared, []
 
 
@@ -1012,6 +1081,152 @@ def _source_text_batches(chunks) -> list[list[tuple[str, str]]]:
     if current:
         batches.append(current)
     return batches
+
+
+def _is_on_demand_range_evidence(evidence: list[RetrievalEvidence]) -> bool:
+    return bool(evidence) and all(
+        item.metadata.get("source_range")
+        and item.metadata.get("catalog_version")
+        and not item.chunk_ids
+        for item in evidence
+    )
+
+
+def _summarize_frozen_range_evidence(
+    *,
+    adapter: CodexAIExecutionAdapter,
+    evidence: list[RetrievalEvidence],
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+    summary_pass: int = 0,
+) -> list[RetrievalEvidence]:
+    batches = _source_evidence_batches(evidence)
+    if not batches:
+        raise CodexAppServerError("The frozen source range contains no readable evidence")
+    summaries: list[RetrievalEvidence] = []
+    for batch_index, batch in enumerate(batches):
+        provenance = [
+            {
+                "evidence_id": item.id,
+                "source_ingestion_id": item.source_ingestion_id,
+                "chapter_id": item.chapter_id,
+                "section_path": item.section_path,
+                "page_range": item.page_range,
+                "source_locator": item.metadata.get("source_locator"),
+                "source_range": item.metadata.get("source_range"),
+                "text_part": part_index,
+                "text_part_count": part_count,
+                "text": text,
+            }
+            for item, text, part_index, part_count in batch
+        ]
+        response = adapter.parse_structured(
+            system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
+            user_prompt=json.dumps(
+                {
+                    "summary_pass": summary_pass,
+                    "batch_index": batch_index,
+                    "batch_count": len(batches),
+                    "evidence": provenance,
+                },
+                ensure_ascii=False,
+            ),
+            schema=_SourceBatchSummary,
+        )
+        if on_activity is not None:
+            for event in response.activity:
+                on_activity(event)
+        summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
+        if not summary:
+            raise CodexAppServerError("Source batch summarization returned empty content")
+        prototype = batch[0][0]
+        covered_evidence_ids = list(dict.fromkeys(item.id for item, *_rest in batch))
+        covered_page_ranges = list(
+            dict.fromkeys(item.page_range for item, *_rest in batch if item.page_range)
+        )
+        covered_locators = list(
+            dict.fromkeys(
+                str(item.metadata.get("source_locator") or "")
+                for item, *_rest in batch
+                if item.metadata.get("source_locator")
+            )
+        )
+        summaries.append(
+            prototype.model_copy(
+                update={
+                    "id": f"{prototype.id}:range-summary:{summary_pass}:{batch_index}",
+                    "page_range": " / ".join(covered_page_ranges),
+                    "chunk_ids": [],
+                    "excerpt": summary[:360],
+                    "expanded_text": summary,
+                    "token_count": _conservative_text_tokens(summary),
+                    "reason": "Provider-generated summary of one consecutive on-demand source range batch.",
+                    "metadata": {
+                        **prototype.metadata,
+                        "retrieval_mode": "frozen_source_range_batch_summary",
+                        "summary_pass": summary_pass,
+                        "batch_index": batch_index,
+                        "batch_count": len(batches),
+                        "covered_evidence_ids": covered_evidence_ids,
+                        "covered_page_ranges": covered_page_ranges,
+                        "covered_source_locators": covered_locators,
+                        "source_provenance": [
+                            {key: value for key, value in item.items() if key != "text"}
+                            for item in provenance
+                        ],
+                    },
+                }
+            )
+        )
+    return summaries
+
+
+def _source_evidence_batches(
+    evidence: list[RetrievalEvidence],
+) -> list[list[tuple[RetrievalEvidence, str, int, int]]]:
+    batches: list[list[tuple[RetrievalEvidence, str, int, int]]] = []
+    current: list[tuple[RetrievalEvidence, str, int, int]] = []
+    used_tokens = 0
+    for item in evidence:
+        text_parts = _split_text_by_utf8_bytes(
+            item.expanded_text,
+            max_bytes=SOURCE_RANGE_BATCH_BYTE_BUDGET,
+        ) or [""]
+        for part_index, text in enumerate(text_parts):
+            if not text.strip():
+                continue
+            token_count = _conservative_text_tokens(text)
+            if current and used_tokens + token_count > SOURCE_RANGE_BATCH_BYTE_BUDGET:
+                batches.append(current)
+                current = []
+                used_tokens = 0
+            current.append((item, text, part_index, len(text_parts)))
+            used_tokens += token_count
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _split_text_by_utf8_bytes(text: str, *, max_bytes: int) -> list[str]:
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be positive")
+    parts: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for character in text:
+        character_bytes = len(character.encode("utf-8"))
+        if current and current_bytes + character_bytes > max_bytes:
+            parts.append("".join(current))
+            current = []
+            current_bytes = 0
+        current.append(character)
+        current_bytes += character_bytes
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _conservative_text_tokens(text: str) -> int:
+    return max(1, len(text.encode("utf-8")))
 
 
 def _visual_manifest_payload(
@@ -1330,6 +1545,16 @@ def process_codex_chat_on_lesson(
                 ),
             )
 
+        pending_write_offer = load_pending_board_write_offer(initial_lesson)
+        board_write_decision = decide_board_write_action(
+            message=request.message,
+            interaction_mode=request.interaction_mode,
+            has_pending_offer=pending_write_offer is not None,
+            has_board_selection=bool(
+                request.selection is not None and request.selection.kind == "board"
+            ),
+        )
+
         source_context = None
         if request.selection is not None and request.selection.kind == "source":
             try:
@@ -1377,6 +1602,8 @@ def process_codex_chat_on_lesson(
                 is_new_thread=prior_thread_id is None,
                 board_state=board_state_before,
                 verified_source_context=verified_context,
+                board_write_decision=board_write_decision,
+                pending_board_write_offer=pending_write_offer,
             )
             codex_reasoning_effort = _codex_reasoning_effort(request)
             codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
@@ -1412,6 +1639,8 @@ def process_codex_chat_on_lesson(
                             is_new_thread=True,
                             board_state=board_state_before,
                             verified_source_context=verified_context,
+                            board_write_decision=board_write_decision,
+                            pending_board_write_offer=pending_write_offer,
                         )
                         if prior_thread_id is not None
                         else user_prompt
@@ -1459,7 +1688,15 @@ def process_codex_chat_on_lesson(
                     raise CodexAppServerError("The lesson changed while Codex was working")
 
                 current_document = lesson.board_document
-                if codex_content == codex_board_text:
+                document_change_attempted = codex_content != codex_board_text
+                document_write_authorized = board_write_decision.action in {
+                    "edit_now",
+                    "confirm_offered_write",
+                }
+                unauthorized_document_change_blocked = (
+                    document_change_attempted and not document_write_authorized
+                )
+                if not document_change_attempted or not document_write_authorized:
                     next_document = current_document
                 else:
                     rebuilt_document = build_document(
@@ -1491,14 +1728,6 @@ def process_codex_chat_on_lesson(
                             preserved_document=current_document,
                         )
                         next_document = visual_result.document
-                    if would_flatten_rich_document(
-                        current_document=current_document,
-                        new_document=next_document,
-                        operation="replace_document",
-                    ):
-                        raise CodexAppServerError(
-                            "Codex board output would flatten the existing document structure"
-                        )
                 changed = document_changed(current_document, next_document)
                 follow_up_suggestions = generate_follow_up_suggestions(
                     adapter=CodexAIExecutionAdapter(
@@ -1515,6 +1744,11 @@ def process_codex_chat_on_lesson(
                 lesson.learning_requirements = None
                 lesson.board_task_requirements = None
                 clarification = _neutral_clarification()
+                pending_write_offer_after = build_pending_board_write_offer_after(
+                    board_write_decision,
+                    question=request.message,
+                    content=result.final_response,
+                )
                 metadata = {
                     "kind": "board_document_edit" if changed else "basic_chat",
                     "user_message": request.message,
@@ -1555,6 +1789,10 @@ def process_codex_chat_on_lesson(
                         else []
                     ),
                     "document_changed": changed,
+                    "document_change_attempted": document_change_attempted,
+                    "document_write_authorized": document_write_authorized,
+                    "unauthorized_document_change_blocked": unauthorized_document_change_blocked,
+                    "pending_board_write_offer_after": pending_write_offer_after,
                     "board_state_before": board_state_before,
                     "board_state_after": _board_state(next_document.content_text),
                     "document_hash_before": _text_hash(current_document.content_text),
@@ -1577,6 +1815,11 @@ def process_codex_chat_on_lesson(
                     "learning_clarification_after": clarification.model_dump(mode="json"),
                     "requirement_cleared": True,
                     "board_task_cleared": True,
+                    "decision_trace": board_write_decision_trace(
+                        board_write_decision,
+                        document_write_authorized=document_write_authorized,
+                        document_changed=changed,
+                    ),
                 }
                 commit_operations(
                     lesson,
@@ -1609,9 +1852,9 @@ def process_codex_chat_on_lesson(
                     board_decision=BoardDecision(
                         action="edit_board" if changed else "no_change",
                         reason=(
-                            "Codex changed the right-side document."
+                            "The user authorized a board change and Codex changed the document."
                             if changed
-                            else "Codex left the right-side document unchanged."
+                            else board_write_decision.reason
                         ),
                     ),
                     needs_clarification=False,

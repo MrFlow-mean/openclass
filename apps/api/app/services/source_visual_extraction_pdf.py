@@ -7,9 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
-
-from app.models import SourceVisualAsset
+from typing import Any, Callable, Iterable
 
 from app.services.source_visual_extraction_types import RawSourceVisual, SourceVisualAdapterResult
 
@@ -94,17 +92,6 @@ class _VectorLayoutRegion:
     @property
     def verified(self) -> bool:
         return not self.ambiguity_reasons
-
-
-@dataclass(frozen=True)
-class PdfVisualCluePage:
-    """One full PDF page plus a numbered map of indexed visual clues."""
-
-    page_no: int
-    original_png: bytes
-    clue_map_png: bytes
-    width: int
-    height: int
 
 
 def extract_pdf_visuals(
@@ -425,179 +412,6 @@ def extract_pdf_visuals(
             if warnings or has_unverified_layout
             else "ready"
         ),
-    )
-
-
-def render_pdf_visual_clue_page(
-    path: Path,
-    *,
-    page_no: int,
-    clues: Sequence[tuple[str, SourceVisualAsset]],
-) -> PdfVisualCluePage | None:
-    """Render a page and overlay clue IDs without treating clues as final crops."""
-
-    try:
-        import fitz  # type: ignore[import-not-found]
-        from PIL import Image, ImageDraw
-
-        document = fitz.open(path)
-        try:
-            if page_no < 1 or page_no > document.page_count:
-                return None
-            page = document.load_page(page_no - 1)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            original = pixmap.tobytes("png")
-        finally:
-            document.close()
-
-        with Image.open(io.BytesIO(original)) as source:
-            annotated = source.convert("RGB")
-        drawing = ImageDraw.Draw(annotated)
-        line_width = max(2, round(min(annotated.width, annotated.height) / 420))
-        for clue_id, asset in clues:
-            if len(asset.bbox) < 4:
-                continue
-            left, top, right, bottom = (
-                max(0.0, min(1.0, float(value))) for value in asset.bbox[:4]
-            )
-            box = (
-                round(left * annotated.width),
-                round(top * annotated.height),
-                round(right * annotated.width),
-                round(bottom * annotated.height),
-            )
-            if box[2] <= box[0] or box[3] <= box[1]:
-                continue
-            drawing.rectangle(box, outline=(220, 20, 60), width=line_width)
-            label_box = drawing.textbbox((box[0], box[1]), clue_id)
-            label_width = max(22, label_box[2] - label_box[0] + 8)
-            label_height = max(18, label_box[3] - label_box[1] + 6)
-            label_top = max(0, box[1] - label_height)
-            drawing.rectangle(
-                (box[0], label_top, box[0] + label_width, label_top + label_height),
-                fill=(220, 20, 60),
-            )
-            drawing.text((box[0] + 4, label_top + 2), clue_id, fill="white")
-        output = io.BytesIO()
-        annotated.save(output, format="PNG", compress_level=9)
-        return PdfVisualCluePage(
-            page_no=page_no,
-            original_png=original,
-            clue_map_png=output.getvalue(),
-            width=annotated.width,
-            height=annotated.height,
-        )
-    except Exception:
-        return None
-
-
-def render_pdf_normalized_region(
-    path: Path,
-    *,
-    page_no: int,
-    bbox: Sequence[float],
-) -> tuple[bytes, int, int] | None:
-    """Render one backend-validated normalized region from the original PDF."""
-
-    if len(bbox) < 4:
-        return None
-    try:
-        import fitz  # type: ignore[import-not-found]
-
-        values = [float(value) for value in bbox[:4]]
-        if not all(math.isfinite(value) for value in values):
-            return None
-        left, top, right, bottom = values
-        if not (0.0 <= left < right <= 1.0 and 0.0 <= top < bottom <= 1.0):
-            return None
-        document = fitz.open(path)
-        try:
-            if page_no < 1 or page_no > document.page_count:
-                return None
-            page = document.load_page(page_no - 1)
-            page_rect = page.rect
-            clip = fitz.Rect(
-                float(page_rect.x0) + left * float(page_rect.width),
-                float(page_rect.y0) + top * float(page_rect.height),
-                float(page_rect.x0) + right * float(page_rect.width),
-                float(page_rect.y0) + bottom * float(page_rect.height),
-            ) & page_rect
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
-            content = pixmap.tobytes("png")
-            return content, int(pixmap.width), int(pixmap.height)
-        finally:
-            document.close()
-    except Exception:
-        return None
-
-
-def trim_normalized_bbox_before_caption(
-    path: Path,
-    *,
-    page_no: int,
-    bbox: Sequence[float],
-) -> list[float]:
-    """Keep a nearby printed figure caption wholly outside the rendered crop."""
-
-    values = [float(value) for value in bbox[:4]] if len(bbox) >= 4 else []
-    if len(values) < 4 or not _valid_normalized_values(values):
-        return values
-    try:
-        import fitz  # type: ignore[import-not-found]
-
-        document = fitz.open(path)
-        try:
-            if page_no < 1 or page_no > document.page_count:
-                return values
-            page = document.load_page(page_no - 1)
-            rows = _merge_text_lines_into_rows(_page_text_lines(page)[0])
-            page_width = max(1.0, float(page.rect.width))
-            page_height = max(1.0, float(page.rect.height))
-            candidates: list[tuple[float, float, float]] = []
-            for row in rows:
-                text = " ".join(row.text.split())
-                if not _FIGURE_CAPTION_RE.match(text):
-                    continue
-                normalized = [
-                    row.rect[0] / page_width,
-                    row.rect[1] / page_height,
-                    row.rect[2] / page_width,
-                    row.rect[3] / page_height,
-                ]
-                horizontal_overlap = max(
-                    0.0,
-                    min(values[2], normalized[2]) - max(values[0], normalized[0]),
-                )
-                if (
-                    normalized[1] >= values[1]
-                    and normalized[1] - values[3] <= 0.045
-                    and horizontal_overlap
-                    >= min(
-                        values[2] - values[0],
-                        normalized[2] - normalized[0],
-                    )
-                    * 0.25
-                ):
-                    candidates.append((normalized[1], normalized[0], normalized[2]))
-            if not candidates:
-                return values
-            caption_top = min(item[0] for item in candidates)
-            trimmed_bottom = min(values[3], caption_top - 0.006)
-            if trimmed_bottom <= values[1]:
-                return values
-            return [values[0], values[1], values[2], round(trimmed_bottom, 6)]
-        finally:
-            document.close()
-    except Exception:
-        return values
-
-
-def _valid_normalized_values(values: Sequence[float]) -> bool:
-    return (
-        len(values) >= 4
-        and all(math.isfinite(value) for value in values[:4])
-        and 0.0 <= values[0] < values[2] <= 1.0
-        and 0.0 <= values[1] < values[3] <= 1.0
     )
 
 

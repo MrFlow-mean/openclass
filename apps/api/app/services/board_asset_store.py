@@ -8,8 +8,10 @@ import re
 import sqlite3
 import threading
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from app.models import now_iso
 from app.services.board_asset_identity import board_asset_content_url, stable_board_asset_id
@@ -421,14 +423,19 @@ class BoardAssetStore:
     def _board_asset_columns(conn: sqlite3.Connection) -> set[str]:
         return {str(row["name"]) for row in conn.execute("PRAGMA table_info(board_assets)")}
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.database_path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _record_from_row(row: sqlite3.Row) -> BoardAssetRecord:

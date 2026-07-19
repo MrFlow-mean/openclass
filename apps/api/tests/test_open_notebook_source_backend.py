@@ -69,7 +69,8 @@ def test_open_notebook_backend_syncs_refreshes_and_searches(tmp_path: Path) -> N
     assert persisted is not None
     assert persisted.open_notebook_notebook_id == "notebook:test"
 
-    ready = backend.refresh(synced)
+    ready = backend.refresh(synced, mirror_status=True)
+    assert ready.status == "ready"
     assert ready.metadata["open_notebook_sync_status"] == "ready"
     assert (
         backend.search(

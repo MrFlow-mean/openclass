@@ -149,15 +149,86 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   }));
   let visibleSources = [...sourceRecords];
   const deletedSourceIds: string[] = [];
+  let legacyStructureRebuildRequests = 0;
+  let directoryCatalogRebuildRequests = 0;
+
+  const legacyCatalog = (source: (typeof sourceRecords)[number]) => ({
+    source: {
+      id: source.id,
+      title: source.title,
+      file_name: source.file_name,
+      mime_type: source.mime_type,
+      size_bytes: source.size_bytes,
+      status: source.status,
+      structure_status: source.structure_status,
+    },
+    structure_id: null,
+    status: source.structure_status,
+    strategy: source.structure_strategy,
+    has_verified_toc: false,
+    catalog_version: 0,
+    catalog_updated_at: source.structure_updated_at,
+    source_content_hash: "",
+    catalog_schema_version: "legacy",
+    catalog_model: "",
+    chapter_count: 0,
+    verified_chapter_count: 0,
+    confidence: 0,
+    quality: null,
+    error: "",
+    warnings: [],
+    chapters: [],
+  });
 
   await page.route("**/api/packages/*/sources**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          package_id: "package-test",
+          catalogs: visibleSources.map(legacyCatalog),
+        }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/catalog")) {
+      const sourceId = path.split("/").at(-2) ?? "";
+      const source = visibleSources.find((candidate) => candidate.id === sourceId);
+      await route.fulfill({
+        status: source ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify(source ? legacyCatalog(source) : { detail: "source not found" }),
+      });
+      return;
+    }
     if (request.method() === "GET" && path.endsWith("/sources")) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(visibleSources),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith("/structure/rebuild")) {
+      legacyStructureRebuildRequests += 1;
+      const sourceId = path.split("/").at(-3) ?? "";
+      const source = visibleSources.find((candidate) => candidate.id === sourceId);
+      await route.fulfill({
+        status: source ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify({ source, structure: null, chapters: [], chunks: [], visuals: [] }),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith("/catalog/rebuild")) {
+      directoryCatalogRebuildRequests += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "legacy source must not use directory catalog rebuild" }),
       });
       return;
     }
@@ -183,6 +254,10 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await page.getByRole("button", { name: "Sources" }).click();
 
   await expect(page.getByText("已上传 2 份资料")).toBeVisible();
+  await page.getByLabel(`查看资料目录状态 批量资料 A ${unique}`).click();
+  await page.getByLabel(`重新建立资料目录 批量资料 A ${unique}`).click();
+  await expect.poll(() => legacyStructureRebuildRequests).toBe(1);
+  expect(directoryCatalogRebuildRequests).toBe(0);
   await page.getByRole("button", { name: "批量管理" }).click();
   await expect(page.getByLabel(`选择资料 批量资料 A ${unique}`)).toBeVisible();
   await page.getByRole("button", { name: "全选", exact: true }).click();
@@ -197,6 +272,472 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await expect.poll(() => deletedSourceIds).toEqual(sourceRecords.map((source) => source.id));
   await expect(page.getByRole("button", { name: "批量管理" })).toHaveCount(0);
   await expect(page.getByText("拖拽文件到这里，或点击上传资料。")).toBeVisible();
+});
+
+test("prefetches saved catalogs once and sends an authoritative chapter range", async ({ page }) => {
+  const unique = Date.now();
+  const solModel = {
+    provider: "openai_codex",
+    model: "gpt-5.6-sol",
+    label: "OpenAI Codex GPT-5.6-Sol",
+    capability: "text",
+    enabled: true,
+    configured: true,
+    default: true,
+    default_reasoning_effort: "low",
+    supported_reasoning_efforts: [
+      { reasoning_effort: "low", description: "" },
+      { reasoning_effort: "high", description: "" },
+    ],
+    default_service_tier: null,
+    service_tiers: [{ id: "priority", name: "Fast", description: "" }],
+  };
+  const lunaModel = {
+    ...solModel,
+    model: "gpt-5.6-luna",
+    label: "OpenAI Codex GPT-5.6-Luna",
+    default: false,
+    default_reasoning_effort: "medium",
+    supported_reasoning_efforts: [{ reasoning_effort: "medium", description: "" }],
+    service_tiers: [],
+  };
+  const defaultOnlyModel = {
+    ...lunaModel,
+    model: "catalog-default-only",
+    label: "OpenAI Codex Default-only test model",
+    default_reasoning_effort: null,
+    supported_reasoning_efforts: [],
+  };
+  await page.unroute("**/api/ai-models");
+  await page.route("**/api/ai-models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: [solModel, lunaModel, defaultOnlyModel],
+        realtime: [],
+        defaults: {
+          text: {
+            provider: solModel.provider,
+            model: solModel.model,
+            reasoning_effort: solModel.default_reasoning_effort,
+            service_tier: null,
+          },
+          realtime: { provider: "openai_codex", model: "realtime-unavailable" },
+        },
+      }),
+    });
+  });
+  const sourceId = `catalog-source-${unique}`;
+  const sourceTitle = `持久化目录资料 ${unique}`;
+  const chapterTitle = `可引用章节 ${unique}`;
+  const partialChapterTitle = `待验证章节 ${unique}`;
+  const catalogUpdatedAt = new Date().toISOString();
+  const initialContentHash = `hash-${unique}`;
+  let advertisedContentHash = initialContentHash;
+  let reportedStructureStatus = "building";
+  const sourceRecord = {
+    id: sourceId,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    title: sourceTitle,
+    source_type: "local_file",
+    source_uri: null,
+    file_name: `catalog-${unique}.pdf`,
+    mime_type: "application/pdf",
+    size_bytes: 4096,
+    status: "ready",
+    error: "",
+    structure_status: "ready",
+    structure_strategy: "codex_directory_v1",
+    structure_has_verified_toc: true,
+    structure_quality: null,
+    structure_error: "",
+    structure_updated_at: catalogUpdatedAt,
+    ingestion_job: null,
+    created_at: catalogUpdatedAt,
+    updated_at: catalogUpdatedAt,
+    metadata: { content_hash: initialContentHash },
+  };
+  const verifiedChapter = {
+    id: `chapter-verified-${unique}`,
+    owner_user_id: "guest-test",
+    package_id: "package-test",
+    source_ingestion_id: sourceId,
+    parent_id: null,
+    number: "1",
+    normalized_number: "1",
+    title: chapterTitle,
+    level: 1,
+    path: [chapterTitle],
+    order_index: 0,
+    source_locator: "pdf:12-18",
+    body_start_offset: null,
+    body_end_offset: null,
+    page_start: 12,
+    page_end: 18,
+    anchor_status: "verified",
+    range: {
+      kind: "pdf_pages",
+      start: 12,
+      end: 18,
+      container: "",
+      start_anchor: "",
+      end_anchor: "",
+      path: [chapterTitle],
+      display_label: "pp. 12-18",
+      end_inclusive: true,
+      metadata: {},
+    },
+    mapping_status: "verified",
+    source_content_hash: initialContentHash,
+    catalog_evidence: [],
+    catalog_version: 3,
+    confidence: 0.98,
+    excerpt: "",
+    metadata: {},
+  };
+  const partialChapter = {
+    ...verifiedChapter,
+    id: `chapter-partial-${unique}`,
+    parent_id: verifiedChapter.id,
+    number: "1.1",
+    normalized_number: "1.1",
+    title: partialChapterTitle,
+    level: 2,
+    path: [chapterTitle, partialChapterTitle],
+    order_index: 1,
+    source_locator: "pdf:18",
+    mapping_status: "partial",
+  };
+  const catalog = {
+    source: {
+      id: sourceId,
+      title: sourceTitle,
+      file_name: sourceRecord.file_name,
+      mime_type: sourceRecord.mime_type,
+      size_bytes: sourceRecord.size_bytes,
+      status: "ready",
+      structure_status: "ready",
+    },
+    structure_id: `structure-${unique}`,
+    status: "ready",
+    strategy: "codex_directory_v1",
+    has_verified_toc: true,
+    catalog_version: 3,
+    catalog_updated_at: catalogUpdatedAt,
+    source_content_hash: initialContentHash,
+    catalog_schema_version: "codex_directory_v1",
+    catalog_model: "openai_codex:test-model",
+    chapter_count: 2,
+    verified_chapter_count: 1,
+    confidence: 0.98,
+    quality: null,
+    error: "",
+    warnings: [],
+    chapters: [verifiedChapter, partialChapter],
+  };
+  let servedCatalog = catalog;
+  let batchCatalogRequests = 0;
+  let singleCatalogRequests = 0;
+  let completedSingleCatalogResponses = 0;
+  let rebuildRequests = 0;
+  let staleSingleCatalogResponsesRemaining = 0;
+  let delaySingleCatalogResponseAt = 0;
+  let delayedSingleCatalogRequests = 0;
+  let releaseDelayedSingleCatalog = () => {};
+  let submittedSelection: Record<string, unknown> | null = null;
+  let uploadPostData = "";
+  let rebuildPostData = "";
+
+  // Local product verification can reuse the already-running web build while keeping E2E writes in the isolated API database.
+  await page.route("http://127.0.0.1:8000/api/**", async (route) => {
+    const request = route.request();
+    if (new URL(request.url()).pathname === "/api/ai-models") {
+      await route.fallback();
+      return;
+    }
+    const headers = { ...request.headers() };
+    delete headers.host;
+    delete headers["content-length"];
+    const response = await page.request.fetch(request.url().replace("127.0.0.1:8000", "127.0.0.1:8110"), {
+      method: request.method(),
+      headers,
+      data: request.postDataBuffer() ?? undefined,
+      failOnStatusCode: false,
+    });
+    await route.fulfill({ response });
+  });
+
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      batchCatalogRequests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ package_id: "package-test", catalogs: [servedCatalog] }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith(`/sources/${sourceId}/catalog`)) {
+      singleCatalogRequests += 1;
+      const responseCatalog = staleSingleCatalogResponsesRemaining > 0 ? catalog : servedCatalog;
+      staleSingleCatalogResponsesRemaining = Math.max(0, staleSingleCatalogResponsesRemaining - 1);
+      if (singleCatalogRequests === delaySingleCatalogResponseAt) {
+        delayedSingleCatalogRequests += 1;
+        await new Promise<void>((resolve) => {
+          releaseDelayedSingleCatalog = resolve;
+        });
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(responseCatalog) });
+      completedSingleCatalogResponses += 1;
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith(`/sources/${sourceId}/catalog/rebuild`)) {
+      rebuildRequests += 1;
+      rebuildPostData = request.postData() ?? "";
+      const rebuiltCatalog = {
+        ...servedCatalog,
+        catalog_version: 3 + rebuildRequests,
+        catalog_updated_at: new Date(Date.now() + rebuildRequests * 1000).toISOString(),
+        chapters: [
+          {
+            ...verifiedChapter,
+            title: `${rebuildRequests === 1 ? "重建后章节" : "再次重建章节"} ${unique}`,
+            source_content_hash: advertisedContentHash,
+            catalog_version: 3 + rebuildRequests,
+          },
+        ],
+      };
+      servedCatalog = rebuiltCatalog;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(rebuiltCatalog),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            ...sourceRecord,
+            structure_status: reportedStructureStatus,
+            metadata: { ...sourceRecord.metadata, content_hash: advertisedContentHash },
+          },
+        ]),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path.endsWith("/sources")) {
+      uploadPostData = request.postData() ?? "";
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(sourceRecord) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    const payload = route.request().postDataJSON() as { selection?: Record<string, unknown> | null };
+    submittedSelection = payload.selection ?? null;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "test stops after inspecting the chapter reference" }),
+    });
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `目录缓存测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `目录缓存测试页面 ${unique}`);
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error("无法读取测试视口");
+  }
+
+  const chatModelButton = page.getByTestId("codex-model-settings-button");
+  await chatModelButton.click();
+  const chatModelMenu = page.getByTestId("codex-model-settings-menu");
+  await expect(chatModelMenu).toBeVisible();
+  await page.getByTestId("codex-model-model-row").click();
+  const chatModelSubmenu = page.getByTestId("codex-model-model-menu");
+  await expect(chatModelSubmenu).toBeVisible();
+  const chatButtonBox = await chatModelButton.boundingBox();
+  const chatMenuBox = await chatModelMenu.boundingBox();
+  const chatSubmenuBox = await chatModelSubmenu.boundingBox();
+  if (!chatButtonBox || !chatMenuBox || !chatSubmenuBox) {
+    throw new Error("聊天模型菜单未能完成视口定位");
+  }
+  expect(chatMenuBox.y + chatMenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
+  expect(chatSubmenuBox.y + chatSubmenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
+  expect(chatSubmenuBox.x + chatSubmenuBox.width).toBeLessThanOrEqual(viewport.width);
+  await chatModelButton.click();
+  await expect(chatModelMenu).toBeHidden();
+
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Sources" }).click();
+
+  const catalogModelButton = page.getByTestId("source-catalog-model-settings-button");
+  const catalogModelMenu = page.getByTestId("source-catalog-model-settings-menu");
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+  );
+  await catalogModelButton.click();
+  await expect(catalogModelMenu).toBeVisible();
+  const triggerBox = await catalogModelButton.boundingBox();
+  const menuBox = await catalogModelMenu.boundingBox();
+  if (!triggerBox || !menuBox) {
+    throw new Error("目录模型菜单未能完成视口定位");
+  }
+  expect(menuBox.y).toBeGreaterThanOrEqual(triggerBox.y + triggerBox.height);
+  expect(menuBox.x).toBeGreaterThanOrEqual(0);
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(viewport.width);
+  expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(viewport.height);
+
+  await page.getByTestId("source-catalog-model-reasoning-row").click();
+  const reasoningMenu = page.getByTestId("source-catalog-model-reasoning-menu");
+  await expect(reasoningMenu).toBeVisible();
+  const reasoningMenuBox = await reasoningMenu.boundingBox();
+  if (!reasoningMenuBox) {
+    throw new Error("目录模型推理强度菜单未能完成视口定位");
+  }
+  expect(reasoningMenuBox.x + reasoningMenuBox.width).toBeLessThanOrEqual(menuBox.x);
+  expect(reasoningMenuBox.x).toBeGreaterThanOrEqual(0);
+  expect(reasoningMenuBox.y + reasoningMenuBox.height).toBeLessThanOrEqual(viewport.height);
+  await reasoningMenu.getByRole("button", { name: "推理强度 高" }).click();
+  await page.getByTestId("source-catalog-model-speed-row").click();
+  await page
+    .getByTestId("source-catalog-model-speed-menu")
+    .getByRole("button", { name: "速度 快速" })
+    .click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+  );
+  await catalogModelButton.click();
+  await expect(catalogModelMenu).toBeHidden();
+  await expect(catalogModelButton).toHaveAttribute("aria-expanded", "false");
+
+  await expect.poll(() => batchCatalogRequests).toBe(1);
+  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) }).click();
+  await expect(page.getByRole("button", { name: new RegExp(`^1\\.1 ${partialChapterTitle}`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: /引用章节到输入框/ })).toHaveCount(1);
+  expect(singleCatalogRequests).toBe(0);
+
+  await page.getByRole("button", { name: "History" }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+  );
+  await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
+  await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
+  expect(batchCatalogRequests).toBe(1);
+  expect(singleCatalogRequests).toBe(0);
+
+  await page.getByRole("button", { name: `引用章节到输入框 1 ${chapterTitle}` }).click();
+  await page.getByPlaceholder("基于引用章节继续提问").fill("请基于这个章节生成板书");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect.poll(() => submittedSelection).not.toBeNull();
+  expect(submittedSelection).toMatchObject({
+    source_ingestion_id: sourceId,
+    source_chapter_id: verifiedChapter.id,
+    catalog_version: 3,
+    source_content_hash: initialContentHash,
+    source_page_start: 12,
+    source_page_end: 18,
+    source_range: {
+      kind: "pdf_pages",
+      start: 12,
+      end: 18,
+      end_inclusive: true,
+    },
+  });
+
+  const replacementContentHash = `replacement-hash-${unique}`;
+  advertisedContentHash = replacementContentHash;
+  reportedStructureStatus = "ready";
+  staleSingleCatalogResponsesRemaining = 2;
+  delaySingleCatalogResponseAt = 2;
+  servedCatalog = {
+    ...catalog,
+    source_content_hash: replacementContentHash,
+    chapters: catalog.chapters.map((chapter) => ({
+      ...chapter,
+      source_content_hash: replacementContentHash,
+    })),
+  };
+  await expect.poll(() => singleCatalogRequests, { timeout: 7_000 }).toBe(2);
+  await expect.poll(() => delayedSingleCatalogRequests).toBe(1);
+
+  await page.getByLabel(`重新建立资料目录 ${sourceTitle}`).click();
+  await expect.poll(() => rebuildRequests).toBe(1);
+  expect(rebuildPostData).toContain('name="catalog_model"');
+  expect(rebuildPostData).toContain('"provider":"openai_codex"');
+  expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
+  expect(rebuildPostData).toContain('"reasoning_effort":"high"');
+  expect(rebuildPostData).toContain('"service_tier":"priority"');
+  releaseDelayedSingleCatalog();
+  await expect.poll(() => completedSingleCatalogResponses).toBe(2);
+  await expect(page.getByRole("button", { name: new RegExp(`^1 重建后章节 ${unique}`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toHaveCount(0);
+
+  await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-model-row").click();
+  await page
+    .getByTestId("source-catalog-model-model-menu")
+    .getByRole("button", { name: "选择模型 5.6 Luna" })
+    .click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Luna，推理强度 中，速度 标准/
+  );
+  await page.getByTestId("source-catalog-model-reasoning-row").click();
+  await expect(page.getByTestId("source-catalog-model-reasoning-menu")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("source-catalog-model-reasoning-menu")
+      .getByRole("button", { name: "推理强度 高" })
+  ).toHaveCount(0);
+  await page.getByTestId("source-catalog-model-reasoning-row").click();
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toBeDisabled();
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toContainText("仅标准");
+  await catalogModelButton.click();
+
+  await page.getByTestId("source-file-input").setInputFiles({
+    name: `catalog-model-${unique}.pdf`,
+    mimeType: "application/pdf",
+    buffer: Buffer.from("catalog model upload"),
+  });
+  await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
+  expect(uploadPostData).toContain('"provider":"openai_codex"');
+  expect(uploadPostData).toContain('"model":"gpt-5.6-luna"');
+  expect(uploadPostData).toContain('"reasoning_effort":"medium"');
+  expect(uploadPostData).toContain('"service_tier":null');
+
+  await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-model-row").click();
+  await page
+    .getByTestId("source-catalog-model-model-menu")
+    .getByRole("button", { name: "选择模型 Default only test model" })
+    .click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 Default only test model，推理强度 默认，速度 标准/
+  );
+  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toBeDisabled();
+  await page.getByTestId("source-catalog-model-reset-button").click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+  );
+  await catalogModelButton.click();
+  await expect(catalogModelMenu).toBeHidden();
+  await page.getByRole("button", { name: "History" }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await expect(catalogModelButton).toHaveAccessibleName(
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
+  );
 });
 
 test("restores each lesson's attached composer reference after switching tabs", async ({ page }) => {
