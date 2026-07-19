@@ -183,6 +183,7 @@ def test_pdf_calibration_runs_one_isolated_turn_and_validates_constant_offset(
         "_printed_page_sequence_candidates",
         lambda *_args, **_kwargs: [_sequence_candidate()],
     )
+    monkeypatch.setattr(mapping_module, "_printed_page_evidence_runs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(mapping_module, "_verify_printed_footer_anchors", lambda *_args, **_kwargs: None)
 
     result = generate_pdf_page_calibration(
@@ -237,6 +238,7 @@ def test_pdf_calibration_accepts_arbitrary_verified_anchors_without_page_one(
         "_printed_page_sequence_candidates",
         lambda *_args, **_kwargs: [candidate],
     )
+    monkeypatch.setattr(mapping_module, "_printed_page_evidence_runs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         mapping_module,
         "_verify_printed_footer_anchors",
@@ -278,6 +280,31 @@ def test_pdf_calibration_investigates_empty_mechanical_candidates_and_returns_se
         "_printed_page_sequence_candidates",
         lambda *_args, **_kwargs: [],
     )
+    evidence_runs = [
+        {
+            "pdf_page_start": 17,
+            "pdf_page_end": 217,
+            "printed_page_start": 1,
+            "printed_page_end": 201,
+            "page_offset": 16,
+            "observed_label_count": 180,
+            "samples": [{"pdf_page": 17, "printed_page": 1}],
+        },
+        {
+            "pdf_page_start": 218,
+            "pdf_page_end": 229,
+            "printed_page_start": 204,
+            "printed_page_end": 215,
+            "page_offset": 14,
+            "observed_label_count": 12,
+            "samples": [{"pdf_page": 218, "printed_page": 204}],
+        },
+    ]
+    monkeypatch.setattr(
+        mapping_module,
+        "_printed_page_evidence_runs",
+        lambda *_args, **_kwargs: evidence_runs,
+    )
     monkeypatch.setattr(
         mapping_module,
         "_verify_printed_footer_anchors",
@@ -299,6 +326,8 @@ def test_pdf_calibration_investigates_empty_mechanical_candidates_and_returns_se
     assert len(result.segments) == 3
     assert result.audit_metadata["pdf_printed_page_offsets"] == [14, 16]
     assert "can be empty" in str(client.calls[0]["user_prompt"])
+    assert '"page_offset":14' in str(client.calls[0]["user_prompt"])
+    assert "unavailable PDF command-line tools" in str(client.calls[0]["user_prompt"])
     assert "instead of stopping" in str(client.calls[0]["system_prompt"])
 
 
@@ -311,6 +340,7 @@ def test_pdf_calibration_rejects_inconsistent_or_insufficient_coverage(
     source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     monkeypatch.setattr(mapping_module, "_pdf_page_count", lambda _path: 540)
     monkeypatch.setattr(mapping_module, "_verify_printed_footer_anchors", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mapping_module, "_printed_page_evidence_runs", lambda *_args, **_kwargs: [])
     inconsistent = _calibration_model(final_pdf=531)
     monkeypatch.setattr(
         mapping_module,
@@ -520,3 +550,23 @@ def test_mechanical_footer_scan_derives_offset_without_printed_page_one(tmp_path
             pdf_page_end=6,
         )
     ]
+
+
+def test_mechanical_evidence_runs_preserve_offset_transitions(tmp_path: Path) -> None:
+    import fitz
+
+    path = tmp_path / "segmented-sequence.pdf"
+    document = fitz.open()
+    document.new_page(width=500, height=700).insert_text((200, 350), "front matter")
+    for printed_page in (1, 2, 4, 5, 5, 6):
+        page = document.new_page(width=500, height=700)
+        page.insert_text((245, 680), str(printed_page))
+    document.save(path)
+    document.close()
+
+    runs = mapping_module._printed_page_evidence_runs(path, page_count=7)
+
+    assert [run["page_offset"] for run in runs] == [1, 0, 1]
+    assert [run["observed_label_count"] for run in runs] == [2, 2, 2]
+    assert runs[1]["printed_page_start"] == 4
+    assert runs[2]["pdf_page_start"] == 6

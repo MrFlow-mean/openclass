@@ -107,6 +107,10 @@ def generate_pdf_page_calibration(
         required_printed_page_min=required_printed_page_min,
         required_printed_page_max=required_printed_page_max,
     )
+    evidence_runs = _printed_page_evidence_runs(
+        source_path,
+        page_count=page_count,
+    )
     response = client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         model=selection.model,
@@ -116,6 +120,7 @@ def generate_pdf_page_calibration(
             required_printed_page_max=required_printed_page_max,
             physical_page_count=page_count,
             candidates=candidates,
+            evidence_runs=evidence_runs,
         ),
         schema=CodexPdfPageCalibration,
         on_activity=on_activity,
@@ -606,6 +611,64 @@ def _printed_page_sequence_candidates(
     return candidates
 
 
+def _printed_page_evidence_runs(
+    path: Path,
+    *,
+    page_count: int,
+) -> list[dict[str, object]]:
+    try:
+        import fitz
+
+        document = fitz.open(str(path))
+    except Exception as exc:
+        raise SourceCodexPdfMappingError(
+            "PDF printed-page evidence could not be mechanically inspected."
+        ) from exc
+    try:
+        observations = [
+            (pdf_page, next(iter(numbers)))
+            for pdf_page in range(1, page_count + 1)
+            if len(numbers := _footer_page_numbers(document.load_page(pdf_page - 1))) == 1
+        ]
+    finally:
+        document.close()
+
+    grouped: list[list[tuple[int, int]]] = []
+    for observation in observations:
+        pdf_page, printed_page = observation
+        page_offset = pdf_page - printed_page
+        if grouped:
+            previous_pdf_page, previous_printed_page = grouped[-1][-1]
+            previous_offset = previous_pdf_page - previous_printed_page
+            if (
+                page_offset == previous_offset
+                and pdf_page > previous_pdf_page
+                and printed_page > previous_printed_page
+            ):
+                grouped[-1].append(observation)
+                continue
+        grouped.append([observation])
+
+    runs: list[dict[str, object]] = []
+    for group in grouped:
+        sample_indexes = sorted({0, len(group) // 2, len(group) - 1})
+        runs.append(
+            {
+                "pdf_page_start": group[0][0],
+                "pdf_page_end": group[-1][0],
+                "printed_page_start": group[0][1],
+                "printed_page_end": group[-1][1],
+                "page_offset": group[0][0] - group[0][1],
+                "observed_label_count": len(group),
+                "samples": [
+                    {"pdf_page": group[index][0], "printed_page": group[index][1]}
+                    for index in sample_indexes
+                ],
+            }
+        )
+    return runs
+
+
 def _pdf_page_count(path: Path) -> int:
     try:
         from pypdf import PdfReader
@@ -638,13 +701,13 @@ constant P. Leave printed-page gaps when those printed pages are absent; leave
 physical-page gaps when those PDF pages are inserts or duplicates. Do not make
 two segments claim the same printed page.
 
-Return at least three well-separated, visually verified anchors overall and at
-least one anchor inside every segment. The top-level start and end fields must
-match the first and last segment, or the single continuous sequence. Choose
-anchors whose page labels are also extractable as footer or header text so the
-host can verify them mechanically. Fail only after visual investigation cannot
-establish a trustworthy mapping. Return only the required JSON object and no
-commentary.
+Return at least three well-separated anchors supported by the host's extracted
+header/footer evidence and at least one anchor inside every segment. The
+top-level start and end fields must match the first and last segment, or the
+single continuous sequence. Visually inspect the source only when the mechanical
+evidence remains ambiguous. Fail only after the supplied evidence and source
+inspection cannot establish a trustworthy mapping. Return only the required JSON
+object and no commentary.
 """.strip()
 
 
@@ -654,6 +717,7 @@ def _calibration_user_prompt(
     required_printed_page_max: int,
     physical_page_count: int,
     candidates: Sequence[PdfPrintedPageSequenceCandidate],
+    evidence_runs: Sequence[dict[str, object]],
 ) -> str:
     candidate_payload = [
         {
@@ -672,9 +736,13 @@ def _calibration_user_prompt(
         "The host mechanically observed these strict continuous footer-number candidates: "
         f"{json.dumps(candidate_payload, ensure_ascii=False, separators=(',', ':'))}. These candidates "
         "are advisory and can be empty when the file has gaps, duplicates, OCR errors, centered labels, "
-        "or multiple offsets. When they are empty or incomplete, inspect pages around every offset "
-        "transition and report canonical segments instead of terminating. Render at least three "
-        "bounded, well-separated samples before returning the exact mapping. Do not search "
+        "or multiple offsets. The host also extracted these ordered header/footer evidence runs: "
+        f"{json.dumps(list(evidence_runs), ensure_ascii=False, separators=(',', ':'))}. Treat long runs "
+        "with multiple labels as stronger evidence than isolated one-label runs. When candidates are "
+        "empty or incomplete, analyze every offset transition in these evidence runs and report "
+        "canonical segments instead of terminating. Use the source file only to resolve evidence that "
+        "remains ambiguous; do not spend time searching for unavailable PDF command-line tools. Check "
+        "at least three bounded, well-separated samples before returning the exact mapping. Do not search "
         "specifically for printed page 1. Never treat a number inside body text as the printed page label."
     )
 
