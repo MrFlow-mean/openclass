@@ -378,6 +378,8 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
     assert thread_params["config"]["web_search"] == "disabled"
     assert "source.pdf" in thread_params["developerInstructions"]
     assert "scratch" in thread_params["developerInstructions"]
+    assert "prefer one bounded pdftotext extraction" in thread_params["developerInstructions"]
+    assert "do not assume that Python" in thread_params["developerInstructions"]
     assert source_path.name not in thread_params["developerInstructions"]
     turn_payload = captured["turn_payload"]
     assert turn_payload["params"]["outputSchema"]["additionalProperties"] is False
