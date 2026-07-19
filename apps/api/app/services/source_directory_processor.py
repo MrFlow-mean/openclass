@@ -30,14 +30,6 @@ from app.services.source_codex_catalog import (
     generate_codex_direct_catalog,
     materialize_stored_codex_catalog,
 )
-from app.services.source_codex_pdf_mapping import (
-    SourceCodexPdfMappingError,
-    generate_pdf_page_calibration,
-    map_pdf_native_outline_ranges,
-    map_pdf_printed_page_ranges,
-    maximum_printed_page,
-    minimum_printed_page,
-)
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
     DirectoryCandidate,
@@ -225,126 +217,62 @@ class SourceDirectoryProcessor:
                 raise SourceDirectoryProcessingError(
                     "The source file fingerprint no longer matches the uploaded source."
                 )
-            previous_chapters = list(self.store.get_catalog_view(source=record).chapters)
             warnings: list[str]
             catalog_complete: bool
             execution_metadata: dict[str, object]
             structure_execution_metadata: dict[str, object]
             turn_count: int
-            has_pdf_range_mapping = False
+            has_authoritative_ranges = False
 
             if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
-                # Source Codex receives the isolated, read-only source file and
-                # returns the complete directory. The host only validates the
-                # returned object and materializes it for persistence.
-                _report(progress_callback, "normalizing_directory", 64)
-                direct_catalog = _reusable_failed_pdf_catalog(
-                    store=self.store,
+                # Source Codex owns both directory semantics and range
+                # investigation. The host validates and persists its exact
+                # authored result without deriving page offsets or parent ranges.
+                _report(progress_callback, "source_codex_investigation", 64)
+                direct_catalog = generate_codex_direct_catalog(
                     record=record,
+                    source_path=path,
                     source_content_hash=content_hash,
+                    selection=catalog_model,
+                    on_activity=activity_callback,
                 )
-                reused_directory = direct_catalog is not None
-                if direct_catalog is None:
-                    direct_catalog = generate_codex_direct_catalog(
-                        record=record,
-                        source_path=path,
-                        source_content_hash=content_hash,
-                        selection=catalog_model,
-                        on_activity=activity_callback,
-                    )
                 chapters = list(direct_catalog.chapters)
                 execution_metadata = dict(direct_catalog.audit_metadata)
-                stage_history = [*run.stage_history, "normalizing_directory"]
-                if reused_directory:
-                    stage_history.append("reusing_directory_catalog")
-                if path.suffix.lower() == ".pdf":
-                    outline_mapping = map_pdf_native_outline_ranges(
-                        chapters,
-                        source_path=path,
-                    )
-                    chapters = list(outline_mapping.chapters)
-                    execution_metadata.update(outline_mapping.audit_metadata)
-                    if outline_mapping.page_count:
-                        run = run.model_copy(update={"page_count": outline_mapping.page_count})
-                    if outline_mapping.mapped_count:
-                        stage_history.append("mapping_pdf_native_outline")
-                        has_pdf_range_mapping = True
+                stage_history = [*run.stage_history, "source_codex_investigation"]
+                has_authoritative_ranges = any(
+                    chapter.mapping_status == "verified" and chapter.range is not None
+                    for chapter in chapters
+                )
+                inspected_pdf_pages = {
+                    page
+                    for chapter in chapters
+                    for evidence in chapter.catalog_evidence
+                    for page in (evidence.page_start, evidence.page_end)
+                    if isinstance(page, int)
+                }
+                if has_authoritative_ranges:
+                    stage_history.append("source_codex_ranges_authored")
                 run = self.store.save_catalog_run(
                     run.model_copy(
                         update={
                             "stage_history": stage_history,
                             "metadata": {**run.metadata, **execution_metadata},
+                            "inspected_page_count": len(inspected_pdf_pages),
                         }
                     )
                 )
-                required_printed_page_max = (
-                    maximum_printed_page(chapters)
-                    if path.suffix.lower() == ".pdf"
-                    else None
+                turn_count = direct_catalog.turn_count
+                unmapped_count = sum(
+                    chapter.mapping_status != "verified" for chapter in chapters
                 )
-                required_printed_page_min = (
-                    minimum_printed_page(chapters)
-                    if required_printed_page_max is not None
-                    else None
+                warnings = (
+                    [
+                        f"Source Codex left {unmapped_count} directory nodes unmapped after investigation."
+                    ]
+                    if unmapped_count
+                    else []
                 )
-                mapping_warnings: list[str] = []
-                if (
-                    required_printed_page_min is not None
-                    and required_printed_page_max is not None
-                ):
-                    _report(progress_callback, "calibrating_pdf_pages", 74)
-                    try:
-                        calibration = generate_pdf_page_calibration(
-                            record=record,
-                            source_path=path,
-                            source_content_hash=content_hash,
-                            required_printed_page_min=required_printed_page_min,
-                            required_printed_page_max=required_printed_page_max,
-                            selection=catalog_model,
-                            on_activity=activity_callback,
-                        )
-                        chapters = map_pdf_printed_page_ranges(
-                            chapters,
-                            calibration=calibration,
-                        )
-                        execution_metadata.update(calibration.audit_metadata)
-                        turn_count = direct_catalog.turn_count + calibration.turn_count
-                        stage_history.append("calibrating_pdf_pages")
-                        has_pdf_range_mapping = True
-                        run = run.model_copy(
-                            update={
-                                "page_count": calibration.page_count,
-                                "inspected_page_count": len(calibration.anchors),
-                            }
-                        )
-                    except SourceCodexPdfMappingError as exc:
-                        failure_metadata = dict(exc.audit_metadata)
-                        mapping_turn_count = int(
-                            failure_metadata.get("source_codex_pdf_mapping_turn_count") or 0
-                        )
-                        execution_metadata.update(failure_metadata)
-                        execution_metadata.update(
-                            {
-                                "pdf_page_calibration_status": "failed",
-                                "pdf_page_calibration_error": str(exc),
-                            }
-                        )
-                        turn_count = direct_catalog.turn_count + mapping_turn_count
-                        stage_history.append("calibrating_pdf_pages_failed")
-                        mapping_warnings.append(
-                            "Directory recognized, but PDF page ranges remain unmapped: "
-                            f"{exc}"
-                        )
-                else:
-                    turn_count = direct_catalog.turn_count
-                chapters, preserved_range_count = _preserve_verified_ranges(
-                    chapters,
-                    previous_chapters=previous_chapters,
-                    source_content_hash=content_hash,
-                )
-                execution_metadata["preserved_verified_range_count"] = preserved_range_count
-                warnings = list(mapping_warnings)
                 if not chapters:
                     warnings.append("Source Codex returned an empty directory list.")
                 catalog_complete = True
@@ -355,8 +283,6 @@ class SourceDirectoryProcessor:
                     not in {
                         "codex_directory_payload",
                         "codex_raw_output",
-                        "pdf_page_calibration_payload",
-                        "pdf_page_calibration_raw_output",
                     }
                 }
                 run = self.store.save_catalog_run(
@@ -422,7 +348,7 @@ class SourceDirectoryProcessor:
 
             validation_stage = (
                 "validating_directory_ranges"
-                if self.normalizer_factory is not None or has_pdf_range_mapping
+                if self.normalizer_factory is not None or has_authoritative_ranges
                 else "validating_directory"
             )
             _report(progress_callback, validation_stage, 82)

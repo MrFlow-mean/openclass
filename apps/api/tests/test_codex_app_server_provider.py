@@ -323,7 +323,11 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
             captured["is_symlink"] = staged_path.is_symlink()
             captured["source_mode"] = staged_path.stat().st_mode & 0o777
             captured["thread_params"] = params
-            assert sorted(path.name for path in cwd.iterdir()) == ["scratch", "source.pdf"]
+            assert sorted(path.name for path in cwd.iterdir()) == [
+                "scratch",
+                "source.pdf",
+                "toolbox",
+            ]
             return _source_thread_result(cwd)
 
         def _write(self, payload):
@@ -526,29 +530,92 @@ def test_source_catalog_artifact_is_opened_nonblocking_and_without_link_followin
         assert captured["flags"] & codex_app_server.os.O_NOFOLLOW
 
 
-def test_source_tool_path_includes_the_bundled_python_runtime(
+def test_source_tool_path_uses_only_the_workspace_toolbox_and_system_tools(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    dependencies = tmp_path / "codex-runtimes" / "runtime" / "dependencies"
-    override = dependencies / "bin" / "override"
-    python_bin = dependencies / "python" / "bin"
-    node_bin = dependencies / "node" / "bin"
-    fallback = dependencies / "bin" / "fallback"
-    poppler_bin = dependencies / "native" / "poppler" / "poppler" / "bin"
-    for directory in (override, python_bin, node_bin, fallback, poppler_bin):
-        directory.mkdir(parents=True, exist_ok=True)
-    tool = override / "pdfinfo"
-    tool.touch()
-    monkeypatch.setattr(codex_app_server.shutil, "which", lambda _tool: str(tool))
+    toolbox = tmp_path / "toolbox"
+    toolbox_bin = toolbox / "bin"
+    toolbox_bin.mkdir(parents=True)
 
-    source_path = codex_app_server._source_document_tool_path().split(":")
+    source_path = codex_app_server._source_document_tool_path(toolbox).split(":")
 
-    assert str(override) in source_path
-    assert str(python_bin) in source_path
-    assert str(node_bin) in source_path
-    assert str(fallback) in source_path
-    assert str(poppler_bin) in source_path
+    assert source_path[0] == str(toolbox_bin)
+    assert "/usr/bin" in source_path
+    assert all("codex-runtimes" not in entry for entry in source_path)
+
+
+def test_structured_workspace_turn_returns_validator_error_to_the_same_codex_thread(
+    tmp_path: Path,
+) -> None:
+    captured_turns: list[dict] = []
+
+    class _Session:
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+
+        def request(self, method, params, *, timeout_seconds):
+            assert method == "thread/start"
+            return {"thread": {"id": "thread_validation"}}
+
+        def _write(self, payload):
+            captured_turns.append(payload)
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": '{"value":"candidate","nested":{"note":""}}',
+                        }
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    attempts = 0
+
+    def validate(response: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError("A verified child range falls outside its parent range.")
+        return response.replace("candidate", "validated")
+
+    output, _usage, _activity = codex_app_server._run_structured_workspace_turn(
+        session=_Session(),  # type: ignore[arg-type]
+        cwd=tmp_path,
+        model="gpt-5.5",
+        user_prompt="investigate",
+        schema=_StructuredPayload,
+        image_inputs=None,
+        deadline_monotonic=time.monotonic() + 5,
+        config={},
+        service_name="test",
+        developer_instructions="test",
+        validate_permission=lambda _result: None,
+        on_activity=None,
+        reasoning_effort="low",
+        service_tier=None,
+        service_tier_is_set=False,
+        response_validator=validate,
+    )
+
+    assert output.startswith('{"value":"validated"')
+    assert attempts == 2
+    assert len(captured_turns) == 2
+    feedback = captured_turns[1]["params"]["input"][0]["text"]
+    assert "outside its parent range" in feedback
+    assert "do not terminate" in feedback
 
 
 @pytest.mark.parametrize("tamper_target", ["staged", "original"])
