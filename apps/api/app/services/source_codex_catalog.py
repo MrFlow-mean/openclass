@@ -17,6 +17,7 @@ from app.services.codex_app_server import (
     CodexAppServerTextClient,
 )
 from app.services.source_chapter_identity import stable_source_chapter_id
+from app.services.source_codex_pdf_mapping import build_pdf_catalog_visual_inputs
 
 
 MAX_NODE_TEXT_LENGTH = 4_096
@@ -98,6 +99,11 @@ def generate_codex_direct_catalog(
             "The stored source suffix does not match its catalog identity."
         )
 
+    visual_evidence = (
+        build_pdf_catalog_visual_inputs(source_path)
+        if suffix == ".pdf"
+        else None
+    )
     response = client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         model=selection.model,
@@ -109,6 +115,11 @@ def generate_codex_direct_catalog(
         service_tier=selection.service_tier,
         service_tier_is_set="service_tier" in selection.model_fields_set,
         output_artifact_path=CODEX_SOURCE_CATALOG_ARTIFACT,
+        image_inputs=(
+            list(visual_evidence.image_inputs)
+            if visual_evidence is not None
+            else None
+        ),
     )
     runner_source_hash = str(getattr(response, "source_sha256", "") or "").lower()
     if runner_source_hash != source_content_hash.lower():
@@ -170,6 +181,16 @@ def generate_codex_direct_catalog(
             "codex_raw_output": raw_output,
             "codex_raw_output_sha256": raw_output_sha256,
             "body_text_extracted_by_host": False,
+            "pdf_catalog_visual_evidence_count": (
+                len(visual_evidence.image_inputs)
+                if visual_evidence is not None
+                else 0
+            ),
+            "pdf_catalog_visual_evidence_page_count": (
+                len(visual_evidence.covered_pdf_pages)
+                if visual_evidence is not None
+                else 0
+            ),
         },
     )
 

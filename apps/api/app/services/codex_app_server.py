@@ -1289,6 +1289,7 @@ class CodexAppServerTextClient:
         service_tier: str | None = None,
         service_tier_is_set: bool = False,
         output_artifact_path: str | None = None,
+        image_inputs: list[str] | None = None,
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
         status = codex_provider_status(self.user_id, refresh=False)
@@ -1320,6 +1321,7 @@ class CodexAppServerTextClient:
                     service_tier=service_tier,
                     service_tier_is_set=service_tier_is_set,
                     output_artifact_path=output_artifact_path,
+                    image_inputs=image_inputs,
                 )
             )
         if budget is not None:
@@ -1803,6 +1805,7 @@ def _run_source_file_structured_turn(
     service_tier: str | None = None,
     service_tier_is_set: bool = False,
     output_artifact_path: str | None = None,
+    image_inputs: list[str] | None = None,
 ) -> tuple[str, Any, list[AgentActivityEvent], str, int]:
     source_path = Path(source_path)
     deadline = _deadline_for(
@@ -1870,7 +1873,7 @@ def _run_source_file_structured_turn(
                 model=model,
                 user_prompt=user_prompt,
                 schema=turn_schema,
-                image_inputs=None,
+                image_inputs=image_inputs,
                 deadline_monotonic=deadline,
                 config=config,
                 service_name="openclass_source_codex",

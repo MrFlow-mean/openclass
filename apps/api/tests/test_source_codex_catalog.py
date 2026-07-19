@@ -17,6 +17,8 @@ from app.models import (
     SourceRange,
 )
 from app.services import source_directory_processor as directory_processor_module
+from app.services import source_codex_catalog as source_codex_catalog_module
+from app.services import source_codex_pdf_mapping as pdf_mapping_module
 from app.services.source_codex_catalog import (
     CodexDirectCatalog,
     CodexDirectCatalogNode,
@@ -25,8 +27,13 @@ from app.services.source_codex_catalog import (
     materialize_stored_codex_catalog,
 )
 from app.services.source_codex_pdf_mapping import (
+    CodexPdfPageCalibration,
     CodexPdfPrintedPageAnchor,
+    PdfNativeOutlineEntry,
     PdfPageCalibrationResult,
+    SourceCodexPdfMappingError,
+    generate_pdf_page_calibration,
+    map_pdf_native_outline_ranges,
 )
 from app.services.source_directory_processor import (
     SourceDirectoryProcessingError,
@@ -70,7 +77,7 @@ class FakeSourceCodexClient:
         self.output_parsed = output_parsed
         self.raw_output = (
             output_parsed.model_dump_json()
-            if raw_output is None and isinstance(output_parsed, CodexDirectCatalog)
+            if raw_output is None and hasattr(output_parsed, "model_dump_json")
             else raw_output
         )
         self.source_sha256 = source_sha256
@@ -198,6 +205,121 @@ def test_source_codex_forwards_live_activity_callback(tmp_path: Path) -> None:
 
     callback = client.calls[0]["on_activity"]
     assert callable(callback)
+
+
+def test_pdf_catalog_forwards_bounded_visual_evidence(tmp_path: Path) -> None:
+    import fitz
+
+    path = tmp_path / "visual-source.pdf"
+    document = fitz.open()
+    page = document.new_page(width=500, height=700)
+    page.insert_text((72, 96), "Table of Contents")
+    page.insert_text((72, 140), "Chapter 1 ........................ 1")
+    scanned_document = fitz.open()
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+    scanned_page = scanned_document.new_page(width=500, height=700)
+    scanned_page.insert_image(scanned_page.rect, stream=pixmap.tobytes("png"))
+    scanned_document.save(path)
+    scanned_document.close()
+    document.close()
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    client = FakeSourceCodexClient(
+        _catalog(_node("chapter-1", title="Chapter 1", source_locator="printed-page:1")),
+        source_sha256=content_hash,
+    )
+
+    result = generate_codex_direct_catalog(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    image_inputs = client.calls[0]["image_inputs"]
+    assert image_inputs
+    assert all(str(value).startswith("data:image/jpeg;base64,") for value in image_inputs)
+    assert result.audit_metadata["pdf_catalog_visual_evidence_count"] == len(image_inputs)
+
+
+def test_scanned_pdf_calibration_uses_visual_footer_evidence(tmp_path: Path) -> None:
+    import fitz
+
+    text_document = fitz.open()
+    for printed_page in range(1, 7):
+        page = text_document.new_page(width=500, height=700)
+        page.insert_text((245, 680), str(printed_page), fontsize=16)
+    scanned_document = fitz.open()
+    for page in text_document:
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+        scanned_page = scanned_document.new_page(width=500, height=700)
+        scanned_page.insert_image(scanned_page.rect, stream=pixmap.tobytes("png"))
+    path = tmp_path / "scanned.pdf"
+    scanned_document.save(path)
+    scanned_document.close()
+    text_document.close()
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    calibration = CodexPdfPageCalibration(
+        complete=True,
+        continuous_arabic_numbering=True,
+        printed_page_start=1,
+        printed_page_end=6,
+        pdf_page_start=1,
+        pdf_page_end=6,
+        anchors=[
+            CodexPdfPrintedPageAnchor(printed_page=1, pdf_page=1),
+            CodexPdfPrintedPageAnchor(printed_page=3, pdf_page=3),
+            CodexPdfPrintedPageAnchor(printed_page=6, pdf_page=6),
+        ],
+    )
+    client = FakeSourceCodexClient(calibration, source_sha256=content_hash)
+
+    result = generate_pdf_page_calibration(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        required_printed_page_min=1,
+        required_printed_page_max=6,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+
+    assert client.calls[0]["image_inputs"]
+    assert result.page_offset == 0
+    assert result.audit_metadata["pdf_anchor_verification_method"] == "source_codex_visual_evidence"
+
+
+def test_native_outline_matches_control_characters_split_numbers_and_reordering(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    result, _client, path, _content_hash = _generate(
+        tmp_path,
+        _catalog(
+            _node("prelim", title="Preliminaries", number="0."),
+            _node("cover", title="Cover", number=""),
+        ),
+    )
+    monkeypatch.setattr(
+        pdf_mapping_module,
+        "_read_pdf_native_outline",
+        lambda _path: (
+            8,
+            (
+                PdfNativeOutlineEntry(level=1, title="Cover\x00", pdf_page=1),
+                PdfNativeOutlineEntry(level=1, title="0. Preliminaries", pdf_page=3),
+            ),
+        ),
+    )
+
+    mapping = map_pdf_native_outline_ranges(result.chapters, source_path=path)
+
+    assert mapping.status == "verified"
+    assert mapping.mapped_count == 2
+    assert [chapter.range.start for chapter in mapping.chapters] == [3, 1]
+    assert mapping.audit_metadata["pdf_native_outline_alignment"] == (
+        "unique_title_level_bijection"
+    )
 
 
 @pytest.mark.parametrize(
@@ -564,6 +686,74 @@ def test_production_pdf_processor_uses_a_second_turn_for_verified_page_ranges(
     assert calibration_calls[0]["required_printed_page_max"] == 164
     assert "calibrating_pdf_pages" in runs[-1].stage_history
     assert "validating_directory_ranges" in runs[-1].stage_history
+
+
+def test_pdf_mapping_failure_publishes_the_unmapped_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"direct source bytes")
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _catalog(
+            _node("chapter-1", title="First", source_locator="printed-page:22"),
+            _node("chapter-2", title="Second", source_locator="printed-page:164"),
+        ),
+        source_sha256=content_hash,
+    )
+    direct_result = generate_codex_direct_catalog(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_codex_direct_catalog",
+        lambda **_kwargs: direct_result,
+    )
+
+    def fail_mapping(**_kwargs):
+        raise SourceCodexPdfMappingError(
+            "No trustworthy mapping was found.",
+            audit_metadata={
+                "source_codex_pdf_mapping_turn_count": 1,
+                "pdf_page_calibration_status": "failed",
+                "pdf_page_calibration_raw_output": '{"complete":true}',
+            },
+        )
+
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_pdf_page_calibration",
+        fail_mapping,
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    view = store.get_catalog_view(source=record)
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert structure.status == "ready"
+    assert structure.has_verified_toc is False
+    assert structure.metadata["pdf_page_calibration_status"] == "failed"
+    assert structure.metadata["pdf_page_calibration_error"] == (
+        "No trustworthy mapping was found."
+    )
+    assert all(chapter.mapping_status == "unmapped" for chapter in view.chapters)
+    assert runs[-1].turn_count == 2
+    assert "calibrating_pdf_pages_failed" in runs[-1].stage_history
 
 
 def test_production_pdf_processor_uses_native_outline_without_a_second_turn(

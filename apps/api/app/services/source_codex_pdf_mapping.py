@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -23,7 +24,14 @@ from app.services.codex_app_server import CodexAppServerTextClient
 
 
 class SourceCodexPdfMappingError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        audit_metadata: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.audit_metadata = dict(audit_metadata or {})
 
 
 class CodexPdfPrintedPageAnchor(BaseModel):
@@ -102,6 +110,59 @@ class PdfNativeOutlineMappingResult:
     audit_metadata: dict[str, object]
 
 
+@dataclass(frozen=True)
+class PdfVisualEvidence:
+    image_inputs: tuple[str, ...]
+    covered_pdf_pages: tuple[int, ...]
+    mode: str
+
+
+def build_pdf_catalog_visual_inputs(source_path: Path) -> PdfVisualEvidence:
+    """Render a bounded front-matter overview for visual directory inspection."""
+
+    try:
+        page_count = _pdf_page_count(source_path)
+    except SourceCodexPdfMappingError:
+        return PdfVisualEvidence((), (), "catalog_front_matter")
+    if not _pdf_requires_visual_catalog_evidence(source_path, page_count=page_count):
+        return PdfVisualEvidence((), (), "catalog_front_matter")
+    covered_pages = tuple(range(1, min(page_count, 32) + 1))
+    image_inputs = _render_pdf_contact_sheets(
+        source_path,
+        pdf_pages=covered_pages,
+        mode="full_page",
+        pages_per_sheet=4,
+        max_sheets=8,
+    )
+    rendered_page_count = min(len(covered_pages), len(image_inputs) * 4)
+    return PdfVisualEvidence(
+        image_inputs=image_inputs,
+        covered_pdf_pages=covered_pages[:rendered_page_count],
+        mode="catalog_front_matter",
+    )
+
+
+def _build_pdf_footer_visual_inputs(
+    source_path: Path,
+    *,
+    page_count: int,
+) -> PdfVisualEvidence:
+    covered_pages = tuple(range(1, min(page_count, 384) + 1))
+    image_inputs = _render_pdf_contact_sheets(
+        source_path,
+        pdf_pages=covered_pages,
+        mode="header_footer",
+        pages_per_sheet=32,
+        max_sheets=12,
+    )
+    rendered_page_count = min(len(covered_pages), len(image_inputs) * 32)
+    return PdfVisualEvidence(
+        image_inputs=image_inputs,
+        covered_pdf_pages=covered_pages[:rendered_page_count],
+        mode="header_footer",
+    )
+
+
 def generate_pdf_page_calibration(
     *,
     record: SourceIngestionRecord,
@@ -128,6 +189,14 @@ def generate_pdf_page_calibration(
         source_path,
         page_count=page_count,
     )
+    visual_evidence = (
+        PdfVisualEvidence((), (), "header_footer")
+        if candidates
+        else _build_pdf_footer_visual_inputs(
+            source_path,
+            page_count=page_count,
+        )
+    )
     response = client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         model=selection.model,
@@ -144,6 +213,7 @@ def generate_pdf_page_calibration(
         reasoning_effort=selection.reasoning_effort,
         service_tier=selection.service_tier,
         service_tier_is_set="service_tier" in selection.model_fields_set,
+        image_inputs=list(visual_evidence.image_inputs),
     )
     runner_source_hash = str(getattr(response, "source_sha256", "") or "").lower()
     if runner_source_hash != source_content_hash.lower():
@@ -172,16 +242,34 @@ def generate_pdf_page_calibration(
             "Source Codex parsed output does not match its auditable PDF page calibration."
         )
 
-    page_offset, segments = _validate_calibration(
-        calibration,
-        source_path=source_path,
-        page_count=page_count,
-        required_printed_page_min=required_printed_page_min,
-        required_printed_page_max=required_printed_page_max,
-    )
     canonical_payload = calibration.model_dump(mode="json")
     payload_sha256 = _json_sha256(canonical_payload)
     raw_output_sha256 = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
+    failed_audit_metadata = {
+        "source_codex_pdf_mapping_turn_count": source_turn_count,
+        "source_codex_pdf_mapping_input_sha256": runner_source_hash,
+        "pdf_page_calibration_status": "failed",
+        "pdf_page_calibration_payload": canonical_payload,
+        "pdf_page_calibration_payload_sha256": payload_sha256,
+        "pdf_page_calibration_raw_output": raw_output,
+        "pdf_page_calibration_raw_output_sha256": raw_output_sha256,
+        "pdf_visual_evidence_count": len(visual_evidence.image_inputs),
+        "pdf_visual_evidence_page_count": len(visual_evidence.covered_pdf_pages),
+    }
+    try:
+        page_offset, segments, verification_method = _validate_calibration(
+            calibration,
+            source_path=source_path,
+            page_count=page_count,
+            required_printed_page_min=required_printed_page_min,
+            required_printed_page_max=required_printed_page_max,
+            visual_evidence_pages=frozenset(visual_evidence.covered_pdf_pages),
+        )
+    except SourceCodexPdfMappingError as exc:
+        raise SourceCodexPdfMappingError(
+            str(exc),
+            audit_metadata={**failed_audit_metadata, **exc.audit_metadata},
+        ) from exc
     return PdfPageCalibrationResult(
         printed_page_start=calibration.printed_page_start,
         printed_page_end=calibration.printed_page_end,
@@ -203,6 +291,9 @@ def generate_pdf_page_calibration(
             "pdf_page_calibration_payload_sha256": payload_sha256,
             "pdf_page_calibration_raw_output": raw_output,
             "pdf_page_calibration_raw_output_sha256": raw_output_sha256,
+            "pdf_anchor_verification_method": verification_method,
+            "pdf_visual_evidence_count": len(visual_evidence.image_inputs),
+            "pdf_visual_evidence_page_count": len(visual_evidence.covered_pdf_pages),
             "pdf_printed_page_offset": page_offset,
             "pdf_printed_page_offsets": sorted(
                 {
@@ -250,7 +341,7 @@ def map_pdf_native_outline_ranges(
     *,
     source_path: Path,
 ) -> PdfNativeOutlineMappingResult:
-    """Map an exact Source Codex hierarchy to authoritative PDF bookmark targets."""
+    """Map an unambiguous Source Codex hierarchy to PDF bookmark targets."""
 
     try:
         page_count, entries = _read_pdf_native_outline(source_path)
@@ -275,29 +366,49 @@ def map_pdf_native_outline_ranges(
             page_count=page_count,
             outline_entry_count=len(entries),
         )
-    mismatch_index = next(
-        (
+    entry_indexes_by_chapter = [
+        [
+            entry_index
+            for entry_index, entry in enumerate(entries)
+            if chapter.level == entry.level
+            and _normalized_outline_title(entry.title) in _chapter_outline_titles(chapter)
+        ]
+        for chapter in chapters
+    ]
+    if any(len(indexes) != 1 for indexes in entry_indexes_by_chapter):
+        first_mismatch_index = next(
             index
-            for index, (chapter, entry) in enumerate(zip(chapters, entries, strict=True))
-            if chapter.level != entry.level
-            or _normalized_outline_title(chapter.title) != _normalized_outline_title(entry.title)
-        ),
-        None,
-    )
-    if mismatch_index is not None:
+            for index, indexes in enumerate(entry_indexes_by_chapter)
+            if len(indexes) != 1
+        )
         return _native_outline_result(
             chapters,
             status="structure_mismatch",
             page_count=page_count,
             outline_entry_count=len(entries),
-            extra_metadata={"pdf_native_outline_first_mismatch_index": mismatch_index},
+            extra_metadata={
+                "pdf_native_outline_ambiguous_chapter_count": sum(
+                    len(indexes) != 1 for indexes in entry_indexes_by_chapter
+                ),
+                "pdf_native_outline_first_mismatch_index": first_mismatch_index,
+            },
+        )
+    matched_entry_indexes = [indexes[0] for indexes in entry_indexes_by_chapter]
+    if len(set(matched_entry_indexes)) != len(entries):
+        return _native_outline_result(
+            chapters,
+            status="structure_mismatch",
+            page_count=page_count,
+            outline_entry_count=len(entries),
+            extra_metadata={"pdf_native_outline_duplicate_match": True},
         )
 
     range_ends = _native_outline_range_ends(entries, page_count=page_count)
     mapped: list[SourceChapter] = []
-    for index, (chapter, entry) in enumerate(zip(chapters, entries, strict=True)):
+    for chapter, entry_index in zip(chapters, matched_entry_indexes, strict=True):
+        entry = entries[entry_index]
         pdf_page_start = entry.pdf_page
-        pdf_page_end = range_ends[index]
+        pdf_page_end = range_ends[entry_index]
         native_locator = f"pdf:outline:{pdf_page_start}"
         source_range = SourceRange(
             kind="pdf_pages",
@@ -319,9 +430,9 @@ def map_pdf_native_outline_ranges(
             excerpt=chapter.title,
             confidence=0.99,
             metadata={
-                "outline_index": index,
+                "outline_index": entry_index,
                 "outline_entry_count": len(entries),
-                "alignment": "exact_title_level_preorder",
+                "alignment": "unique_title_level_bijection",
             },
         )
         mapped.append(
@@ -339,7 +450,7 @@ def map_pdf_native_outline_ranges(
                         **chapter.metadata,
                         "source_range_mapped": True,
                         "native_outline_mapped": True,
-                        "native_outline_index": index,
+                        "native_outline_index": entry_index,
                         "catalog_reported_locator": chapter.source_locator,
                     },
                 }
@@ -357,6 +468,7 @@ def map_pdf_native_outline_ranges(
         mapped_count=len(mapped),
         extra_metadata={
             "pdf_native_outline_backward_jump_count": backward_jump_count,
+            "pdf_native_outline_alignment": "unique_title_level_bijection",
         },
     )
 
@@ -426,7 +538,23 @@ def _read_pdf_native_outline(path: Path) -> tuple[int, tuple[PdfNativeOutlineEnt
 
 
 def _normalized_outline_title(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).split())
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = "".join(
+        character
+        for character in normalized
+        if not unicodedata.category(character).startswith("C")
+    )
+    return " ".join(normalized.split()).casefold()
+
+
+def _chapter_outline_titles(chapter: SourceChapter) -> set[str]:
+    title = _normalized_outline_title(chapter.title)
+    number = _normalized_outline_title(chapter.number)
+    values = {title}
+    if number:
+        values.add(_normalized_outline_title(f"{number} {title}"))
+        values.add(_normalized_outline_title(f"{number}{title}"))
+    return values
 
 
 def _native_outline_range_end(
@@ -701,7 +829,8 @@ def _validate_calibration(
     page_count: int,
     required_printed_page_min: int,
     required_printed_page_max: int,
-) -> tuple[int | None, tuple[CodexPdfPrintedPageSegment, ...]]:
+    visual_evidence_pages: frozenset[int] = frozenset(),
+) -> tuple[int | None, tuple[CodexPdfPrintedPageSegment, ...], str]:
     segments = _model_segments(calibration)
     if segments[0].printed_page_start > required_printed_page_min:
         raise SourceCodexPdfMappingError(
@@ -786,8 +915,16 @@ def _validate_calibration(
         )
     ):
         raise SourceCodexPdfMappingError("PDF page calibration anchors are not monotonic.")
-    _verify_printed_footer_anchors(source_path, pairs=pairs)
-    return (next(iter(offsets)) if len(offsets) == 1 else None), segments
+    verification_method = _verify_printed_footer_anchors(
+        source_path,
+        pairs=pairs,
+        visual_evidence_pages=visual_evidence_pages,
+    )
+    return (
+        next(iter(offsets)) if len(offsets) == 1 else None,
+        segments,
+        verification_method,
+    )
 
 
 def _model_segments(
@@ -828,7 +965,8 @@ def _verify_printed_footer_anchors(
     path: Path,
     *,
     pairs: Sequence[tuple[int, int]],
-) -> None:
+    visual_evidence_pages: frozenset[int] = frozenset(),
+) -> str:
     try:
         import fitz
 
@@ -838,15 +976,23 @@ def _verify_printed_footer_anchors(
             "PDF page calibration anchors could not be mechanically verified."
         ) from exc
     try:
+        used_visual_evidence = False
         for printed_page, pdf_page in pairs:
             page = document.load_page(pdf_page - 1)
             observed = _footer_page_numbers(page)
-            if printed_page not in observed:
+            if observed and printed_page not in observed:
                 raise SourceCodexPdfMappingError(
                     "A Source Codex PDF page anchor does not match the printed footer on that physical page."
                 )
+            if not observed:
+                if pdf_page not in visual_evidence_pages:
+                    raise SourceCodexPdfMappingError(
+                        "A PDF page anchor has neither mechanical text evidence nor bounded visual evidence."
+                    )
+                used_visual_evidence = True
     finally:
         document.close()
+    return "source_codex_visual_evidence" if used_visual_evidence else "mechanical_footer_text"
 
 
 def _footer_page_numbers(page: object) -> set[int]:
@@ -1005,6 +1151,132 @@ def _printed_page_evidence_runs(
             }
         )
     return runs
+
+
+def _pdf_requires_visual_catalog_evidence(path: Path, *, page_count: int) -> bool:
+    try:
+        import fitz
+
+        document = fitz.open(str(path))
+    except Exception:
+        return False
+    try:
+        sample_count = min(page_count, 12)
+        text_pages = sum(
+            len(document.load_page(page_index).get_text("text").strip()) >= 80
+            for page_index in range(sample_count)
+        )
+    finally:
+        document.close()
+    return text_pages < max(1, sample_count // 3)
+
+
+def _render_pdf_contact_sheets(
+    path: Path,
+    *,
+    pdf_pages: Sequence[int],
+    mode: str,
+    pages_per_sheet: int,
+    max_sheets: int,
+) -> tuple[str, ...]:
+    """Render only bounded source pages into labeled in-memory image evidence."""
+
+    if not pdf_pages or pages_per_sheet < 1 or max_sheets < 1:
+        return ()
+    try:
+        import fitz
+
+        source = fitz.open(str(path))
+    except Exception:
+        return ()
+    encoded: list[str] = []
+    encoded_bytes = 0
+    max_encoded_bytes = 24 * 1024 * 1024
+    try:
+        bounded_pages = list(pdf_pages[: pages_per_sheet * max_sheets])
+        for batch_start in range(0, len(bounded_pages), pages_per_sheet):
+            batch = bounded_pages[batch_start : batch_start + pages_per_sheet]
+            sheet_document = fitz.open()
+            try:
+                if mode == "header_footer":
+                    sheet_width = 1600
+                    row_height = 94
+                    sheet_height = 30 + row_height * len(batch)
+                    sheet = sheet_document.new_page(
+                        width=sheet_width,
+                        height=sheet_height,
+                    )
+                    for row, pdf_page in enumerate(batch):
+                        source_page = source.load_page(pdf_page - 1)
+                        y0 = 20 + row * row_height
+                        sheet.insert_text((12, y0 + 48), f"PDF {pdf_page}", fontsize=14)
+                        top_clip = fitz.Rect(
+                            0,
+                            0,
+                            source_page.rect.width,
+                            source_page.rect.height * 0.14,
+                        )
+                        bottom_clip = fitz.Rect(
+                            0,
+                            source_page.rect.height * 0.86,
+                            source_page.rect.width,
+                            source_page.rect.height,
+                        )
+                        sheet.show_pdf_page(
+                            fitz.Rect(90, y0, 835, y0 + 78),
+                            source,
+                            pdf_page - 1,
+                            clip=top_clip,
+                            keep_proportion=False,
+                        )
+                        sheet.show_pdf_page(
+                            fitz.Rect(845, y0, 1590, y0 + 78),
+                            source,
+                            pdf_page - 1,
+                            clip=bottom_clip,
+                            keep_proportion=False,
+                        )
+                else:
+                    columns = 2
+                    rows = 2
+                    sheet_width = 1400
+                    sheet_height = 1800
+                    cell_width = sheet_width / columns
+                    cell_height = sheet_height / rows
+                    sheet = sheet_document.new_page(width=sheet_width, height=sheet_height)
+                    for index, pdf_page in enumerate(batch):
+                        column = index % columns
+                        row = index // columns
+                        x0 = column * cell_width
+                        y0 = row * cell_height
+                        sheet.insert_text((x0 + 12, y0 + 24), f"PDF {pdf_page}", fontsize=16)
+                        sheet.show_pdf_page(
+                            fitz.Rect(
+                                x0 + 12,
+                                y0 + 36,
+                                x0 + cell_width - 12,
+                                y0 + cell_height - 12,
+                            ),
+                            source,
+                            pdf_page - 1,
+                            keep_proportion=True,
+                        )
+                image_bytes = sheet.get_pixmap(alpha=False).tobytes(
+                    "jpeg",
+                    jpg_quality=82,
+                )
+            finally:
+                sheet_document.close()
+            encoded_image = base64.b64encode(image_bytes).decode("ascii")
+            if encoded_bytes + len(encoded_image) > max_encoded_bytes:
+                break
+            encoded.append(f"data:image/jpeg;base64,{encoded_image}")
+            encoded_bytes += len(encoded_image)
+    except Exception:
+        return tuple(encoded)
+    finally:
+        source.close()
+    return tuple(encoded)
 
 
 def _pdf_page_count(path: Path) -> int:

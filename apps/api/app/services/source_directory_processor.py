@@ -31,6 +31,7 @@ from app.services.source_codex_catalog import (
     materialize_stored_codex_catalog,
 )
 from app.services.source_codex_pdf_mapping import (
+    SourceCodexPdfMappingError,
     generate_pdf_page_calibration,
     map_pdf_native_outline_ranges,
     map_pdf_printed_page_ranges,
@@ -287,34 +288,54 @@ class SourceDirectoryProcessor:
                     if required_printed_page_max is not None
                     else None
                 )
+                mapping_warnings: list[str] = []
                 if (
                     required_printed_page_min is not None
                     and required_printed_page_max is not None
                 ):
                     _report(progress_callback, "calibrating_pdf_pages", 74)
-                    calibration = generate_pdf_page_calibration(
-                        record=record,
-                        source_path=path,
-                        source_content_hash=content_hash,
-                        required_printed_page_min=required_printed_page_min,
-                        required_printed_page_max=required_printed_page_max,
-                        selection=catalog_model,
-                        on_activity=activity_callback,
-                    )
-                    chapters = map_pdf_printed_page_ranges(
-                        chapters,
-                        calibration=calibration,
-                    )
-                    execution_metadata.update(calibration.audit_metadata)
-                    turn_count = direct_catalog.turn_count + calibration.turn_count
-                    stage_history.append("calibrating_pdf_pages")
-                    has_pdf_range_mapping = True
-                    run = run.model_copy(
-                        update={
-                            "page_count": calibration.page_count,
-                            "inspected_page_count": len(calibration.anchors),
-                        }
-                    )
+                    try:
+                        calibration = generate_pdf_page_calibration(
+                            record=record,
+                            source_path=path,
+                            source_content_hash=content_hash,
+                            required_printed_page_min=required_printed_page_min,
+                            required_printed_page_max=required_printed_page_max,
+                            selection=catalog_model,
+                            on_activity=activity_callback,
+                        )
+                        chapters = map_pdf_printed_page_ranges(
+                            chapters,
+                            calibration=calibration,
+                        )
+                        execution_metadata.update(calibration.audit_metadata)
+                        turn_count = direct_catalog.turn_count + calibration.turn_count
+                        stage_history.append("calibrating_pdf_pages")
+                        has_pdf_range_mapping = True
+                        run = run.model_copy(
+                            update={
+                                "page_count": calibration.page_count,
+                                "inspected_page_count": len(calibration.anchors),
+                            }
+                        )
+                    except SourceCodexPdfMappingError as exc:
+                        failure_metadata = dict(exc.audit_metadata)
+                        mapping_turn_count = int(
+                            failure_metadata.get("source_codex_pdf_mapping_turn_count") or 0
+                        )
+                        execution_metadata.update(failure_metadata)
+                        execution_metadata.update(
+                            {
+                                "pdf_page_calibration_status": "failed",
+                                "pdf_page_calibration_error": str(exc),
+                            }
+                        )
+                        turn_count = direct_catalog.turn_count + mapping_turn_count
+                        stage_history.append("calibrating_pdf_pages_failed")
+                        mapping_warnings.append(
+                            "Directory recognized, but PDF page ranges remain unmapped: "
+                            f"{exc}"
+                        )
                 else:
                     turn_count = direct_catalog.turn_count
                 chapters, preserved_range_count = _preserve_verified_ranges(
@@ -323,7 +344,7 @@ class SourceDirectoryProcessor:
                     source_content_hash=content_hash,
                 )
                 execution_metadata["preserved_verified_range_count"] = preserved_range_count
-                warnings = []
+                warnings = list(mapping_warnings)
                 if not chapters:
                     warnings.append("Source Codex returned an empty directory list.")
                 catalog_complete = True
