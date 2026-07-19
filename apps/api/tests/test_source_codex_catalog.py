@@ -8,13 +8,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import AIModelSelection, SourceIngestionRecord
+from app.models import (
+    AIModelSelection,
+    SourceCatalogRun,
+    SourceChapter,
+    SourceIngestionRecord,
+    SourceRange,
+)
 from app.services import source_directory_processor as directory_processor_module
 from app.services.source_codex_catalog import (
     CodexDirectCatalog,
     CodexDirectCatalogNode,
     SourceCodexCatalogError,
     generate_codex_direct_catalog,
+    materialize_stored_codex_catalog,
+)
+from app.services.source_codex_pdf_mapping import (
+    CodexPdfPrintedPageAnchor,
+    PdfPageCalibrationResult,
 )
 from app.services.source_directory_processor import (
     SourceDirectoryProcessingError,
@@ -321,12 +332,37 @@ def test_source_codex_rejects_fingerprint_change_and_extra_turns(tmp_path: Path)
         )
 
 
-def test_source_codex_accepts_empty_complete_catalog(tmp_path: Path) -> None:
-    result, client, _path, _content_hash = _generate(tmp_path, _catalog())
+def test_source_codex_rejects_empty_complete_catalog(tmp_path: Path) -> None:
+    with pytest.raises(SourceCodexCatalogError, match="empty directory"):
+        _generate(tmp_path, _catalog())
 
-    assert result.chapters == ()
-    assert result.turn_count == 1
-    assert len(client.calls) == 1
+
+def test_stored_source_codex_catalog_is_revalidated_before_rematerialization(
+    tmp_path: Path,
+) -> None:
+    result, _client, path, content_hash = _generate(
+        tmp_path,
+        _catalog(_node("n1", title="Stored", source_locator="printed-page:1")),
+    )
+
+    restored = materialize_stored_codex_catalog(
+        record=_record(path),
+        payload=result.audit_metadata["codex_directory_payload"],
+        source_content_hash=content_hash,
+        expected_payload_sha256=result.audit_metadata["codex_directory_payload_sha256"],
+    )
+
+    assert restored.turn_count == 0
+    assert [chapter.title for chapter in restored.chapters] == ["Stored"]
+    assert restored.audit_metadata["catalog_authority"] == "source_codex_reused_audit"
+
+    with pytest.raises(SourceCodexCatalogError, match="fingerprint"):
+        materialize_stored_codex_catalog(
+            record=_record(path),
+            payload=result.audit_metadata["codex_directory_payload"],
+            source_content_hash=content_hash,
+            expected_payload_sha256="0" * 64,
+        )
 
 
 def test_source_codex_rejects_unsupported_or_mismatched_suffix(tmp_path: Path) -> None:
@@ -423,6 +459,160 @@ def test_production_processor_publishes_unmapped_catalog_without_indexes(
         assert conn.execute("SELECT COUNT(*) FROM source_visual_assets").fetchone()[0] == 0
 
 
+def test_production_pdf_processor_uses_a_second_turn_for_verified_page_ranges(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"direct source bytes")
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _catalog(
+            _node("chapter-1", title="First", source_locator="printed-page:22"),
+            _node("chapter-2", title="Second", source_locator="printed-page:164"),
+        ),
+        source_sha256=content_hash,
+    )
+    direct_result = generate_codex_direct_catalog(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    anchors = (
+        CodexPdfPrintedPageAnchor(printed_page=1, pdf_page=17),
+        CodexPdfPrintedPageAnchor(printed_page=100, pdf_page=116),
+        CodexPdfPrintedPageAnchor(printed_page=514, pdf_page=530),
+    )
+    calibration = PdfPageCalibrationResult(
+        printed_page_start=1,
+        printed_page_end=514,
+        pdf_page_start=17,
+        pdf_page_end=530,
+        page_offset=16,
+        page_count=540,
+        anchors=anchors,
+        turn_count=1,
+        raw_output="{}",
+        raw_output_sha256="b" * 64,
+        audit_metadata={"pdf_page_calibration_status": "verified"},
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_codex_direct_catalog",
+        lambda **_kwargs: direct_result,
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_pdf_page_calibration",
+        lambda **_kwargs: calibration,
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    view = store.get_catalog_view(source=record)
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert structure.has_verified_toc is True
+    assert structure.metadata["pdf_page_calibration_status"] == "verified"
+    assert [(chapter.range.start, chapter.range.end) for chapter in view.chapters] == [
+        (38, 179),
+        (180, 530),
+    ]
+    assert runs[-1].turn_count == 2
+    assert "calibrating_pdf_pages" in runs[-1].stage_history
+    assert "validating_directory_ranges" in runs[-1].stage_history
+
+
+def test_pdf_mapping_retry_reuses_failed_complete_directory_without_first_turn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"direct source bytes")
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _catalog(_node("chapter-1", title="First", source_locator="printed-page:1")),
+        source_sha256=content_hash,
+    )
+    direct_result = generate_codex_direct_catalog(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    failed_run = SourceCatalogRun(
+        id="catalogrun_reusable",
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        status="failed",
+        error="PDF page calibration failed",
+        metadata={
+            **direct_result.audit_metadata,
+            "source_content_hash": content_hash,
+        },
+    )
+    store.save_catalog_run(failed_run)
+    anchors = (
+        CodexPdfPrintedPageAnchor(printed_page=1, pdf_page=17),
+        CodexPdfPrintedPageAnchor(printed_page=100, pdf_page=116),
+        CodexPdfPrintedPageAnchor(printed_page=514, pdf_page=530),
+    )
+    calibration = PdfPageCalibrationResult(
+        printed_page_start=1,
+        printed_page_end=514,
+        pdf_page_start=17,
+        pdf_page_end=530,
+        page_offset=16,
+        page_count=540,
+        anchors=anchors,
+        turn_count=1,
+        raw_output="{}",
+        raw_output_sha256="d" * 64,
+        audit_metadata={"pdf_page_calibration_status": "verified"},
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_codex_direct_catalog",
+        lambda **_kwargs: pytest.fail("A mapping retry must reuse the failed complete directory"),
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_pdf_page_calibration",
+        lambda **_kwargs: calibration,
+    )
+
+    published = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert published.has_verified_toc is True
+    assert runs[0].turn_count == 1
+    assert runs[0].metadata["directory_reused_from_catalog_run"] == failed_run.id
+    assert "reusing_directory_catalog" in runs[0].stage_history
+
+
 def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) -> None:
     path = tmp_path / "source.pdf"
     path.write_bytes(b"direct source bytes")
@@ -470,3 +660,41 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
     assert after_structure is not None
     assert after_structure.catalog_version == first.catalog_version
     assert [chapter.title for chapter in after.chapters] == ["Published"]
+
+
+def test_successful_directory_only_rebuild_preserves_exact_verified_ranges() -> None:
+    source_hash = "c" * 64
+    previous = SourceChapter(
+        id="stable-chapter",
+        owner_user_id="user_direct_catalog",
+        package_id="course_direct_catalog",
+        source_ingestion_id="source_direct_catalog",
+        title="Stable chapter",
+        source_locator="printed-page:22",
+        anchor_status="verified",
+        range=SourceRange(kind="pdf_pages", start=38, end=179),
+        mapping_status="verified",
+        source_content_hash=source_hash,
+        catalog_version=4,
+        confidence=0.98,
+    )
+    current = previous.model_copy(
+        update={
+            "anchor_status": "unverified",
+            "range": None,
+            "mapping_status": "unmapped",
+            "catalog_version": 0,
+            "confidence": 0.0,
+        }
+    )
+
+    preserved, count = directory_processor_module._preserve_verified_ranges(
+        [current],
+        previous_chapters=[previous],
+        source_content_hash=source_hash,
+    )
+
+    assert count == 1
+    assert preserved[0].mapping_status == "verified"
+    assert preserved[0].range == previous.range
+    assert preserved[0].metadata["range_preserved_from_catalog_version"] == 4

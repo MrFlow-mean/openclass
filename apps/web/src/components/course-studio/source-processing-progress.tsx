@@ -50,6 +50,7 @@ const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
   mapping_directory_to_pages: "正在绑定目录与文件范围",
   scanning_heading_regions: "正在检查页面标题区域",
   normalizing_directory: "正在生成目录",
+  calibrating_pdf_pages: "正在对齐印刷页码与 PDF 页码",
   validating_directory: "正在验证目录结构",
   validating_directory_ranges: "正在验证目录范围",
   publishing_catalog: "正在保存目录",
