@@ -4,6 +4,8 @@
   <img src="docs/assets/openclass-product-cover.png" alt="OpenClass 产品封面" width="280" />
 </p>
 
+> 本项目基于 [OpenAI Codex](https://openai.com/codex/) 开发。
+
 开放课堂（OpenClass）是一个面向严肃学习、研究、写作和知识工作的 AI document workspace（AI 文档工作台）。它把 AI conversation（AI 对话）和 AI document writing（AI 文档编写）放在同一个工作空间里：左侧 Codex agent（Codex 智能体）理解需求并执行任务，右侧 Board（板书文档）沉淀结构化成果、支持继续编辑、导入导出和版本回退。
 
 当前仓库是一个本地优先的课程 / 文档工作台：前端提供 OpenClass Studio、课程包、lesson（工作单元 / 文档单元）、富文本文档编辑器、模型选择、Realtime（实时输入输出）入口和版本历史；后端提供 FastAPI（Python API 服务框架）、SQLite（本地关系型数据库）持久化、AI workflow（AI 工作链路）、文档导入导出和审计日志。
