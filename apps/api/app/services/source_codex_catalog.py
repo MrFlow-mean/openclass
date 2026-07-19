@@ -139,6 +139,10 @@ def generate_codex_direct_catalog(
         )
 
     _validate_catalog(catalog.nodes)
+    if not catalog.nodes:
+        raise SourceCodexCatalogError(
+            "Source Codex returned an empty directory for a non-empty source file."
+        )
     canonical_payload = catalog.model_dump(mode="json")
     payload_sha256 = _json_sha256(canonical_payload)
     raw_output_sha256 = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
@@ -159,6 +163,50 @@ def generate_codex_direct_catalog(
             "source_codex_input_sha256": runner_source_hash,
             "source_codex_reasoning_effort": selection.reasoning_effort,
             "host_directory_transform": "mechanical_materialization_only",
+            "codex_directory_payload": canonical_payload,
+            "codex_directory_payload_sha256": payload_sha256,
+            "codex_raw_output": raw_output,
+            "codex_raw_output_sha256": raw_output_sha256,
+            "body_text_extracted_by_host": False,
+        },
+    )
+
+
+def materialize_stored_codex_catalog(
+    *,
+    record: SourceIngestionRecord,
+    payload: object,
+    source_content_hash: str,
+    expected_payload_sha256: str,
+) -> SourceCodexCatalogResult:
+    try:
+        _validate_raw_catalog_shape(payload)
+        catalog = CodexDirectCatalog.model_validate(payload)
+    except (SourceCodexCatalogError, ValueError, TypeError) as exc:
+        raise SourceCodexCatalogError("A stored Source Codex directory is invalid.") from exc
+    _validate_catalog(catalog.nodes)
+    if not catalog.nodes:
+        raise SourceCodexCatalogError("A stored Source Codex directory is empty.")
+    canonical_payload = catalog.model_dump(mode="json")
+    payload_sha256 = _json_sha256(canonical_payload)
+    if payload_sha256 != expected_payload_sha256:
+        raise SourceCodexCatalogError("A stored Source Codex directory fingerprint is invalid.")
+    raw_output = catalog.model_dump_json()
+    raw_output_sha256 = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
+    chapters = _materialize_chapters(
+        record=record,
+        nodes=catalog.nodes,
+        source_content_hash=source_content_hash,
+        payload_sha256=payload_sha256,
+    )
+    return SourceCodexCatalogResult(
+        chapters=tuple(chapters),
+        turn_count=0,
+        raw_output=raw_output,
+        raw_output_sha256=raw_output_sha256,
+        audit_metadata={
+            "catalog_authority": "source_codex_reused_audit",
+            "host_directory_transform": "mechanical_rematerialization_only",
             "codex_directory_payload": canonical_payload,
             "codex_directory_payload_sha256": payload_sha256,
             "codex_raw_output": raw_output,
@@ -360,6 +408,12 @@ file; parent_key refers only to an earlier node; roots have level 1 and children
 are exactly one level deeper than their parent. number and source_locator may be
 empty, but title may not be empty. source_locator is only a concise internal
 locator already supported by the file; never expose an absolute path.
+
+For a PDF table-of-contents node with an Arabic printed page number, encode the
+locator exactly as printed-page:<positive decimal>, using ASCII digits. This is
+the printed number visible on the document page, not the PDF file page index.
+If no printed Arabic page number is supplied for that node, leave the locator
+empty instead of guessing.
 
 Return directory structure only. Do not return body text, source ranges, chunks,
 embeddings, vectors, visual indexes, teaching content, commentary, or a second

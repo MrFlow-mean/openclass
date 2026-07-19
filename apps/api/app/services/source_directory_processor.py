@@ -23,7 +23,18 @@ from app.models import (
 )
 from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
-from app.services.source_codex_catalog import generate_codex_direct_catalog
+from app.services.source_codex_catalog import (
+    SourceCodexCatalogError,
+    SourceCodexCatalogResult,
+    generate_codex_direct_catalog,
+    materialize_stored_codex_catalog,
+)
+from app.services.source_codex_pdf_mapping import (
+    generate_pdf_page_calibration,
+    map_pdf_printed_page_ranges,
+    maximum_printed_page,
+    printed_page_one_titles,
+)
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
     DirectoryCandidate,
@@ -210,11 +221,13 @@ class SourceDirectoryProcessor:
                 raise SourceDirectoryProcessingError(
                     "The source file fingerprint no longer matches the uploaded source."
                 )
+            previous_chapters = list(self.store.get_catalog_view(source=record).chapters)
             warnings: list[str]
             catalog_complete: bool
             execution_metadata: dict[str, object]
             structure_execution_metadata: dict[str, object]
             turn_count: int
+            has_pdf_page_calibration = False
 
             if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
@@ -222,28 +235,88 @@ class SourceDirectoryProcessor:
                 # returns the complete directory. The host only validates the
                 # returned object and materializes it for persistence.
                 _report(progress_callback, "normalizing_directory", 64)
-                direct_catalog = generate_codex_direct_catalog(
+                direct_catalog = _reusable_failed_pdf_catalog(
+                    store=self.store,
                     record=record,
-                    source_path=path,
                     source_content_hash=content_hash,
-                    selection=catalog_model,
                 )
+                reused_directory = direct_catalog is not None
+                if direct_catalog is None:
+                    direct_catalog = generate_codex_direct_catalog(
+                        record=record,
+                        source_path=path,
+                        source_content_hash=content_hash,
+                        selection=catalog_model,
+                    )
                 chapters = list(direct_catalog.chapters)
+                execution_metadata = dict(direct_catalog.audit_metadata)
+                stage_history = [*run.stage_history, "normalizing_directory"]
+                if reused_directory:
+                    stage_history.append("reusing_directory_catalog")
+                run = self.store.save_catalog_run(
+                    run.model_copy(
+                        update={
+                            "stage_history": stage_history,
+                            "metadata": {**run.metadata, **execution_metadata},
+                        }
+                    )
+                )
+                required_printed_page_max = (
+                    maximum_printed_page(chapters)
+                    if path.suffix.lower() == ".pdf"
+                    else None
+                )
+                if required_printed_page_max is not None:
+                    _report(progress_callback, "calibrating_pdf_pages", 74)
+                    calibration = generate_pdf_page_calibration(
+                        record=record,
+                        source_path=path,
+                        source_content_hash=content_hash,
+                        required_printed_page_max=required_printed_page_max,
+                        printed_page_one_titles=printed_page_one_titles(chapters),
+                        selection=catalog_model,
+                    )
+                    chapters = map_pdf_printed_page_ranges(
+                        chapters,
+                        calibration=calibration,
+                    )
+                    execution_metadata.update(calibration.audit_metadata)
+                    turn_count = direct_catalog.turn_count + calibration.turn_count
+                    stage_history.append("calibrating_pdf_pages")
+                    has_pdf_page_calibration = True
+                    run = run.model_copy(
+                        update={
+                            "page_count": calibration.page_count,
+                            "inspected_page_count": len(calibration.anchors),
+                        }
+                    )
+                else:
+                    turn_count = direct_catalog.turn_count
+                chapters, preserved_range_count = _preserve_verified_ranges(
+                    chapters,
+                    previous_chapters=previous_chapters,
+                    source_content_hash=content_hash,
+                )
+                execution_metadata["preserved_verified_range_count"] = preserved_range_count
                 warnings = []
                 if not chapters:
                     warnings.append("Source Codex returned an empty directory list.")
                 catalog_complete = True
-                execution_metadata = dict(direct_catalog.audit_metadata)
                 structure_execution_metadata = {
                     key: value
                     for key, value in execution_metadata.items()
-                    if key not in {"codex_directory_payload", "codex_raw_output"}
+                    if key
+                    not in {
+                        "codex_directory_payload",
+                        "codex_raw_output",
+                        "pdf_page_calibration_payload",
+                        "pdf_page_calibration_raw_output",
+                    }
                 }
-                turn_count = direct_catalog.turn_count
                 run = self.store.save_catalog_run(
                     run.model_copy(
                         update={
-                            "stage_history": [*run.stage_history, "normalizing_directory"],
+                            "stage_history": stage_history,
                             "metadata": {**run.metadata, **execution_metadata},
                         }
                     )
@@ -302,9 +375,9 @@ class SourceDirectoryProcessor:
                 turn_count = normalization.turn_count
 
             validation_stage = (
-                "validating_directory"
-                if self.normalizer_factory is None
-                else "validating_directory_ranges"
+                "validating_directory_ranges"
+                if self.normalizer_factory is not None or has_pdf_page_calibration
+                else "validating_directory"
             )
             _report(progress_callback, validation_stage, 82)
             _validate_chapters(chapters)
@@ -841,6 +914,95 @@ def _materialize_chapters(
         chapters.append(chapter)
         level_stack.append(chapter)
     return chapters
+
+
+def _preserve_verified_ranges(
+    chapters: Sequence[SourceChapter],
+    *,
+    previous_chapters: Sequence[SourceChapter],
+    source_content_hash: str,
+) -> tuple[list[SourceChapter], int]:
+    previous_by_id = {
+        chapter.id: chapter
+        for chapter in previous_chapters
+        if chapter.mapping_status == "verified"
+        and chapter.anchor_status == "verified"
+        and chapter.range is not None
+        and chapter.source_content_hash == source_content_hash
+    }
+    preserved = 0
+    result: list[SourceChapter] = []
+    for chapter in chapters:
+        previous = previous_by_id.get(chapter.id)
+        if chapter.mapping_status == "verified" or previous is None:
+            result.append(chapter)
+            continue
+        preserved += 1
+        result.append(
+            chapter.model_copy(
+                update={
+                    "body_start_offset": previous.body_start_offset,
+                    "body_end_offset": previous.body_end_offset,
+                    "page_start": previous.page_start,
+                    "page_end": previous.page_end,
+                    "anchor_status": previous.anchor_status,
+                    "range": previous.range,
+                    "mapping_status": previous.mapping_status,
+                    "catalog_evidence": previous.catalog_evidence,
+                    "confidence": previous.confidence,
+                    "metadata": {
+                        **chapter.metadata,
+                        "source_range_mapped": True,
+                        "range_preserved_from_catalog_version": previous.catalog_version,
+                    },
+                }
+            )
+        )
+    return result, preserved
+
+
+def _reusable_failed_pdf_catalog(
+    *,
+    store: SourceStructureStore,
+    record: SourceIngestionRecord,
+    source_content_hash: str,
+) -> SourceCodexCatalogResult | None:
+    if Path(record.file_name).suffix.lower() != ".pdf":
+        return None
+    for previous_run in store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+        limit=20,
+    ):
+        payload = previous_run.metadata.get("codex_directory_payload")
+        payload_sha256 = str(
+            previous_run.metadata.get("codex_directory_payload_sha256") or ""
+        )
+        if (
+            previous_run.status != "failed"
+            or previous_run.metadata.get("source_content_hash") != source_content_hash
+            or not isinstance(payload, dict)
+            or not payload_sha256
+        ):
+            continue
+        try:
+            reusable = materialize_stored_codex_catalog(
+                record=record,
+                payload=payload,
+                source_content_hash=source_content_hash,
+                expected_payload_sha256=payload_sha256,
+            )
+        except SourceCodexCatalogError:
+            continue
+        return replace(
+            reusable,
+            audit_metadata={
+                **reusable.audit_metadata,
+                "directory_reused_from_catalog_run": previous_run.id,
+            },
+        )
+    return None
 
 
 def _validate_chapters(chapters: Sequence[SourceChapter]) -> None:
