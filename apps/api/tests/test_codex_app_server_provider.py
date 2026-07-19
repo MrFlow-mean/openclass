@@ -44,6 +44,21 @@ def _source_thread_result(cwd: Path) -> dict:
     }
 
 
+@pytest.fixture
+def prepared_source_toolbox(monkeypatch):
+    def prepare(*, cwd: Path, source_path: Path, scratch_path: Path) -> Path:
+        del source_path, scratch_path
+        toolbox = cwd / "toolbox"
+        (toolbox / "bin").mkdir(parents=True)
+        return toolbox
+
+    monkeypatch.setattr(
+        codex_app_server.source_document_toolchain,
+        "prepare_source_document_toolbox",
+        prepare,
+    )
+
+
 def test_managed_codex_session_inherits_active_absolute_deadline(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -294,8 +309,10 @@ def test_source_thread_permission_response_rejects_any_broader_access(
 
 
 def test_source_structured_turn_stages_an_independent_read_only_copy(
+    prepared_source_toolbox,
     tmp_path: Path,
 ) -> None:
+    del prepared_source_toolbox
     source_path = tmp_path / "private original name.PDF"
     source_bytes = b"%PDF-1.7\nsource bytes\x00\xff"
     source_path.write_bytes(source_bytes)
@@ -386,8 +403,10 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
 
 
 def test_source_catalog_artifact_is_returned_only_after_receipt_and_schema_validation(
+    prepared_source_toolbox,
     tmp_path: Path,
 ) -> None:
+    del prepared_source_toolbox
     source_path = tmp_path / "source.pdf"
     source_path.write_bytes(b"source")
     catalog_text = '{"value":"complete catalog"}'
@@ -622,9 +641,11 @@ def test_structured_workspace_turn_returns_validator_error_to_the_same_codex_thr
 
 @pytest.mark.parametrize("tamper_target", ["staged", "original"])
 def test_source_structured_turn_detects_file_mutation(
+    prepared_source_toolbox,
     tmp_path: Path,
     tamper_target: str,
 ) -> None:
+    del prepared_source_toolbox
     source_path = tmp_path / "source.pdf"
     source_path.write_bytes(b"original")
 
@@ -669,6 +690,44 @@ def test_source_structured_turn_detects_file_mutation(
     with pytest.raises(
         codex_app_server.CodexAppServerError,
         match="source-file integrity",
+    ):
+        codex_app_server._run_source_file_structured_turn(
+            session=_Session(),  # type: ignore[arg-type]
+            source_path=source_path,
+            model="gpt-5.5",
+            system_prompt="system",
+            user_prompt="user",
+            schema=_Payload,
+        )
+
+
+def test_source_structured_turn_fails_before_model_execution_when_pdf_tools_are_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.pdf"
+    source_path.write_bytes(b"%PDF-1.7\nfixture")
+
+    def reject_toolbox(**_kwargs):
+        raise codex_app_server.source_document_toolchain.SourceDocumentToolchainError(
+            "PDF toolchain unavailable"
+        )
+
+    monkeypatch.setattr(
+        codex_app_server.source_document_toolchain,
+        "prepare_source_document_toolbox",
+        reject_toolbox,
+    )
+
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+
+        def validate_source_permission_config(self, _cwd: Path) -> None:
+            pytest.fail("permission validation must not run without the PDF toolchain")
+
+    with pytest.raises(
+        codex_app_server.CodexAppServerError,
+        match="PDF toolchain unavailable",
     ):
         codex_app_server._run_source_file_structured_turn(
             session=_Session(),  # type: ignore[arg-type]
