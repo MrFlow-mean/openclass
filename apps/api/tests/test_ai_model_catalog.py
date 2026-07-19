@@ -12,7 +12,8 @@ def _status(*, configured: bool) -> CodexProviderStatus:
     )
 
 
-def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
+def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_CODEX_MODEL", "gpt-5.4-mini")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "google")
     monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
@@ -69,6 +70,8 @@ def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
     assert [(option.provider, option.model) for option in catalog.text] == [
         ("openai_codex", "gpt-5.5"),
         ("openai_codex", "gpt-5.4-mini"),
+        ("deepseek", "deepseek-v4-flash"),
+        ("deepseek", "deepseek-v4-pro"),
     ]
     assert catalog.defaults["text"].provider == "openai_codex"
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
@@ -80,7 +83,16 @@ def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
     assert catalog.realtime[0].enabled is False
     assert catalog.realtime[0].configured is False
     assert [option.model for option in catalog.text if option.default] == ["gpt-5.4-mini"]
-    assert all(option.enabled and option.configured for option in catalog.text)
+    assert all(
+        option.enabled and option.configured
+        for option in catalog.text
+        if option.provider == "openai_codex"
+    )
+    assert all(
+        not option.enabled and not option.configured
+        for option in catalog.text
+        if option.provider == "deepseek"
+    )
     assert catalog.defaults["text"].reasoning_effort == "high"
     assert catalog.defaults["text"].service_tier is None
     assert [
@@ -157,6 +169,7 @@ def test_catalog_adds_configured_default_when_codex_does_not_list_it(monkeypatch
 
 def test_catalog_disables_codex_options_until_account_is_configured(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_CODEX_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr(
         ai_model_catalog,
         "codex_provider_status",
@@ -167,8 +180,31 @@ def test_catalog_disables_codex_options_until_account_is_configured(monkeypatch)
     catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
 
     assert catalog.text
-    assert {option.provider for option in catalog.text} == {"openai_codex"}
+    assert {option.provider for option in catalog.text} == {"openai_codex", "deepseek"}
     assert all(not option.enabled and not option.configured for option in catalog.text)
     assert len(catalog.realtime) == 1
     assert catalog.realtime[0].model == "realtime-unavailable"
     assert catalog.realtime[0].enabled is False
+
+
+def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "server-shared-key")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "codex_provider_status",
+        lambda *_args, **_kwargs: _status(configured=False),
+    )
+    monkeypatch.setattr(ai_model_catalog, "list_codex_models", lambda _user_id: [])
+
+    guest_catalog = ai_model_catalog.build_model_catalog("guest_default")
+    member_catalog = ai_model_catalog.build_model_catalog("user_member")
+
+    for catalog in (guest_catalog, member_catalog):
+        deepseek_options = [
+            option for option in catalog.text if option.provider == "deepseek"
+        ]
+        assert deepseek_options
+        assert all(option.enabled and option.configured for option in deepseek_options)
+        assert catalog.defaults["text"].provider == "deepseek"
+        assert catalog.defaults["text"].model == "deepseek-v4-flash"

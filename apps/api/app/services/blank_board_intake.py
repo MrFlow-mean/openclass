@@ -22,7 +22,7 @@ from app.models import (
     Lesson,
     new_id,
 )
-from app.services.ai_execution_adapter import CodexAIExecutionAdapter
+from app.services.ai_execution_adapter import AIExecutionAdapter
 from app.services.ai_logging import ai_usage_logger
 from app.services.codex_app_server import CodexAppServerError, CodexAppServerTextClient
 from app.services.follow_up_suggestions import generate_follow_up_suggestions
@@ -412,6 +412,8 @@ def process_blank_board_turn(
     request: ChatRequest,
     user_id: str,
     model: str,
+    provider: str = "openai_codex",
+    adapter: AIExecutionAdapter,
     conversation_text: str,
     on_delta: Callable[[str], None] | None,
     on_requirement_update: Callable[[dict[str, object]], None] | None,
@@ -473,8 +475,7 @@ def process_blank_board_turn(
         and active_state.teaching_plan
     )
     if source_error:
-        source_resolution = CodexAppServerTextClient(user_id).parse(
-            model=model,
+        source_resolution = adapter.parse_structured(
             system_prompt=SOURCE_RESOLUTION_INSTRUCTIONS,
             user_prompt=json.dumps(
                 {
@@ -529,8 +530,7 @@ def process_blank_board_turn(
             requirement_phase="frozen",
         )
     else:
-        parsed = CodexAppServerTextClient(user_id).parse(
-            model=model,
+        parsed = adapter.parse_structured(
             system_prompt=BLANK_BOARD_INTAKE_INSTRUCTIONS,
             user_prompt=_intake_user_prompt(
                 request,
@@ -571,8 +571,7 @@ def process_blank_board_turn(
                 previous_phase=active_state.phase,
             )
         if outcome.route == "ordinary_chat":
-            ordinary_parsed = CodexAppServerTextClient(user_id).parse(
-                model=model,
+            ordinary_parsed = adapter.parse_structured(
                 system_prompt=ORDINARY_CHAT_INSTRUCTIONS,
                 user_prompt=_ordinary_chat_user_prompt(
                     request,
@@ -677,7 +676,9 @@ def process_blank_board_turn(
                 "kind": "learning_requirement_completed",
                 "user_message": request.message,
                 "assistant_message": outcome.chatbot_message,
-                "assistant_message_source": "codex",
+                "assistant_message_source": (
+                    "codex" if provider == "openai_codex" else provider
+                ),
                 "requirement_run_id": run_id,
                 "requirement_version_id": ready_version_id,
                 "requirement_phase": "ready",
@@ -698,7 +699,9 @@ def process_blank_board_turn(
                 "kind": "learning_requirement_frozen",
                 "user_message": request.message,
                 "assistant_message": outcome.chatbot_message,
-                "assistant_message_source": "codex",
+                "assistant_message_source": (
+                    "codex" if provider == "openai_codex" else provider
+                ),
                 "requirement_run_id": run_id,
                 "requirement_version_id": frozen_version_id,
                 "requirement_parent_version_id": ready_version_id,
@@ -756,9 +759,11 @@ def process_blank_board_turn(
         "skipped_visual_placements": [],
     }
     generation_started_at = time.monotonic()
-    codex_generation_finished = False
+    provider_generation_finished = False
     ai_usage_logger.log_event(
         "blank_board_generation_started",
+        provider=provider,
+        model=model,
         lesson_id=lesson.id,
         requirement_run_id=run_id,
         requirement_version_id=frozen_version_id,
@@ -776,9 +781,11 @@ def process_blank_board_turn(
             is_cancelled,
             record_activity,
         )
-        codex_generation_finished = True
+        provider_generation_finished = True
         ai_usage_logger.log_event(
-            "blank_board_codex_generation_completed",
+            "blank_board_provider_generation_completed",
+            provider=provider,
+            model=model,
             lesson_id=lesson.id,
             requirement_run_id=run_id,
             requirement_version_id=frozen_version_id,
@@ -791,10 +798,7 @@ def process_blank_board_turn(
         )
         if request.post_generation_action != "auto_explain":
             generation_follow_up_suggestions = generate_follow_up_suggestions(
-                adapter=CodexAIExecutionAdapter(
-                    owner_user_id=user_id,
-                    model=model,
-                ),
+                adapter=adapter,
                 user_message=request.message,
                 assistant_message=final_chatbot_message,
                 board_state="non_empty",
@@ -889,7 +893,9 @@ def process_blank_board_turn(
                     if request.post_generation_action == "auto_explain"
                     else final_chatbot_message
                 ),
-                "assistant_message_source": "codex",
+                "assistant_message_source": (
+                    "codex" if provider == "openai_codex" else provider
+                ),
                 "follow_up_suggestions": generation_follow_up_suggestions,
                 "document_changed": True,
                 "board_state_before": "empty",
@@ -906,6 +912,8 @@ def process_blank_board_turn(
                 "board_generation_codex_thread_id": generation_result.thread_id,
                 "board_generation_codex_turn_id": generation_result.turn_id,
                 "codex_model": model,
+                "ai_provider": provider,
+                "ai_model": model,
                 "codex_branch": branch_name,
                 "codex_base_commit_id": generation_base_commit_id,
                 "requirement_retry": frozen_retry,
@@ -942,7 +950,7 @@ def process_blank_board_turn(
             requirement_version_id=frozen_version_id,
             elapsed_ms=round((time.monotonic() - generation_started_at) * 1000),
             failure_stage=(
-                "persistence" if codex_generation_finished else "codex_generation"
+                "persistence" if provider_generation_finished else "provider_generation"
             ),
             error=str(exc)[:500],
             requirement_retry=frozen_retry,
@@ -980,7 +988,7 @@ def process_blank_board_turn(
         auto_teaching_result = start_auto_board_teaching(
             owner_user_id=user_id,
             lesson_id=lesson.id,
-            model=model,
+            adapter=adapter,
         )
         merge_unreported_activity(auto_teaching_result.activity)
         if auto_teaching_result.status == "succeeded":

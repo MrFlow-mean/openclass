@@ -10,6 +10,7 @@ from app.routers.auth import current_user
 from app.routers import auth, chat, codex_provider, documents, geometry, sources, speech, workspace
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
+from app.services.deepseek_api import deepseek_provider_configured
 from app.services.workspace_state import ensure_data_dirs
 
 ensure_data_dirs()
@@ -47,7 +48,11 @@ def health() -> dict[str, object]:
             "enabled": codex_app_server_runtime_enabled(),
             "available": codex_app_server_available(),
         },
-        "workflow": {"status": "codex_board_only"},
+        "deepseek": {
+            "configured": deepseek_provider_configured(),
+            "access": "shared_unmetered",
+        },
+        "workflow": {"status": "provider_neutral_board"},
         "realtime": {"status": "disabled"},
     }
 

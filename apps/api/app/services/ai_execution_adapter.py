@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from app.models import AgentActivityEvent, LearningRequirementSheet
+from app.models import AgentActivityEvent, AIModelSelection, LearningRequirementSheet, new_id
 from app.services.codex_app_server import CodexAppServerTextClient
+from app.services.deepseek_api import DeepSeekTextClient
 
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
@@ -43,6 +45,8 @@ class AIExecutionAdapter(Protocol):
         user_prompt: str,
         schema: type[StructuredModel],
         image_inputs: list[str] | None = None,
+        allow_live_web_search: bool = False,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
     ) -> StructuredExecutionResult: ...
 
     def generate_board(
@@ -120,6 +124,8 @@ class CodexAIExecutionAdapter:
         user_prompt: str,
         schema: type[StructuredModel],
         image_inputs: list[str] | None = None,
+        allow_live_web_search: bool = False,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
     ) -> StructuredExecutionResult:
         response = CodexAppServerTextClient(self.owner_user_id).parse(
             model=self.model,
@@ -127,10 +133,12 @@ class CodexAIExecutionAdapter:
             user_prompt=user_prompt,
             schema=schema,
             image_inputs=image_inputs,
+            allow_live_web_search=allow_live_web_search,
+            on_activity=on_activity,
         )
         return StructuredExecutionResult(
             output_parsed=response.output_parsed,
-            activity=response.activity,
+            activity=list(getattr(response, "activity", [])),
         )
 
     def generate_board(
@@ -184,3 +192,144 @@ class CodexAIExecutionAdapter:
             is_cancelled,
             on_activity,
         )
+
+
+class _DeepSeekBoardResponse(BaseModel):
+    content_text: str
+    chatbot_message: str
+
+
+@dataclass(frozen=True)
+class DeepSeekBoardGenerationResult:
+    thread_id: str
+    turn_id: str | None
+    final_response: str
+    activity: list[AgentActivityEvent] = field(default_factory=list)
+
+
+DEEPSEEK_BOARD_GENERATION_INSTRUCTIONS = """
+You are the board-writing capability inside OpenClass. Generate a self-contained learning board
+from only the supplied frozen learning requirement, teaching plan, and verified source evidence.
+Return the complete board as Markdown in `content_text` and a brief learner-facing completion in
+`chatbot_message`. Do not ask questions and do not use HTML. Use fenced code blocks only for real
+code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
+heading hierarchy and keep sibling sections at the same level.
+
+If `visual_manifest` is present, handle every item exactly once and preserve its order. For a
+verified editable table or single-direction linear flow whose essential content is available in
+the manifest, recreate it as editable Markdown and then place its `recreation_marker` once on a
+standalone line. Otherwise place its `marker` once on a standalone line after the paragraph that
+introduces it. Never write both markers for one item and never invent missing visual details.
+""".strip()
+
+
+class DeepSeekAIExecutionAdapter:
+    """Shared DeepSeek implementation of the provider-neutral execution contract."""
+
+    def __init__(self, *, model: str) -> None:
+        self.model = model
+        self._client = DeepSeekTextClient(model=model)
+
+    def parse_structured(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredModel],
+        image_inputs: list[str] | None = None,
+        allow_live_web_search: bool = False,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    ) -> StructuredExecutionResult:
+        parsed, activity = self._client.parse(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            image_inputs=image_inputs,
+        )
+        for event in activity:
+            if on_activity is not None:
+                on_activity(event)
+        return StructuredExecutionResult(output_parsed=parsed, activity=activity)
+
+    def generate_board(
+        self,
+        request: BoardGenerationExecutionRequest,
+        *,
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> tuple[BoardGenerationExecutionResult, str]:
+        if is_cancelled is not None and is_cancelled():
+            raise RuntimeError("DeepSeek board generation was cancelled")
+        response = self.parse_structured(
+            system_prompt=DEEPSEEK_BOARD_GENERATION_INSTRUCTIONS,
+            user_prompt=(
+                "Frozen board-generation payload:\n"
+                + json.dumps(
+                    {
+                        "learning_requirement": request.requirement.model_dump(mode="json"),
+                        "teaching_plan": request.teaching_plan,
+                        "visual_manifest": request.visual_manifest,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ),
+            schema=_DeepSeekBoardResponse,
+            image_inputs=request.image_inputs,
+        )
+        output = _DeepSeekBoardResponse.model_validate(response.output_parsed)
+        if not output.content_text.strip():
+            raise RuntimeError("DeepSeek board generation returned empty content")
+        for event in response.activity:
+            if on_activity is not None:
+                on_activity(event)
+        turn_id = response.activity[0].turn_id if response.activity else new_id("deepseekturn")
+        result = DeepSeekBoardGenerationResult(
+            thread_id=turn_id,
+            turn_id=turn_id,
+            final_response=output.chatbot_message.strip(),
+            activity=response.activity,
+        )
+        return result, output.content_text
+
+    def explain_from_directive(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredModel],
+    ) -> StructuredExecutionResult:
+        return self.parse_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+        )
+
+    def analyze_image_batch(
+        self,
+        *,
+        prompt: str,
+        image_inputs: list[str],
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> str:
+        raise RuntimeError("The selected DeepSeek text model does not accept image inputs")
+
+
+def build_ai_execution_adapter(
+    selection: AIModelSelection,
+    *,
+    owner_user_id: str,
+    board_runner: BoardRunner | None = None,
+    image_analysis_runner: ImageAnalysisRunner | None = None,
+) -> AIExecutionAdapter:
+    if selection.provider == "openai_codex":
+        return CodexAIExecutionAdapter(
+            owner_user_id=owner_user_id,
+            model=selection.model,
+            board_runner=board_runner,
+            image_analysis_runner=image_analysis_runner,
+        )
+    if selection.provider == "deepseek":
+        return DeepSeekAIExecutionAdapter(model=selection.model)
+    raise RuntimeError(f"Unsupported text model provider: {selection.provider}")

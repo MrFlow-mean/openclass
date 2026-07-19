@@ -48,7 +48,8 @@ def decide_board_teaching_turn(
     *,
     owner_user_id: str,
     lesson_id: str,
-    model: str,
+    model: str | None = None,
+    adapter: AIExecutionAdapter | None = None,
     user_message: str,
     has_selection: bool,
 ) -> BoardTeachingDecisionResult:
@@ -68,10 +69,13 @@ def decide_board_teaching_turn(
         return BoardTeachingDecisionResult()
     guide = lesson.board_teaching_guide
     progress = lesson.board_teaching_progress
-    adapter: AIExecutionAdapter = CodexAIExecutionAdapter(
-        owner_user_id=owner_user_id,
-        model=model,
-    )
+    if adapter is None:
+        if not model:
+            raise ValueError("A model or AI execution adapter is required")
+        adapter = CodexAIExecutionAdapter(
+            owner_user_id=owner_user_id,
+            model=model,
+        )
     try:
         response = adapter.parse_structured(
             system_prompt=TEACHING_TURN_DECISION_INSTRUCTIONS,

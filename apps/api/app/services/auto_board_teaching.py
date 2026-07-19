@@ -68,12 +68,14 @@ def start_auto_board_teaching(
     *,
     owner_user_id: str,
     lesson_id: str,
-    model: str,
+    model: str | None = None,
+    adapter: AIExecutionAdapter | None = None,
 ) -> AutoTeachingResult:
     return _teach_section(
         owner_user_id=owner_user_id,
         lesson_id=lesson_id,
         model=model,
+        adapter=adapter,
         requested_index=0,
         rebuild_guide=True,
         trigger="post_generation_auto_teach",
@@ -86,7 +88,8 @@ def start_board_teaching(
     *,
     owner_user_id: str,
     lesson_id: str,
-    model: str,
+    model: str | None = None,
+    adapter: AIExecutionAdapter | None = None,
     target_heading: str,
     user_message: str,
 ) -> AutoTeachingResult:
@@ -94,6 +97,7 @@ def start_board_teaching(
         owner_user_id=owner_user_id,
         lesson_id=lesson_id,
         model=model,
+        adapter=adapter,
         requested_index=0,
         rebuild_guide=True,
         trigger="board_teaching_start",
@@ -106,7 +110,8 @@ def continue_board_teaching(
     *,
     owner_user_id: str,
     lesson_id: str,
-    model: str,
+    model: str | None = None,
+    adapter: AIExecutionAdapter | None = None,
     restart: bool,
     user_message: str = "",
 ) -> AutoTeachingResult:
@@ -118,6 +123,7 @@ def continue_board_teaching(
         owner_user_id=owner_user_id,
         lesson_id=lesson_id,
         model=model,
+        adapter=adapter,
         requested_index=0 if restart else current_index + 1,
         rebuild_guide=restart or lesson.board_teaching_guide is None,
         trigger="board_teaching_restart" if restart else "board_teaching_continue",
@@ -130,17 +136,21 @@ def _teach_section(
     *,
     owner_user_id: str,
     lesson_id: str,
-    model: str,
+    model: str | None,
+    adapter: AIExecutionAdapter | None,
     requested_index: int,
     rebuild_guide: bool,
     trigger: str,
     target_heading: str,
     user_message: str,
 ) -> AutoTeachingResult:
-    adapter: AIExecutionAdapter = CodexAIExecutionAdapter(
-        owner_user_id=owner_user_id,
-        model=model,
-    )
+    if adapter is None:
+        if not model:
+            raise ValueError("A model or AI execution adapter is required")
+        adapter = CodexAIExecutionAdapter(
+            owner_user_id=owner_user_id,
+            model=model,
+        )
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     branch_name = lesson.history_graph.current_branch

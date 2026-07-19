@@ -85,7 +85,8 @@ def test_health_reports_codex_only_backend(api_client: TestClient, monkeypatch: 
     response = api_client.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["workflow"] == {"status": "codex_board_only"}
+    assert response.json()["workflow"] == {"status": "provider_neutral_board"}
+    assert response.json()["deepseek"]["access"] == "shared_unmetered"
     assert response.json()["realtime"] == {"status": "disabled"}
     assert response.json()["codex"] == {"enabled": True, "available": True}
     assert "openai" not in response.json()

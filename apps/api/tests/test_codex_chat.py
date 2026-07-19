@@ -3830,3 +3830,51 @@ def test_non_stale_fork_error_is_not_retried_as_a_new_thread(
         )
 
     assert session.methods == ["thread/fork"]
+
+
+def test_deepseek_selection_uses_shared_provider_for_an_authorized_board_edit(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="# Existing\n\nOriginal content.")
+    calls: list[object] = []
+
+    class FakeDeepSeekAdapter:
+        def parse_structured(self, **kwargs):
+            schema = kwargs["schema"]
+            calls.append(schema)
+            if schema is codex_chat._DeepSeekExistingBoardTurn:
+                parsed = schema(
+                    chatbot_message="I updated the requested paragraph.",
+                    board_markdown="# Existing\n\nUpdated content.",
+                )
+            else:
+                parsed = schema(
+                    suggestions=["Explain the change", "Show one concrete example"]
+                )
+            return SimpleNamespace(output_parsed=parsed, activity=[])
+
+    adapter = FakeDeepSeekAdapter()
+    monkeypatch.setattr(
+        codex_chat,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: adapter,
+    )
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Replace the paragraph in the board.",
+            interaction_mode="direct_edit",
+            text_model={"provider": "deepseek", "model": "deepseek-v4-flash"},
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    metadata = current_head_commit(saved_lesson).metadata
+    assert response.board_document_operation_status == "succeeded"
+    assert "Updated content." in saved_lesson.board_document.content_text
+    assert metadata["ai_provider"] == "deepseek"
+    assert metadata["ai_model"] == "deepseek-v4-flash"
+    assert codex_chat._DeepSeekExistingBoardTurn in calls

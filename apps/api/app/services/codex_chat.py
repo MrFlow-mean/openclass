@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.models import (
     AgentActivityEvent,
+    AIModelSelection,
     BoardDecision,
     BoardDocument,
     ChatRequest,
@@ -32,8 +33,12 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.ai_execution_adapter import (
+    AIExecutionAdapter,
     BoardGenerationExecutionRequest,
+    BoardGenerationExecutionResult,
     CodexAIExecutionAdapter,
+    DeepSeekAIExecutionAdapter,
+    build_ai_execution_adapter,
 )
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.blank_board_intake import process_blank_board_turn
@@ -203,16 +208,38 @@ and visible qualifications, and identify each description with the corresponding
 the prompt. Do not add facts that are not visible in the image or its supplied metadata.
 """.strip()
 
+DEEPSEEK_EXISTING_BOARD_INSTRUCTIONS = """
+You are the learner-facing chat and document capability inside OpenClass. The supplied board
+Markdown is the complete current document. Answer the current user naturally in `chatbot_message`.
+Return the complete resulting board in `board_markdown`, preserving unrelated content and every
+protected visual marker exactly once.
+
+The backend-provided board write policy is mandatory. For `answer_then_offer`, fully answer first,
+leave the board unchanged, and naturally offer to write the new material into the board. For
+`chat_without_offer` or `decline_offered_write`, leave it unchanged. For `edit_now` or
+`confirm_offered_write`, make only the authorized change. If an authorized change is ambiguous,
+ask one concise question and leave the board unchanged.
+
+Use verified source context when present and do not add source claims outside that evidence. Handle
+each visual manifest item exactly once using its marker contract. Keep the board as Markdown: no
+HTML; code fences only for real code; display formulas in `$$` delimiters on their own lines.
+""".strip()
+
 
 class _SourceBatchSummary(BaseModel):
     summary: str = Field(min_length=1, max_length=MAX_SOURCE_BATCH_SUMMARY_CHARS)
+
+
+class _DeepSeekExistingBoardTurn(BaseModel):
+    chatbot_message: str
+    board_markdown: str
 
 
 @dataclass(frozen=True)
 class CodexBoardGenerationResult:
     """Codex turn plus the backend-owned visual insertion contract."""
 
-    turn: CodexTurnResult
+    turn: BoardGenerationExecutionResult
     insertion_plan: BoardInsertionPlan
     visual_assets: dict[str, tuple[SourceVisualAsset, bytes]]
 
@@ -495,6 +522,27 @@ def _codex_model(request: ChatRequest, *, user_id: str) -> str:
     except Exception:
         pass
     return (os.getenv("OPENAI_CODEX_MODEL") or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+
+
+def _text_model_selection(request: ChatRequest, *, user_id: str) -> AIModelSelection:
+    if request.text_model is not None:
+        selected_model = request.text_model.model.strip()
+        if request.text_model.provider in {"openai_codex", "deepseek"} and selected_model:
+            return request.text_model.model_copy(update={"model": selected_model})
+        raise RuntimeError(f"Unsupported text model provider: {request.text_model.provider}")
+    try:
+        default_selection = build_model_catalog(user_id).defaults["text"]
+        if isinstance(default_selection, AIModelSelection):
+            return default_selection
+        return AIModelSelection(
+            provider=getattr(default_selection, "provider", "openai_codex"),
+            model=str(getattr(default_selection, "model", DEFAULT_CODEX_MODEL)),
+        )
+    except Exception:
+        return AIModelSelection(
+            provider="openai_codex",
+            model=_codex_model(request, user_id=user_id),
+        )
 
 
 def _codex_reasoning_effort(request: ChatRequest) -> str | None:
@@ -804,11 +852,12 @@ def _is_structured_table_evidence(evidence: SourceVisualEvidence) -> bool:
 
 def _prepare_source_generation_inputs(
     *,
-    adapter: CodexAIExecutionAdapter,
+    adapter: AIExecutionAdapter,
     requirement: LearningRequirementSheet,
     owner_user_id: str,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
+    include_raster_images: bool = True,
 ) -> tuple[LearningRequirementSheet, list[str]]:
     prepared = requirement.model_copy(deep=True)
     grounding = prepared.source_grounding
@@ -899,6 +948,8 @@ def _prepare_source_generation_inputs(
 
     visuals = grounding.frozen_visual_evidence
     raster_visuals = [item for item in visuals if not _is_structured_table_evidence(item)]
+    if not include_raster_images:
+        return prepared, []
     if len(raster_visuals) <= MAX_SOURCE_VISUALS_PER_BATCH:
         return prepared, _source_visual_image_urls(
             user_id=owner_user_id,
@@ -960,7 +1011,8 @@ def _prepare_existing_board_source_context(
     owner_user_id: str,
     lesson,
     selection: SelectionRef | None,
-    model: str,
+    adapter: AIExecutionAdapter,
+    include_raster_images: bool,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> ExistingBoardSourceContext | None:
@@ -978,18 +1030,13 @@ def _prepare_existing_board_source_context(
     )
     if plan is None:
         return None
-    adapter = CodexAIExecutionAdapter(
-        owner_user_id=owner_user_id,
-        model=model,
-        board_runner=_run_codex_board_generation,
-        image_analysis_runner=_run_codex_visual_analysis,
-    )
     prepared_requirement, image_inputs = _prepare_source_generation_inputs(
         adapter=adapter,
         requirement=plan.requirement,
         owner_user_id=owner_user_id,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
+        include_raster_images=include_raster_images,
     )
     grounding = prepared_requirement.source_grounding
     insertion_plan = build_board_insertion_plan(
@@ -1295,12 +1342,53 @@ def _generate_blank_board(
         board_runner=_run_codex_board_generation,
         image_analysis_runner=_run_codex_visual_analysis,
     )
+    return _generate_blank_board_with_adapter(
+        adapter=adapter,
+        user_id=user_id,
+        requirement=requirement,
+        teaching_plan=teaching_plan,
+        include_raster_images=True,
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
+    )
+
+
+def _generate_deepseek_blank_board(
+    user_id: str,
+    model: str,
+    requirement: LearningRequirementSheet,
+    teaching_plan: str,
+    is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
+) -> tuple[CodexBoardGenerationResult, str]:
+    return _generate_blank_board_with_adapter(
+        adapter=DeepSeekAIExecutionAdapter(model=model),
+        user_id=user_id,
+        requirement=requirement,
+        teaching_plan=teaching_plan,
+        include_raster_images=False,
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
+    )
+
+
+def _generate_blank_board_with_adapter(
+    *,
+    adapter: AIExecutionAdapter,
+    user_id: str,
+    requirement: LearningRequirementSheet,
+    teaching_plan: str,
+    include_raster_images: bool,
+    is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+) -> tuple[CodexBoardGenerationResult, str]:
     prepared_requirement, image_inputs = _prepare_source_generation_inputs(
         adapter=adapter,
         requirement=requirement,
         owner_user_id=user_id,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
+        include_raster_images=include_raster_images,
     )
     insertion_plan = build_board_insertion_plan(
         prepared_requirement.source_grounding.frozen_visual_evidence,
@@ -1332,6 +1420,12 @@ def _generate_blank_board(
         is_cancelled=is_cancelled,
         on_activity=on_activity,
     )
+    if not content.strip():
+        raise CodexAppServerError("Board generation completed without content")
+    if looks_like_html_content(content):
+        raise CodexAppServerError("Board generation returned HTML instead of Markdown")
+    if len(content.encode("utf-8")) > _board_max_bytes():
+        raise CodexAppServerError("Board generation exceeds the configured size limit")
     evidence_by_id = {
         item.visual_id: item
         for item in prepared_requirement.source_grounding.frozen_visual_evidence
@@ -1410,6 +1504,222 @@ def _run_codex_visual_analysis(
             _discard_uncommitted_thread(result.thread_id, user_id=user_id)
 
 
+def _process_deepseek_existing_board_turn(
+    *,
+    lesson_id: str,
+    request: ChatRequest,
+    user_id: str,
+    adapter: AIExecutionAdapter,
+    model_selection: AIModelSelection,
+    initial_lesson,
+    branch_name: str,
+    base_commit_id: str,
+    board_state_before: BoardState,
+    board_write_decision: BoardWriteDecision,
+    pending_write_offer: dict[str, str] | None,
+    source_context: ExistingBoardSourceContext | None,
+    attachment_context: str,
+    on_delta: Callable[[str], None] | None,
+) -> ChatResponse:
+    codex_board_text, preserved_visuals = _document_for_codex(
+        initial_lesson.board_document
+    )
+    verified_context = "\n\n".join(
+        part
+        for part in (
+            source_context.prompt_context if source_context is not None else "",
+            attachment_context,
+        )
+        if part
+    )
+    response = adapter.parse_structured(
+        system_prompt=DEEPSEEK_EXISTING_BOARD_INSTRUCTIONS,
+        user_prompt=json.dumps(
+            {
+                "board_markdown": codex_board_text,
+                "board_write_policy": board_write_policy_prompt(
+                    board_write_decision,
+                    pending_write_offer,
+                ),
+                "conversation": [
+                    turn.model_dump(mode="json") for turn in request.conversation
+                ],
+                "selection": (
+                    request.selection.model_dump(mode="json")
+                    if request.selection is not None
+                    else None
+                ),
+                "formula_latex": (
+                    request.formula_ink.source_latex
+                    if request.formula_ink is not None
+                    else None
+                ),
+                "verified_context": verified_context,
+                "user_message": request.message,
+                "response_contract": _DeepSeekExistingBoardTurn.model_json_schema(),
+            },
+            ensure_ascii=False,
+        ),
+        schema=_DeepSeekExistingBoardTurn,
+    )
+    output = _DeepSeekExistingBoardTurn.model_validate(response.output_parsed)
+    chatbot_message = output.chatbot_message.strip()
+    if not chatbot_message:
+        raise RuntimeError("DeepSeek completed without a learner-facing response")
+    document_write_authorized = board_write_decision.action in {
+        "edit_now",
+        "confirm_offered_write",
+    }
+    candidate_markdown = output.board_markdown
+    if document_write_authorized:
+        if looks_like_html_content(candidate_markdown):
+            raise CodexAppServerError("DeepSeek board output contains HTML instead of Markdown")
+        if len(candidate_markdown.encode("utf-8")) > _board_max_bytes():
+            raise CodexAppServerError("DeepSeek board output exceeds the configured size limit")
+    else:
+        candidate_markdown = codex_board_text
+    current_document = initial_lesson.board_document
+    if candidate_markdown == codex_board_text:
+        next_document = current_document
+    else:
+        rebuilt_document = build_document(
+            title=current_document.title,
+            content_text=candidate_markdown,
+            document_id=current_document.id,
+            page_settings=current_document.page_settings,
+        )
+        next_document = _restore_preserved_visuals(
+            rebuilt_document,
+            preserved_visuals,
+        )
+        if source_context is not None and source_context.insertion_plan.items:
+            placements = derive_board_visual_placements(
+                next_document,
+                plan=source_context.insertion_plan,
+            )
+
+            def resolve_visual_bytes(visual_id: str):
+                return source_context.visual_assets.get(visual_id)
+
+            visual_result = apply_board_insertion_plan(
+                next_document,
+                plan=source_context.insertion_plan,
+                placements=placements,
+                owner_user_id=user_id,
+                lesson_id=initial_lesson.id,
+                visual_bytes_resolver=resolve_visual_bytes,
+                preserved_document=current_document,
+            )
+            next_document = visual_result.document
+    changed = document_changed(current_document, next_document)
+    follow_up_suggestions = generate_follow_up_suggestions(
+        adapter=adapter,
+        user_message=request.message,
+        assistant_message=chatbot_message,
+        board_state="non_empty",
+        workflow_state="board_changed" if changed else "conversation",
+    )
+    pending_write_offer_after = build_pending_board_write_offer_after(
+        board_write_decision,
+        question=request.message,
+        content=chatbot_message,
+    )
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    if (
+        lesson.history_graph.current_branch != branch_name
+        or current_head_commit(lesson).id != base_commit_id
+    ):
+        raise CodexAppServerError("The lesson changed while DeepSeek was working")
+    clarification = _neutral_clarification()
+    lesson.board_teaching_guide = None
+    lesson.board_teaching_progress = None
+    lesson.learning_requirements = None
+    lesson.board_task_requirements = None
+    commit_operations(
+        lesson,
+        operations=[],
+        label="DeepSeek document update" if changed else "DeepSeek conversation",
+        message="DeepSeek completed the user turn.",
+        new_document=next_document,
+        metadata={
+            "kind": "board_document_edit" if changed else "basic_chat",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": "deepseek",
+            "follow_up_suggestions": follow_up_suggestions,
+            "interaction_mode": request.interaction_mode,
+            "selection": (
+                request.selection.model_dump(mode="json")
+                if request.selection is not None
+                else None
+            ),
+            "verified_source_reference_used": source_context is not None,
+            "document_changed": changed,
+            "document_write_authorized": document_write_authorized,
+            "pending_board_write_offer_after": pending_write_offer_after,
+            "board_state_before": board_state_before,
+            "board_state_after": _board_state(next_document.content_text),
+            "document_hash_before": _text_hash(current_document.content_text),
+            "document_hash_after": _text_hash(next_document.content_text),
+            "ai_provider": model_selection.provider,
+            "ai_model": model_selection.model,
+            "agent_activity": [
+                event.model_dump(mode="json") for event in response.activity
+            ],
+            "active_requirement_sheet_after": None,
+            "active_board_task_sheet_after": None,
+            "learning_clarification_after": clarification.model_dump(mode="json"),
+            "requirement_cleared": True,
+            "board_task_cleared": True,
+            "decision_trace": board_write_decision_trace(
+                board_write_decision,
+                document_write_authorized=document_write_authorized,
+                document_changed=changed,
+            ),
+        },
+    )
+    if not workspace_state.save_lesson_for_user_if_head(
+        user_id,
+        lesson,
+        expected_branch_name=branch_name,
+        expected_head_commit_id=base_commit_id,
+    ):
+        raise CodexAppServerError("The lesson changed while DeepSeek was working")
+    if on_delta is not None:
+        on_delta(chatbot_message)
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    return ChatResponse(
+        chatbot_message=chatbot_message,
+        follow_up_suggestions=follow_up_suggestions,
+        agent_activity=response.activity,
+        learning_requirement_sheet=build_requirements(lesson.title),
+        active_requirement_sheet=None,
+        learning_clarification=clarification,
+        board_task_sheet=None,
+        active_board_task_sheet=None,
+        board_task_questions=[],
+        board_decision=BoardDecision(
+            action="edit_board" if changed else "no_change",
+            reason=(
+                "The user authorized a board change and DeepSeek changed the document."
+                if changed
+                else board_write_decision.reason
+            ),
+        ),
+        needs_clarification=False,
+        clarification_questions=[],
+        requirement_cleared=True,
+        board_document_operation_status="succeeded" if changed else "none",
+        course_package=workspace_state.package_view_for_lesson(
+            workspace,
+            package,
+            lesson.id,
+        ),
+    )
+
+
 def process_codex_chat_on_lesson(
     lesson_id: str,
     request: ChatRequest,
@@ -1430,7 +1740,14 @@ def process_codex_chat_on_lesson(
         branch_name = initial_lesson.history_graph.current_branch
         base_commit_id = current_head_commit(initial_lesson).id
         board_state_before = _board_state(initial_lesson.board_document.content_text)
-        codex_model = _codex_model(request, user_id=user_id)
+        model_selection = _text_model_selection(request, user_id=user_id)
+        selected_model = model_selection.model
+        adapter = build_ai_execution_adapter(
+            model_selection,
+            owner_user_id=user_id,
+            board_runner=_run_codex_board_generation,
+            image_analysis_runner=_run_codex_visual_analysis,
+        )
         verified_attachments = verify_chat_attachments(
             owner_user_id=user_id,
             package_id=initial_package.id,
@@ -1442,7 +1759,9 @@ def process_codex_chat_on_lesson(
                 lesson=initial_lesson,
                 request=request,
                 user_id=user_id,
-                model=codex_model,
+                model=selected_model,
+                provider=model_selection.provider,
+                adapter=adapter,
                 conversation_text="\n\n".join(
                     item
                     for item in (
@@ -1455,10 +1774,18 @@ def process_codex_chat_on_lesson(
                 on_requirement_update=on_requirement_update,
                 on_agent_activity=on_agent_activity,
                 is_cancelled=is_cancelled,
-                generate_board=_generate_blank_board,
-                discard_generated_thread=lambda thread_id: _discard_uncommitted_thread(
-                    thread_id,
-                    user_id=user_id,
+                generate_board=(
+                    _generate_deepseek_blank_board
+                    if model_selection.provider == "deepseek"
+                    else _generate_blank_board
+                ),
+                discard_generated_thread=(
+                    (lambda _thread_id: None)
+                    if model_selection.provider == "deepseek"
+                    else lambda thread_id: _discard_uncommitted_thread(
+                        thread_id,
+                        user_id=user_id,
+                    )
                 ),
             )
 
@@ -1476,7 +1803,7 @@ def process_codex_chat_on_lesson(
             teaching_decision = decide_board_teaching_turn(
                 owner_user_id=user_id,
                 lesson_id=lesson_id,
-                model=codex_model,
+                adapter=adapter,
                 user_message=request.message,
                 has_selection=request.selection is not None,
             )
@@ -1486,7 +1813,7 @@ def process_codex_chat_on_lesson(
                 teaching_result = start_board_teaching(
                     owner_user_id=user_id,
                     lesson_id=lesson_id,
-                    model=codex_model,
+                    adapter=adapter,
                     target_heading=teaching_decision.decision.target_heading,
                     user_message=request.message,
                 )
@@ -1499,7 +1826,7 @@ def process_codex_chat_on_lesson(
                 teaching_result = continue_board_teaching(
                     owner_user_id=user_id,
                     lesson_id=lesson_id,
-                    model=codex_model,
+                    adapter=adapter,
                     restart=restart,
                     user_message=request.message,
                 )
@@ -1562,7 +1889,8 @@ def process_codex_chat_on_lesson(
                     owner_user_id=user_id,
                     lesson=initial_lesson,
                     selection=request.selection,
-                    model=codex_model,
+                    adapter=adapter,
+                    include_raster_images=model_selection.provider == "openai_codex",
                     is_cancelled=is_cancelled,
                     on_activity=on_agent_activity,
                 )
@@ -1571,6 +1899,34 @@ def process_codex_chat_on_lesson(
                 # source chip cannot be verified.  Running without the reference
                 # would falsely report success while ignoring the learner's scope.
                 raise CodexAppServerError(str(exc)) from exc
+
+        if model_selection.provider == "deepseek":
+            if prepared_attachments.image_inputs:
+                raise CodexAppServerError(
+                    "The selected DeepSeek text model does not accept image attachments"
+                )
+            if request.formula_ink is not None and not request.formula_ink.source_latex:
+                raise CodexAppServerError(
+                    "The selected DeepSeek text model requires formula text instead of an image"
+                )
+            return _process_deepseek_existing_board_turn(
+                lesson_id=lesson_id,
+                request=request,
+                user_id=user_id,
+                adapter=adapter,
+                model_selection=model_selection,
+                initial_lesson=initial_lesson,
+                branch_name=branch_name,
+                base_commit_id=base_commit_id,
+                board_state_before=board_state_before,
+                board_write_decision=board_write_decision,
+                pending_write_offer=pending_write_offer,
+                source_context=source_context,
+                attachment_context=prepared_attachments.prompt_context,
+                on_delta=on_delta,
+            )
+
+        codex_model = selected_model
 
         prior_thread_id, prior_turn_id = _thread_reference_for_current_branch(initial_lesson)
         workspace_key = _workspace_key(

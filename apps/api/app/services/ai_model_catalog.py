@@ -15,6 +15,10 @@ from app.services.codex_app_server import (
     codex_provider_status,
     list_codex_models,
 )
+from app.services.deepseek_api import (
+    DEEPSEEK_CURATED_MODELS,
+    deepseek_config,
+)
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
@@ -131,6 +135,7 @@ def _default_model_id(models: list[dict[str, Any]]) -> str:
 
 def build_model_catalog(user_id: str) -> AIModelCatalog:
     status = codex_provider_status(user_id, refresh=False)
+    shared_deepseek = deepseek_config()
     realtime_default = unavailable_realtime_selection()
     models = list(_codex_text_models(user_id))
     default_model_id = _default_model_id(models)
@@ -161,12 +166,35 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         )
         for item in models
     ]
-    default_option = next(option for option in text_options if option.default)
-    text_default = default_text_selection(
-        model=default_option.model,
-        reasoning_effort=default_option.default_reasoning_effort,
-        service_tier=default_option.default_service_tier,
+    deepseek_models = list(DEEPSEEK_CURATED_MODELS)
+    if not any(model == shared_deepseek.model for model, _label in deepseek_models):
+        deepseek_models.insert(0, (shared_deepseek.model, f"DeepSeek {shared_deepseek.model}"))
+    deepseek_is_default = shared_deepseek.configured and not status.configured
+    text_options.extend(
+        AIModelOption(
+            provider="deepseek",
+            model=model,
+            label=label,
+            capability="text",
+            enabled=shared_deepseek.configured,
+            configured=shared_deepseek.configured,
+            default=deepseek_is_default and model == shared_deepseek.model,
+        )
+        for model, label in deepseek_models
     )
+    codex_default_option = next(option for option in text_options if option.provider == "openai_codex" and option.default)
+    if deepseek_is_default:
+        codex_default_option.default = False
+        text_default = AIModelSelection(
+            provider="deepseek",
+            model=shared_deepseek.model,
+        )
+    else:
+        text_default = default_text_selection(
+            model=codex_default_option.model,
+            reasoning_effort=codex_default_option.default_reasoning_effort,
+            service_tier=codex_default_option.default_service_tier,
+        )
     return AIModelCatalog(
         text=text_options,
         realtime=[

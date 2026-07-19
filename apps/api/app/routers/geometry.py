@@ -5,8 +5,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.models import AIModelSelection, ChatAttachmentRef, SelectionRef, UserView
 from app.routers.auth import current_user
-from app.services.ai_execution_adapter import CodexAIExecutionAdapter
-from app.services.ai_model_catalog import default_text_selection
+from app.services.ai_execution_adapter import build_ai_execution_adapter
+from app.services.ai_model_catalog import build_model_catalog
 from app.services.chat_attachments import prepare_chat_attachments, verify_chat_attachments
 from app.services.codex_app_server import CodexAppServerError
 from app.services.geometry_scene import GeometryScene, generate_geometry_scene
@@ -58,9 +58,7 @@ def create_geometry_scene(
         payload.selection,
         lesson.board_document.content_text,
     )
-    selected_model = payload.text_model or default_text_selection()
-    if selected_model.provider != "openai_codex":
-        raise HTTPException(status_code=422, detail="当前图形生成只支持已连接的 Codex 文本模型")
+    selected_model = payload.text_model or build_model_catalog(user.id).defaults["text"]
     try:
         prepared_attachments = prepare_chat_attachments(
             attachments=verify_chat_attachments(
@@ -73,9 +71,9 @@ def create_geometry_scene(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         return generate_geometry_scene(
-            adapter=CodexAIExecutionAdapter(
+            adapter=build_ai_execution_adapter(
+                selected_model,
                 owner_user_id=user.id,
-                model=selected_model.model,
             ),
             source_excerpt=excerpt,
             instructions=payload.instructions,
