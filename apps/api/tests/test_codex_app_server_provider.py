@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import queue
 import threading
 import time
@@ -347,7 +349,7 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
         def _answer_server_request(self, message):
             raise AssertionError(message)
 
-    output_text, _usage, _activity = (
+    output_text, _usage, _activity, source_sha256, source_turn_count = (
         codex_app_server._run_source_file_structured_turn(
             session=_Session(),  # type: ignore[arg-type]
             source_path=source_path,
@@ -359,6 +361,8 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
     )
 
     assert output_text.startswith('{"value":"catalog"')
+    assert source_sha256 == hashlib.sha256(source_bytes).hexdigest()
+    assert source_turn_count == 1
     assert captured["staged_bytes"] == source_bytes
     assert captured["same_file"] is False
     assert captured["is_symlink"] is False
@@ -373,6 +377,178 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
     assert source_path.name not in thread_params["developerInstructions"]
     turn_payload = captured["turn_payload"]
     assert turn_payload["params"]["outputSchema"]["additionalProperties"] is False
+
+
+def test_source_catalog_artifact_is_returned_only_after_receipt_and_schema_validation(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.pdf"
+    source_path.write_bytes(b"source")
+    catalog_text = '{"value":"complete catalog"}'
+    captured: dict[str, object] = {}
+
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+            self.cwd: Path | None = None
+            self.write_count = 0
+
+        def validate_source_permission_config(self, cwd: Path) -> None:
+            self.cwd = cwd
+
+        def request(self, method, params, *, timeout_seconds):
+            assert self.cwd is not None
+            captured["thread_params"] = params
+            return _source_thread_result(self.cwd)
+
+        def _write(self, payload):
+            assert self.cwd is not None
+            self.write_count += 1
+            captured["turn_payload"] = payload
+            artifact = self.cwd / "scratch" / "catalog.json"
+            artifact.write_text(catalog_text, encoding="utf-8")
+            receipt = {
+                "artifact_path": "scratch/catalog.json",
+                "sha256": hashlib.sha256(catalog_text.encode("utf-8")).hexdigest(),
+                "byte_count": len(catalog_text.encode("utf-8")),
+            }
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": json.dumps(receipt),
+                        }
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    session = _Session()
+    output_text, _usage, _activity, source_sha256, source_turn_count = (
+        codex_app_server._run_source_file_structured_turn(
+            session=session,  # type: ignore[arg-type]
+            source_path=source_path,
+            model="gpt-5.5",
+            system_prompt="produce the catalog artifact",
+            user_prompt="inspect the source",
+            schema=_Payload,
+            output_artifact_path=codex_app_server.CODEX_SOURCE_CATALOG_ARTIFACT,
+        )
+    )
+
+    assert output_text == catalog_text
+    assert source_sha256 == hashlib.sha256(b"source").hexdigest()
+    assert source_turn_count == 1
+    assert session.write_count == 1
+    turn_schema = captured["turn_payload"]["params"]["outputSchema"]
+    assert set(turn_schema["properties"]) == {"artifact_path", "sha256", "byte_count"}
+    instructions = captured["thread_params"]["developerInstructions"]
+    assert "scratch/catalog.json" in instructions
+    assert "Artifact JSON schema" in instructions
+    turn_input = captured["turn_payload"]["params"]["input"][0]["text"]
+    assert turn_input == "inspect the source"
+
+
+def test_source_catalog_artifact_rejects_a_false_receipt(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    artifact = scratch / "catalog.json"
+    artifact.write_text('{"value":"catalog"}', encoding="utf-8")
+    staged = tmp_path / "source.pdf"
+    staged.write_bytes(b"source")
+    receipt = json.dumps(
+        {
+            "artifact_path": "scratch/catalog.json",
+            "sha256": "0" * 64,
+            "byte_count": artifact.stat().st_size,
+        }
+    )
+
+    with pytest.raises(codex_app_server.CodexAppServerError, match="wrong SHA-256"):
+        codex_app_server._read_source_catalog_artifact(
+            scratch_path=scratch,
+            staged_path=staged,
+            receipt_text=receipt,
+            schema=_Payload,
+        )
+
+
+def test_source_catalog_artifact_is_opened_nonblocking_and_without_link_following(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    artifact = scratch / "catalog.json"
+    artifact_text = '{"value":"catalog"}'
+    artifact.write_text(artifact_text, encoding="utf-8")
+    staged = tmp_path / "source.pdf"
+    staged.write_bytes(b"source")
+    receipt = json.dumps(
+        {
+            "artifact_path": "scratch/catalog.json",
+            "sha256": hashlib.sha256(artifact_text.encode("utf-8")).hexdigest(),
+            "byte_count": len(artifact_text.encode("utf-8")),
+        }
+    )
+    captured: dict[str, int] = {}
+    real_open = codex_app_server.os.open
+
+    def tracking_open(path, flags, *args, **kwargs):
+        captured["flags"] = flags
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(codex_app_server.os, "open", tracking_open)
+
+    output = codex_app_server._read_source_catalog_artifact(
+        scratch_path=scratch,
+        staged_path=staged,
+        receipt_text=receipt,
+        schema=_Payload,
+    )
+
+    assert output == artifact_text
+    assert captured["flags"] & codex_app_server.os.O_NONBLOCK
+    if hasattr(codex_app_server.os, "O_NOFOLLOW"):
+        assert captured["flags"] & codex_app_server.os.O_NOFOLLOW
+
+
+def test_source_tool_path_includes_the_bundled_python_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependencies = tmp_path / "codex-runtimes" / "runtime" / "dependencies"
+    override = dependencies / "bin" / "override"
+    python_bin = dependencies / "python" / "bin"
+    node_bin = dependencies / "node" / "bin"
+    fallback = dependencies / "bin" / "fallback"
+    poppler_bin = dependencies / "native" / "poppler" / "poppler" / "bin"
+    for directory in (override, python_bin, node_bin, fallback, poppler_bin):
+        directory.mkdir(parents=True, exist_ok=True)
+    tool = override / "pdfinfo"
+    tool.touch()
+    monkeypatch.setattr(codex_app_server.shutil, "which", lambda _tool: str(tool))
+
+    source_path = codex_app_server._source_document_tool_path().split(":")
+
+    assert str(override) in source_path
+    assert str(python_bin) in source_path
+    assert str(node_bin) in source_path
+    assert str(fallback) in source_path
+    assert str(poppler_bin) in source_path
 
 
 @pytest.mark.parametrize("tamper_target", ["staged", "original"])
@@ -472,11 +648,15 @@ def test_text_client_parse_source_file_validates_schema(monkeypatch, tmp_path: P
         "codex_provider_status",
         lambda *_args, **_kwargs: SimpleNamespace(configured=True, message=""),
     )
-    monkeypatch.setattr(codex_app_server, "_managed_session", lambda **_kwargs: _Managed())
+    def managed_session(**kwargs):
+        captured["managed_session"] = kwargs
+        return _Managed()
+
+    monkeypatch.setattr(codex_app_server, "_managed_session", managed_session)
 
     def run_source(**kwargs):
         captured.update(kwargs)
-        return '{"value":"ok"}', None, []
+        return '{"value":"ok"}', None, [], "c" * 64, 1
 
     monkeypatch.setattr(
         codex_app_server,
@@ -493,7 +673,11 @@ def test_text_client_parse_source_file_validates_schema(monkeypatch, tmp_path: P
     )
 
     assert result.output_parsed.value == "ok"
+    assert result.source_sha256 == "c" * 64
+    assert result.source_turn_count == 1
     assert captured["source_path"] == source_path
+    managed_kwargs = captured["managed_session"]
+    assert managed_kwargs["timeout_seconds"] > codex_app_server.CODEX_APP_SERVER_TIMEOUT_SECONDS
 
 
 def test_codex_home_is_isolated_per_openclass_user(monkeypatch, tmp_path) -> None:

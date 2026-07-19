@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
+from app.services.source_codex_catalog import generate_codex_direct_catalog
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
     DirectoryCandidate,
@@ -209,60 +210,110 @@ class SourceDirectoryProcessor:
                 raise SourceDirectoryProcessingError(
                     "The source file fingerprint no longer matches the uploaded source."
                 )
-            extraction = extract_directory(
-                record,
-                path,
-                progress_callback=progress_callback,
-            )
-            run = self.store.save_catalog_run(
-                run.model_copy(
-                    update={
-                        "page_count": extraction.page_count,
-                        "inspected_page_count": extraction.inspected_page_count,
-                        "ocr_page_count": extraction.ocr_page_count,
-                        "stage_history": [*run.stage_history, "normalizing_directory"],
-                        "metadata": {**run.metadata, "extraction": extraction.metadata},
-                    }
+            warnings: list[str]
+            catalog_complete: bool
+            execution_metadata: dict[str, object]
+            structure_execution_metadata: dict[str, object]
+            turn_count: int
+
+            if self.normalizer_factory is None:
+                # The production catalog path has exactly one semantic owner:
+                # Source Codex receives the isolated, read-only source file and
+                # returns the complete directory. The host only validates the
+                # returned object and materializes it for persistence.
+                _report(progress_callback, "normalizing_directory", 64)
+                direct_catalog = generate_codex_direct_catalog(
+                    record=record,
+                    source_path=path,
+                    source_content_hash=content_hash,
+                    selection=catalog_model,
                 )
-            )
-            _report(progress_callback, "normalizing_directory", 64)
-            normalizer = (
-                self.normalizer_factory(record)
-                if self.normalizer_factory is not None
-                else CodexDirectoryNormalizer(
-                    user_id=record.owner_user_id,
+                chapters = list(direct_catalog.chapters)
+                warnings = []
+                if not chapters:
+                    warnings.append("Source Codex returned an empty directory list.")
+                catalog_complete = True
+                execution_metadata = dict(direct_catalog.audit_metadata)
+                structure_execution_metadata = {
+                    key: value
+                    for key, value in execution_metadata.items()
+                    if key not in {"codex_directory_payload", "codex_raw_output"}
+                }
+                turn_count = direct_catalog.turn_count
+                run = self.store.save_catalog_run(
+                    run.model_copy(
+                        update={
+                            "stage_history": [*run.stage_history, "normalizing_directory"],
+                            "metadata": {**run.metadata, **execution_metadata},
+                        }
+                    )
+                )
+            else:
+                # Compatibility seam for legacy unit tests that explicitly
+                # inject a host normalizer. Production construction never sets
+                # this factory and therefore cannot enter this branch.
+                extraction = extract_directory(
+                    record,
+                    path,
                     progress_callback=progress_callback,
                 )
+                run = self.store.save_catalog_run(
+                    run.model_copy(
+                        update={
+                            "page_count": extraction.page_count,
+                            "inspected_page_count": extraction.inspected_page_count,
+                            "ocr_page_count": extraction.ocr_page_count,
+                            "stage_history": [*run.stage_history, "normalizing_directory"],
+                            "metadata": {**run.metadata, "extraction": extraction.metadata},
+                        }
+                    )
+                )
+                _report(progress_callback, "normalizing_directory", 64)
+                normalization = self.normalizer_factory(record).normalize(
+                    record=record,
+                    candidates=extraction.candidates,
+                    selection=catalog_model,
+                )
+                _validate_locked_navigation_invariants(
+                    extraction.candidates,
+                    normalization.candidates,
+                )
+                normalized_candidates = _reclose_normalized_ranges(
+                    normalization.candidates,
+                    extraction=extraction,
+                )
+                chapters = _materialize_chapters(
+                    record=record,
+                    candidates=normalized_candidates,
+                    content_hash=content_hash,
+                )
+                warnings = list(extraction.warnings)
+                if not chapters:
+                    warnings.append(
+                        "No citable directory node was found without extracting document body text."
+                    )
+                catalog_complete = not bool(extraction.metadata.get("navigation_truncated"))
+                execution_metadata = {
+                    "catalog_authority": "legacy_explicit_test_injection",
+                    "extraction": extraction.metadata,
+                    "normalization": normalization.metadata,
+                }
+                structure_execution_metadata = execution_metadata
+                turn_count = normalization.turn_count
+
+            validation_stage = (
+                "validating_directory"
+                if self.normalizer_factory is None
+                else "validating_directory_ranges"
             )
-            normalization = normalizer.normalize(
-                record=record,
-                candidates=extraction.candidates,
-                selection=catalog_model,
-            )
-            _validate_locked_navigation_invariants(
-                extraction.candidates,
-                normalization.candidates,
-            )
-            normalized_candidates = _reclose_normalized_ranges(
-                normalization.candidates,
-                extraction=extraction,
-            )
-            _report(progress_callback, "validating_directory_ranges", 82)
-            chapters = _materialize_chapters(
-                record=record,
-                candidates=normalized_candidates,
-                content_hash=content_hash,
-            )
+            _report(progress_callback, validation_stage, 82)
             _validate_chapters(chapters)
             verified_count = sum(chapter.mapping_status == "verified" for chapter in chapters)
             quality = _catalog_quality(
                 chapters,
-                catalog_complete=not bool(extraction.metadata.get("navigation_truncated")),
+                catalog_complete=catalog_complete,
             )
             status = "ready" if chapters else "linear_only"
-            warnings = list(extraction.warnings)
-            if not chapters:
-                warnings.append("No citable directory node was found without extracting document body text.")
             structure = SourceStructure(
                 owner_user_id=record.owner_user_id,
                 package_id=record.package_id,
@@ -285,8 +336,7 @@ class SourceDirectoryProcessor:
                     "catalog_pipeline": CATALOG_SCHEMA_VERSION,
                     "content_hash": content_hash,
                     "catalog_model_selection": catalog_model.model_dump(mode="json"),
-                    "extraction": extraction.metadata,
-                    "normalization": normalization.metadata,
+                    **structure_execution_metadata,
                     "body_text_extracted": False,
                     "source_chunks_created": False,
                     "vector_index_created": False,
@@ -298,21 +348,21 @@ class SourceDirectoryProcessor:
             succeeded_run = run.model_copy(
                 update={
                     "status": "succeeded",
-                    "turn_count": normalization.turn_count,
+                    "turn_count": turn_count,
                     "chapter_count": len(chapters),
                     "verified_chapter_count": verified_count,
                     "verification_rate": verified_count / len(chapters) if chapters else 0.0,
                     "duration_ms": duration_ms,
                     "stage_history": [
                         *run.stage_history,
-                        "validating_directory_ranges",
+                        validation_stage,
                         "publishing_catalog",
                         "succeeded",
                     ],
                     "completed_at": now_iso(),
                     "metadata": {
                         **run.metadata,
-                        "normalization": normalization.metadata,
+                        **execution_metadata,
                         "warning_count": len(structure.warnings),
                     },
                 }
@@ -845,28 +895,31 @@ def _catalog_quality(
         if verified
         else "unverified"
     )
-    diagnostics = ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
+    diagnostics = (
+        ["目录结构已识别；正文范围尚未映射。"]
+        if total and not verified
+        else ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
+    )
     if not catalog_complete:
         diagnostics.append(
             "目录超过结构节点上限，当前只发布部分导航；已验证节点仍可单独引用。"
         )
+    parent_ids = {chapter.parent_id for chapter in chapters if chapter.parent_id}
+    leaf_chapters = [chapter for chapter in chapters if chapter.id not in parent_ids]
     return SourceStructureQuality(
         evaluator_version=2,
         level=level,
         text_readiness="unknown",
-        confidence=ratio if catalog_complete else min(ratio, 0.9),
+        confidence=(1.0 if total and catalog_complete and not verified else ratio)
+        if catalog_complete
+        else min(ratio, 0.9),
         total_chapter_count=total,
         verified_chapter_count=verified,
         unverified_chapter_count=unverified,
         verified_leaf_count=sum(
-            chapter.mapping_status == "verified"
-            and not any(candidate.parent_id == chapter.id for candidate in chapters)
-            for chapter in chapters
+            chapter.mapping_status == "verified" for chapter in leaf_chapters
         ),
-        expected_leaf_count=sum(
-            not any(candidate.parent_id == chapter.id for candidate in chapters)
-            for chapter in chapters
-        ),
+        expected_leaf_count=len(leaf_chapters),
         verified_ratio=ratio,
         boundary_valid_ratio=ratio,
         body_coverage_ratio=0.0,
