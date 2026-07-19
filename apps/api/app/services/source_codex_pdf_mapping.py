@@ -85,6 +85,23 @@ class PdfPrintedPageSequenceCandidate:
     pdf_page_end: int
 
 
+@dataclass(frozen=True)
+class PdfNativeOutlineEntry:
+    level: int
+    title: str
+    pdf_page: int
+
+
+@dataclass(frozen=True)
+class PdfNativeOutlineMappingResult:
+    chapters: tuple[SourceChapter, ...]
+    status: str
+    page_count: int
+    outline_entry_count: int
+    mapped_count: int
+    audit_metadata: dict[str, object]
+
+
 def generate_pdf_page_calibration(
     *,
     record: SourceIngestionRecord,
@@ -226,6 +243,243 @@ def minimum_printed_page(chapters: Sequence[SourceChapter]) -> int | None:
         if (printed_page := printed_page_from_locator(chapter.source_locator)) is not None
     ]
     return min(printed_pages, default=None)
+
+
+def map_pdf_native_outline_ranges(
+    chapters: Sequence[SourceChapter],
+    *,
+    source_path: Path,
+) -> PdfNativeOutlineMappingResult:
+    """Map an exact Source Codex hierarchy to authoritative PDF bookmark targets."""
+
+    try:
+        page_count, entries = _read_pdf_native_outline(source_path)
+    except Exception:
+        return _native_outline_result(
+            chapters,
+            status="unavailable",
+            page_count=0,
+            outline_entry_count=0,
+        )
+    if not entries:
+        return _native_outline_result(
+            chapters,
+            status="missing",
+            page_count=page_count,
+            outline_entry_count=0,
+        )
+    if len(entries) != len(chapters):
+        return _native_outline_result(
+            chapters,
+            status="structure_mismatch",
+            page_count=page_count,
+            outline_entry_count=len(entries),
+        )
+    mismatch_index = next(
+        (
+            index
+            for index, (chapter, entry) in enumerate(zip(chapters, entries, strict=True))
+            if chapter.level != entry.level
+            or _normalized_outline_title(chapter.title) != _normalized_outline_title(entry.title)
+        ),
+        None,
+    )
+    if mismatch_index is not None:
+        return _native_outline_result(
+            chapters,
+            status="structure_mismatch",
+            page_count=page_count,
+            outline_entry_count=len(entries),
+            extra_metadata={"pdf_native_outline_first_mismatch_index": mismatch_index},
+        )
+
+    range_ends = _native_outline_range_ends(entries, page_count=page_count)
+    mapped: list[SourceChapter] = []
+    for index, (chapter, entry) in enumerate(zip(chapters, entries, strict=True)):
+        pdf_page_start = entry.pdf_page
+        pdf_page_end = range_ends[index]
+        native_locator = f"pdf:outline:{pdf_page_start}"
+        source_range = SourceRange(
+            kind="pdf_pages",
+            start=pdf_page_start,
+            end=pdf_page_end,
+            display_label=_pdf_page_label(pdf_page_start, pdf_page_end),
+            metadata={
+                "index_base": 1,
+                "physical_pages": True,
+                "calibration_method": "pdf_native_outline",
+                "native_outline_level": entry.level,
+            },
+        )
+        evidence = SourceCatalogEvidence(
+            method="pdf_native_outline",
+            source_locator=native_locator,
+            page_start=pdf_page_start,
+            page_end=pdf_page_end,
+            excerpt=chapter.title,
+            confidence=0.99,
+            metadata={
+                "outline_index": index,
+                "outline_entry_count": len(entries),
+                "alignment": "exact_title_level_preorder",
+            },
+        )
+        mapped.append(
+            chapter.model_copy(
+                update={
+                    "source_locator": native_locator,
+                    "page_start": pdf_page_start,
+                    "page_end": pdf_page_end + 1,
+                    "anchor_status": "verified",
+                    "range": source_range,
+                    "mapping_status": "verified",
+                    "catalog_evidence": [*chapter.catalog_evidence, evidence],
+                    "confidence": max(chapter.confidence, 0.99),
+                    "metadata": {
+                        **chapter.metadata,
+                        "source_range_mapped": True,
+                        "native_outline_mapped": True,
+                        "native_outline_index": index,
+                        "catalog_reported_locator": chapter.source_locator,
+                    },
+                }
+            )
+        )
+    backward_jump_count = sum(
+        current.pdf_page < previous.pdf_page
+        for previous, current in zip(entries, entries[1:])
+    )
+    return _native_outline_result(
+        mapped,
+        status="verified",
+        page_count=page_count,
+        outline_entry_count=len(entries),
+        mapped_count=len(mapped),
+        extra_metadata={
+            "pdf_native_outline_backward_jump_count": backward_jump_count,
+        },
+    )
+
+
+def _native_outline_result(
+    chapters: Sequence[SourceChapter],
+    *,
+    status: str,
+    page_count: int,
+    outline_entry_count: int,
+    mapped_count: int = 0,
+    extra_metadata: dict[str, object] | None = None,
+) -> PdfNativeOutlineMappingResult:
+    audit_metadata: dict[str, object] = {
+        "pdf_native_outline_status": status,
+        "pdf_native_outline_authority": "document_bookmarks",
+        "pdf_native_outline_alignment": "exact_title_level_preorder",
+        "pdf_native_outline_entry_count": outline_entry_count,
+        "pdf_native_outline_mapped_count": mapped_count,
+        "pdf_physical_page_count": page_count,
+        **(extra_metadata or {}),
+    }
+    return PdfNativeOutlineMappingResult(
+        chapters=tuple(chapters),
+        status=status,
+        page_count=page_count,
+        outline_entry_count=outline_entry_count,
+        mapped_count=mapped_count,
+        audit_metadata=audit_metadata,
+    )
+
+
+def _read_pdf_native_outline(path: Path) -> tuple[int, tuple[PdfNativeOutlineEntry, ...]]:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    page_count = len(reader.pages)
+    if page_count < 1:
+        return 0, ()
+    flattened: list[tuple[object, int]] = []
+
+    def visit(items: object, level: int = 1) -> None:
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, list):
+                    visit(item, level + 1)
+                else:
+                    flattened.append((item, level))
+            return
+        flattened.append((items, level))
+
+    visit(reader.outline)
+    entries: list[PdfNativeOutlineEntry] = []
+    for item, level in flattened:
+        page_index = reader.get_destination_page_number(item)
+        if not isinstance(page_index, int) or not 0 <= page_index < page_count:
+            raise ValueError("A native PDF outline entry has no valid physical destination.")
+        title = str(getattr(item, "title", "") or str(item))
+        entries.append(
+            PdfNativeOutlineEntry(
+                level=max(1, level),
+                title=title,
+                pdf_page=page_index + 1,
+            )
+        )
+    return page_count, tuple(entries)
+
+
+def _normalized_outline_title(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split())
+
+
+def _native_outline_range_end(
+    entries: Sequence[PdfNativeOutlineEntry],
+    *,
+    index: int,
+    page_count: int,
+) -> int:
+    entry = entries[index]
+    structural_boundary = len(entries)
+    for later_index in range(index + 1, len(entries)):
+        if entries[later_index].level <= entry.level:
+            structural_boundary = later_index
+            break
+
+    pdf_page_end = page_count
+    for later_entry in entries[index + 1 :]:
+        if later_entry.level <= entry.level and later_entry.pdf_page >= entry.pdf_page:
+            pdf_page_end = max(entry.pdf_page, later_entry.pdf_page - 1)
+            break
+    descendant_starts = [
+        descendant.pdf_page
+        for descendant in entries[index + 1 : structural_boundary]
+    ]
+    if descendant_starts:
+        pdf_page_end = max(pdf_page_end, max(descendant_starts))
+    return min(page_count, max(entry.pdf_page, pdf_page_end))
+
+
+def _native_outline_range_ends(
+    entries: Sequence[PdfNativeOutlineEntry],
+    *,
+    page_count: int,
+) -> tuple[int, ...]:
+    """Close each bookmark range and make every parent contain its descendants."""
+
+    range_ends = [
+        _native_outline_range_end(entries, index=index, page_count=page_count)
+        for index in range(len(entries))
+    ]
+    parent_indexes: list[int | None] = []
+    ancestor_stack: list[int] = []
+    for index, entry in enumerate(entries):
+        while ancestor_stack and entries[ancestor_stack[-1]].level >= entry.level:
+            ancestor_stack.pop()
+        parent_indexes.append(ancestor_stack[-1] if ancestor_stack else None)
+        ancestor_stack.append(index)
+
+    for index in range(len(entries) - 1, -1, -1):
+        parent_index = parent_indexes[index]
+        if parent_index is not None:
+            range_ends[parent_index] = max(range_ends[parent_index], range_ends[index])
+    return tuple(min(page_count, range_end) for range_end in range_ends)
 
 
 def map_pdf_printed_page_ranges(

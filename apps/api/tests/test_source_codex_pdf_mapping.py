@@ -16,6 +16,7 @@ from app.services.source_codex_pdf_mapping import (
     PdfPrintedPageSequenceCandidate,
     SourceCodexPdfMappingError,
     generate_pdf_page_calibration,
+    map_pdf_native_outline_ranges,
     map_pdf_printed_page_ranges,
     printed_page_from_locator,
 )
@@ -386,6 +387,150 @@ def test_printed_page_locators_are_strict_but_accept_legacy_fullwidth_digits() -
     assert printed_page_from_locator("第 398 页") == 398
     assert printed_page_from_locator("chapter 22") is None
     assert printed_page_from_locator("pp. 22-30") is None
+
+
+def test_native_pdf_outline_maps_exact_codex_hierarchy_without_a_model_turn(
+    tmp_path: Path,
+) -> None:
+    import fitz
+
+    path = tmp_path / "native-outline.pdf"
+    document = fitz.open()
+    for _ in range(6):
+        document.new_page(width=500, height=700)
+    document.set_toc(
+        [
+            [1, "Chapter 1", 1],
+            [2, "Section 1", 1],
+            [2, "Section 2", 3],
+            [1, "Chapter 2", 5],
+        ]
+    )
+    document.save(path)
+    document.close()
+    chapters = [
+        _chapter("chapter-1", title="Chapter 1", locator="", level=1, order_index=0),
+        _chapter(
+            "section-1",
+            title="Section 1",
+            locator="",
+            level=2,
+            order_index=1,
+            parent_id="chapter-1",
+        ),
+        _chapter(
+            "section-2",
+            title="Section 2",
+            locator="",
+            level=2,
+            order_index=2,
+            parent_id="chapter-1",
+        ),
+        _chapter("chapter-2", title="Chapter 2", locator="", level=1, order_index=3),
+    ]
+
+    result = map_pdf_native_outline_ranges(chapters, source_path=path)
+
+    assert result.status == "verified"
+    assert result.page_count == 6
+    assert result.outline_entry_count == 4
+    assert result.mapped_count == 4
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [
+        (1, 4),
+        (1, 2),
+        (3, 4),
+        (5, 6),
+    ]
+    assert [chapter.source_locator for chapter in result.chapters] == [
+        "pdf:outline:1",
+        "pdf:outline:1",
+        "pdf:outline:3",
+        "pdf:outline:5",
+    ]
+    assert all(chapter.mapping_status == "verified" for chapter in result.chapters)
+    assert all(
+        chapter.catalog_evidence[-1].method == "pdf_native_outline"
+        for chapter in result.chapters
+    )
+
+
+def test_native_pdf_outline_requires_exact_title_level_preorder_alignment(
+    tmp_path: Path,
+) -> None:
+    import fitz
+
+    path = tmp_path / "native-outline-mismatch.pdf"
+    document = fitz.open()
+    document.new_page(width=500, height=700)
+    document.set_toc([[1, "Authoritative title", 1]])
+    document.save(path)
+    document.close()
+    chapters = [
+        _chapter("chapter", title="Different title", locator="", level=1, order_index=0)
+    ]
+
+    result = map_pdf_native_outline_ranges(chapters, source_path=path)
+
+    assert result.status == "structure_mismatch"
+    assert result.mapped_count == 0
+    assert result.audit_metadata["pdf_native_outline_first_mismatch_index"] == 0
+    assert result.chapters[0].mapping_status == "unmapped"
+    assert result.chapters[0].range is None
+
+
+def test_native_pdf_outline_accepts_overlapping_navigation_branches(
+    tmp_path: Path,
+) -> None:
+    import fitz
+
+    path = tmp_path / "native-outline-overlap.pdf"
+    document = fitz.open()
+    for _ in range(8):
+        document.new_page(width=500, height=700)
+    document.set_toc(
+        [
+            [1, "Outline navigation", 1],
+            [2, "Nested contents", 2],
+            [3, "Late child", 5],
+            [1, "Repeated content", 3],
+            [1, "Next document", 8],
+        ]
+    )
+    document.save(path)
+    document.close()
+    chapters = [
+        _chapter("outline", title="Outline navigation", locator="", level=1, order_index=0),
+        _chapter(
+            "nested-contents",
+            title="Nested contents",
+            locator="",
+            level=2,
+            order_index=1,
+            parent_id="outline",
+        ),
+        _chapter(
+            "late-child",
+            title="Late child",
+            locator="",
+            level=3,
+            order_index=2,
+            parent_id="nested-contents",
+        ),
+        _chapter("repeated", title="Repeated content", locator="", level=1, order_index=3),
+        _chapter("next", title="Next document", locator="", level=1, order_index=4),
+    ]
+
+    result = map_pdf_native_outline_ranges(chapters, source_path=path)
+
+    assert result.status == "verified"
+    assert result.audit_metadata["pdf_native_outline_backward_jump_count"] == 1
+    assert [(chapter.range.start, chapter.range.end) for chapter in result.chapters] == [
+        (1, 7),
+        (2, 7),
+        (5, 7),
+        (3, 7),
+        (8, 8),
+    ]
 
 
 def test_mechanical_mapping_closes_ranges_by_next_same_or_shallower_node() -> None:

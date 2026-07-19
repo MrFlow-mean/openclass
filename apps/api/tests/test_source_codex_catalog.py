@@ -566,6 +566,102 @@ def test_production_pdf_processor_uses_a_second_turn_for_verified_page_ranges(
     assert "validating_directory_ranges" in runs[-1].stage_history
 
 
+def test_production_pdf_processor_uses_native_outline_without_a_second_turn(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import fitz
+
+    path = tmp_path / "native-outline.pdf"
+    document = fitz.open()
+    for _ in range(4):
+        document.new_page(width=500, height=700)
+    document.set_toc(
+        [
+            [1, "Chapter 1", 1],
+            [2, "Section 1", 1],
+            [1, "Chapter 2", 3],
+        ]
+    )
+    document.save(path)
+    document.close()
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
+    client = FakeSourceCodexClient(
+        _catalog(
+            _node(
+                "chapter-1",
+                title="Chapter 1",
+                number="1",
+                source_locator="printed-page:1",
+            ),
+            _node(
+                "section-1",
+                title="Section 1",
+                number="1.1",
+                parent_key="chapter-1",
+                level=2,
+                source_locator="printed-page:1",
+            ),
+            _node(
+                "chapter-2",
+                title="Chapter 2",
+                number="2",
+                source_locator="printed-page:3",
+            ),
+        ),
+        source_sha256=content_hash,
+    )
+    direct_result = generate_codex_direct_catalog(
+        record=record,
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        client_factory=lambda _user_id: client,
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_codex_direct_catalog",
+        lambda **_kwargs: direct_result,
+    )
+    monkeypatch.setattr(
+        directory_processor_module,
+        "generate_pdf_page_calibration",
+        lambda **_kwargs: pytest.fail("Native outline mapping must not add a model turn"),
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=record,
+        path=path,
+        catalog_model=_model(),
+    )
+    view = store.get_catalog_view(source=record)
+    runs = store.list_catalog_runs(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+
+    assert structure.has_verified_toc is True
+    assert structure.metadata["pdf_native_outline_status"] == "verified"
+    assert structure.metadata["pdf_native_outline_mapped_count"] == 3
+    assert [(chapter.range.start, chapter.range.end) for chapter in view.chapters] == [
+        (1, 2),
+        (1, 2),
+        (3, 4),
+    ]
+    assert [chapter.source_locator for chapter in view.chapters] == [
+        "pdf:outline:1",
+        "pdf:outline:1",
+        "pdf:outline:3",
+    ]
+    assert runs[-1].turn_count == 1
+    assert runs[-1].page_count == 4
+    assert "mapping_pdf_native_outline" in runs[-1].stage_history
+    assert "validating_directory_ranges" in runs[-1].stage_history
+
+
 def test_pdf_mapping_retry_reuses_failed_complete_directory_without_first_turn(
     monkeypatch,
     tmp_path: Path,

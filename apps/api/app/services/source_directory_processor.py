@@ -32,6 +32,7 @@ from app.services.source_codex_catalog import (
 )
 from app.services.source_codex_pdf_mapping import (
     generate_pdf_page_calibration,
+    map_pdf_native_outline_ranges,
     map_pdf_printed_page_ranges,
     maximum_printed_page,
     minimum_printed_page,
@@ -229,7 +230,7 @@ class SourceDirectoryProcessor:
             execution_metadata: dict[str, object]
             structure_execution_metadata: dict[str, object]
             turn_count: int
-            has_pdf_page_calibration = False
+            has_pdf_range_mapping = False
 
             if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
@@ -256,6 +257,18 @@ class SourceDirectoryProcessor:
                 stage_history = [*run.stage_history, "normalizing_directory"]
                 if reused_directory:
                     stage_history.append("reusing_directory_catalog")
+                if path.suffix.lower() == ".pdf":
+                    outline_mapping = map_pdf_native_outline_ranges(
+                        chapters,
+                        source_path=path,
+                    )
+                    chapters = list(outline_mapping.chapters)
+                    execution_metadata.update(outline_mapping.audit_metadata)
+                    if outline_mapping.page_count:
+                        run = run.model_copy(update={"page_count": outline_mapping.page_count})
+                    if outline_mapping.mapped_count:
+                        stage_history.append("mapping_pdf_native_outline")
+                        has_pdf_range_mapping = True
                 run = self.store.save_catalog_run(
                     run.model_copy(
                         update={
@@ -295,7 +308,7 @@ class SourceDirectoryProcessor:
                     execution_metadata.update(calibration.audit_metadata)
                     turn_count = direct_catalog.turn_count + calibration.turn_count
                     stage_history.append("calibrating_pdf_pages")
-                    has_pdf_page_calibration = True
+                    has_pdf_range_mapping = True
                     run = run.model_copy(
                         update={
                             "page_count": calibration.page_count,
@@ -388,7 +401,7 @@ class SourceDirectoryProcessor:
 
             validation_stage = (
                 "validating_directory_ranges"
-                if self.normalizer_factory is not None or has_pdf_page_calibration
+                if self.normalizer_factory is not None or has_pdf_range_mapping
                 else "validating_directory"
             )
             _report(progress_callback, validation_stage, 82)
