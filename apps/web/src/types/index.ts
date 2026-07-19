@@ -329,6 +329,7 @@ export interface SourceIngestionJob {
   progress: number;
   error: string;
   phase_history: string[];
+  agent_activity: AgentActivityEvent[];
   created_at: string;
   updated_at: string;
 }

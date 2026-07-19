@@ -20,6 +20,7 @@ import {
 import {
   getSourceProcessingState,
   isDirectoryCatalogSource,
+  SourceCodexActivity,
   SourceProcessingProgress,
 } from "@/components/course-studio/source-processing-progress";
 import {
@@ -173,7 +174,7 @@ export function SourceImportPanel({
     }
     const intervalId = window.setInterval(() => {
       void refreshSources();
-    }, 3000);
+    }, 1000);
     return () => window.clearInterval(intervalId);
   }, [disabled, refreshSources, sources]);
 
@@ -519,6 +520,7 @@ export function SourceImportPanel({
                   );
                 }}
                 onCatalogInvalidate={() => invalidateSource(source.id)}
+                onRefresh={refreshSources}
               />
             ))}
           </div>
@@ -564,6 +566,7 @@ function SourceRow({
   onSourceUpdate,
   onCatalogUpdate,
   onCatalogInvalidate,
+  onRefresh,
 }: {
   packageId: string;
   source: SourceIngestionRecord;
@@ -581,6 +584,7 @@ function SourceRow({
   onSourceUpdate: (source: SourceIngestionRecord) => void;
   onCatalogUpdate: (catalog: SourceCatalogView) => void;
   onCatalogInvalidate: () => void;
+  onRefresh: () => Promise<void>;
 }) {
   const [isStructureOpen, setIsStructureOpen] = useState(false);
   const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
@@ -619,6 +623,17 @@ function SourceRow({
     structureQualityLevel
   );
   const processingState = getSourceProcessingState(source);
+
+  useEffect(() => {
+    if (!isRebuildingStructure && !isRetrying) {
+      return;
+    }
+    void onRefresh();
+    const intervalId = window.setInterval(() => {
+      void onRefresh();
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [isRebuildingStructure, isRetrying, onRefresh]);
 
   function toggleStructure() {
     if (!isReady) {
@@ -920,7 +935,19 @@ function SourceRow({
           </div>
           <p className="mt-2 break-all text-xs leading-5 text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
           {processingState ? (
-            <SourceProcessingProgress className="mt-2" label={processingState.label} value={processingState.value} />
+            <SourceProcessingProgress
+              className="mt-2"
+              label={processingState.label}
+              value={processingState.value}
+              activity={processingState.activity}
+            />
+          ) : null}
+          {!processingState && source.ingestion_job?.agent_activity?.length ? (
+            <SourceCodexActivity
+              className="mt-2"
+              events={source.ingestion_job.agent_activity}
+              title="最近一次后端 Codex 输出"
+            />
           ) : null}
           {isReady ? (
             <p className="mt-2 text-xs leading-5 text-gray-500">

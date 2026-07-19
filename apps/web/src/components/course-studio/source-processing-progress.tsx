@@ -1,16 +1,19 @@
 import clsx from "clsx";
 
-import type { SourceIngestionRecord } from "@/types";
+import { publicAgentActivityLabel } from "@/lib/agent-activity";
+import type { AgentActivityEvent, SourceIngestionRecord } from "@/types";
 
 type SourceProcessingProgressProps = {
   label: string;
   value?: number;
   className?: string;
+  activity?: AgentActivityEvent[];
 };
 
 type SourceProcessingState = {
   label: string;
   value: number;
+  activity?: AgentActivityEvent[];
 };
 
 const LEGACY_SOURCE_STATUS_PROGRESS: Partial<
@@ -49,11 +52,12 @@ const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
   locating_toc_pages: "正在定位目录页",
   mapping_directory_to_pages: "正在绑定目录与文件范围",
   scanning_heading_regions: "正在检查页面标题区域",
-  normalizing_directory: "正在生成目录",
-  calibrating_pdf_pages: "正在对齐印刷页码与 PDF 页码",
-  validating_directory: "正在验证目录结构",
-  validating_directory_ranges: "正在验证目录范围",
-  publishing_catalog: "正在保存目录",
+  normalizing_directory: "Codex 任务：读取原文件并生成目录",
+  reusing_directory_catalog: "后端任务：复用已完成目录",
+  calibrating_pdf_pages: "Codex 任务：核对印刷页码与 PDF 页码",
+  validating_directory: "后端任务：验证目录结构",
+  validating_directory_ranges: "后端任务：验证目录范围",
+  publishing_catalog: "后端任务：保存目录",
   catalog_ready: "目录已经保存",
 };
 
@@ -65,7 +69,70 @@ export function isDirectoryCatalogSource(source: SourceIngestionRecord) {
   );
 }
 
-export function SourceProcessingProgress({ label, value, className }: SourceProcessingProgressProps) {
+function activityDetail(event: AgentActivityEvent): string {
+  for (const key of ["detail", "command", "query"] as const) {
+    const value = event.metadata[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  const result = event.metadata.result;
+  if (result !== undefined && result !== null) {
+    return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  }
+  return "";
+}
+
+export function SourceCodexActivity({
+  events,
+  className,
+  title = "后端 Codex 实时输出",
+}: {
+  events: AgentActivityEvent[];
+  className?: string;
+  title?: string;
+}) {
+  if (!events.length) {
+    return null;
+  }
+  const visibleEvents = events.slice(-4);
+  return (
+    <div
+      className={clsx("mt-2 rounded-md border border-gray-200 bg-gray-50/80 px-2.5 py-2", className)}
+      aria-live="polite"
+    >
+      <p className="text-[10px] font-semibold tracking-wide text-gray-500">{title}</p>
+      <div className="mt-1.5 space-y-1.5">
+        {visibleEvents.map((event) => {
+          const detail = activityDetail(event);
+          const isActive = event.status === "pending" || event.status === "running";
+          return (
+            <div key={event.id} className="min-w-0 text-[11px] leading-4 text-gray-600">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={clsx(
+                    "h-1.5 w-1.5 shrink-0 rounded-full",
+                    isActive ? "animate-pulse bg-emerald-500" : "bg-gray-300"
+                  )}
+                />
+                <span className="truncate font-medium text-gray-700">
+                  {publicAgentActivityLabel(event.label)}
+                </span>
+              </div>
+              {detail ? (
+                <pre className="custom-scrollbar mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded bg-white px-2 py-1.5 font-sans text-[10px] leading-4 text-gray-600">
+                  {detail}
+                </pre>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function SourceProcessingProgress({ label, value, className, activity = [] }: SourceProcessingProgressProps) {
   const isDeterminate = typeof value === "number";
   const normalizedValue = isDeterminate ? Math.max(0, Math.min(100, Math.round(value))) : undefined;
 
@@ -92,6 +159,7 @@ export function SourceProcessingProgress({ label, value, className }: SourceProc
           style={isDeterminate ? { width: `${normalizedValue}%` } : undefined}
         />
       </div>
+      <SourceCodexActivity events={activity} />
     </div>
   );
 }
@@ -113,11 +181,12 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
         statusProgress[job.status]?.label ??
         (isDirectoryCatalog ? "正在建立目录" : "正在处理资料"),
       value: job.progress,
+      activity: job.agent_activity ?? [],
     };
   }
   const ingestionState = statusProgress[source.status];
   if (ingestionState) {
-    return ingestionState;
+    return { ...ingestionState, activity: [] };
   }
   if (source.status !== "ready") {
     return null;
@@ -126,12 +195,14 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
     return {
       label: isDirectoryCatalog ? "正在准备建立目录" : "正在准备结构索引",
       value: 88,
+      activity: [],
     };
   }
   if (source.structure_status === "building") {
     return {
       label: isDirectoryCatalog ? "正在验证目录范围" : "正在绑定目录与正文",
       value: 94,
+      activity: [],
     };
   }
   return null;
