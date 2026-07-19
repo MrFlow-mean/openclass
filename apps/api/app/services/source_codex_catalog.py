@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import AIModelSelection, SourceChapter, SourceIngestionRecord
+from app.models import AgentActivityEvent, AIModelSelection, SourceChapter, SourceIngestionRecord
 from app.services.codex_app_server import (
     CODEX_SOURCE_CATALOG_ARTIFACT,
     CodexAppServerTextClient,
@@ -81,6 +81,7 @@ def generate_codex_direct_catalog(
     source_path: Path,
     source_content_hash: str,
     selection: AIModelSelection,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
     client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
 ) -> SourceCodexCatalogResult:
     if selection.provider != "openai_codex" or not selection.model.strip():
@@ -103,6 +104,7 @@ def generate_codex_direct_catalog(
         system_prompt=_catalog_system_prompt(),
         user_prompt=_catalog_user_prompt(suffix=suffix, mime_type=record.mime_type),
         schema=CodexDirectCatalog,
+        on_activity=on_activity,
         reasoning_effort=selection.reasoning_effort,
         service_tier=selection.service_tier,
         service_tier_is_set="service_tier" in selection.model_fields_set,

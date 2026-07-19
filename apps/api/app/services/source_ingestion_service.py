@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlparse
 
-from app.models import AIModelSelection, CoursePackage, SourceIngestionJob, SourceIngestionRecord
+from app.models import (
+    AgentActivityEvent,
+    AIModelSelection,
+    CoursePackage,
+    SourceIngestionJob,
+    SourceIngestionRecord,
+)
 from app.services.ai_model_catalog import default_text_selection
 from app.services.open_notebook_adapter import (
     OpenNotebookAdapter,
@@ -1078,6 +1084,7 @@ class SourceIngestionService:
         progress: int,
         phase: str,
         error: str = "",
+        agent_activity: list[AgentActivityEvent] | None = None,
     ) -> SourceIngestionJob:
         phases = job.phase_history
         if not phases or phases[-1] != phase:
@@ -1089,6 +1096,9 @@ class SourceIngestionService:
                     "progress": max(job.progress, min(100, progress)),
                     "error": error,
                     "phase_history": phases,
+                    "agent_activity": (
+                        job.agent_activity if agent_activity is None else agent_activity
+                    ),
                 }
             ),
             owner_user_id=record.owner_user_id,
@@ -1185,6 +1195,8 @@ class SourceIngestionService:
             progress=25,
             phase="parsing",
         )
+        activity_by_id: dict[str, AgentActivityEvent] = {}
+        activity_order: list[str] = []
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -1197,6 +1209,22 @@ class SourceIngestionService:
                 status=next_status,
                 progress=progress,
                 phase=phase,
+            )
+
+        def report_codex_activity(event: AgentActivityEvent) -> None:
+            nonlocal indexing_job
+            if event.id not in activity_by_id:
+                activity_order.append(event.id)
+            activity_by_id[event.id] = event
+            current_activity = [activity_by_id[event_id] for event_id in activity_order]
+            current_phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
+            indexing_job = self._update_job(
+                indexing_job,
+                record=saved,
+                status=indexing_job.status,
+                progress=indexing_job.progress,
+                phase=current_phase,
+                agent_activity=current_activity,
             )
 
         use_directory_catalog = (
@@ -1227,6 +1255,7 @@ class SourceIngestionService:
                     path=local_path,
                     catalog_model=catalog_model,
                     progress_callback=report_progress,
+                    activity_callback=report_codex_activity,
                 )
             else:
                 structure = (

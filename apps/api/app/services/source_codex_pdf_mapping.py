@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import (
+    AgentActivityEvent,
     AIModelSelection,
     SourceCatalogEvidence,
     SourceChapter,
@@ -84,6 +85,7 @@ def generate_pdf_page_calibration(
     required_printed_page_min: int,
     required_printed_page_max: int,
     selection: AIModelSelection,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
     client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
 ) -> PdfPageCalibrationResult:
     if source_path.suffix.lower() != ".pdf" or Path(record.file_name).suffix.lower() != ".pdf":
@@ -112,6 +114,7 @@ def generate_pdf_page_calibration(
             candidates=candidates,
         ),
         schema=CodexPdfPageCalibration,
+        on_activity=on_activity,
         reasoning_effort=selection.reasoning_effort,
         service_tier=selection.service_tier,
         service_tier_is_set="service_tier" in selection.model_fields_set,

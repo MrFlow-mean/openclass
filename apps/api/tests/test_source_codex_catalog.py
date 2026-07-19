@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import (
+    AgentActivityEvent,
     AIModelSelection,
     SourceCatalogRun,
     SourceChapter,
@@ -174,6 +175,29 @@ def test_source_codex_runs_once_and_materializes_unmapped_hierarchy(tmp_path: Pa
         "mechanical_materialization_only"
     )
     assert result.audit_metadata["body_text_extracted_by_host"] is False
+
+
+def test_source_codex_forwards_live_activity_callback(tmp_path: Path) -> None:
+    path = tmp_path / "source.pdf"
+    path.write_bytes(b"source bytes")
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    client = FakeSourceCodexClient(
+        _catalog(_node("chapter-1")),
+        source_sha256=content_hash,
+    )
+    events: list[AgentActivityEvent] = []
+
+    generate_codex_direct_catalog(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=_model(),
+        on_activity=events.append,
+        client_factory=lambda _user_id: client,
+    )
+
+    callback = client.calls[0]["on_activity"]
+    assert callable(callback)
 
 
 @pytest.mark.parametrize(

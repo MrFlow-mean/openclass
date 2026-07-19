@@ -3,7 +3,13 @@ from __future__ import annotations
 import sqlite3
 import threading
 
-from app.models import CoursePackage, SourceIngestionRecord, SourceStructure
+from app.models import (
+    AgentActivityEvent,
+    CoursePackage,
+    SourceIngestionJob,
+    SourceIngestionRecord,
+    SourceStructure,
+)
 from app.services.open_notebook_adapter import OpenNotebookSourceResult
 from app.services import workspace_state
 from app.services.source_evidence_store import SourceEvidenceStore
@@ -24,6 +30,41 @@ def test_source_ingestion_defaults_to_native_backend(tmp_path, monkeypatch) -> N
     )
 
     assert service.source_backend == "native"
+
+
+def test_source_ingestion_job_persists_live_codex_activity(tmp_path) -> None:
+    store = SourceIngestionJobStore(tmp_path / "openclass.sqlite3")
+    event = AgentActivityEvent(
+        id="activity_1",
+        turn_id="turn_1",
+        stage="execute_role",
+        label="OpenClass 工作进展",
+        status="running",
+        role="OpenClass",
+        metadata={"detail": "正在读取原文件并提取目录层级"},
+    )
+    saved = store.save(
+        SourceIngestionJob(
+            resource_id="source_1",
+            adapter="codex_directory_v1",
+            status="parsing",
+            progress=64,
+            phase_history=["normalizing_directory"],
+            agent_activity=[event],
+        ),
+        owner_user_id="user_1",
+        package_id="course_1",
+    )
+
+    restored = store.latest_for_source(
+        owner_user_id="user_1",
+        package_id="course_1",
+        source_id="source_1",
+    )
+
+    assert restored is not None
+    assert restored.id == saved.id
+    assert restored.agent_activity == [event]
 
 
 def test_native_retry_detaches_failed_open_notebook_source(tmp_path, monkeypatch) -> None:

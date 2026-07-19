@@ -12,6 +12,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from app.models import (
+    AgentActivityEvent,
     AIModelSelection,
     SourceCatalogRun,
     SourceChapter,
@@ -194,6 +195,7 @@ class SourceDirectoryProcessor:
         path: Path,
         catalog_model: AIModelSelection,
         progress_callback: CatalogProgressCallback | None = None,
+        activity_callback: Callable[[AgentActivityEvent], None] | None = None,
     ) -> SourceStructure:
         started = time.perf_counter()
         metadata_hash = str(record.metadata.get("content_hash") or "").strip()
@@ -247,6 +249,7 @@ class SourceDirectoryProcessor:
                         source_path=path,
                         source_content_hash=content_hash,
                         selection=catalog_model,
+                        on_activity=activity_callback,
                     )
                 chapters = list(direct_catalog.chapters)
                 execution_metadata = dict(direct_catalog.audit_metadata)
@@ -283,6 +286,7 @@ class SourceDirectoryProcessor:
                         required_printed_page_min=required_printed_page_min,
                         required_printed_page_max=required_printed_page_max,
                         selection=catalog_model,
+                        on_activity=activity_callback,
                     )
                     chapters = map_pdf_printed_page_ranges(
                         chapters,

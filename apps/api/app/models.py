@@ -727,6 +727,7 @@ class SourceIngestionJob(BaseModel):
     progress: int = Field(default=0, ge=0, le=100)
     error: str = ""
     phase_history: list[str] = Field(default_factory=list)
+    agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
