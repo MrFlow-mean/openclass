@@ -44,8 +44,8 @@ export function SourceBatchControls({
         aria-label="资料排序"
         className="h-7 max-w-32 appearance-none rounded-md border border-gray-200 bg-white py-0 pl-7 pr-2 text-[11px] font-medium text-gray-600 outline-none transition hover:border-gray-300 hover:text-black focus:border-gray-400 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        <option value="uploaded_desc">上传时间：最新</option>
-        <option value="uploaded_asc">上传时间：最早</option>
+        <option value="uploaded_desc">上传：最新</option>
+        <option value="uploaded_asc">上传：最早</option>
         <option value="name_asc">名称：A–Z</option>
         <option value="name_desc">名称：Z–A</option>
       </select>
