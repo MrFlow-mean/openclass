@@ -54,6 +54,8 @@ const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
   mapping_directory_to_pages: "正在绑定目录与文件范围",
   scanning_heading_regions: "正在检查页面标题区域",
   normalizing_directory: "Codex 任务：读取原文件并生成目录",
+  source_codex_investigation: "Codex 任务：调查目录与正文范围",
+  source_codex_ranges_authored: "Codex 已提交目录与正文范围",
   reusing_directory_catalog: "后端任务：复用已完成目录",
   calibrating_pdf_pages: "Codex 任务：核对印刷页码与 PDF 页码",
   validating_directory: "后端任务：验证目录结构",
