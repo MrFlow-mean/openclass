@@ -947,6 +947,7 @@ function SourceRow({
               className="mt-2"
               events={source.ingestion_job.agent_activity}
               title="最近一次后端 Codex 输出"
+              expandedByDefault={false}
             />
           ) : null}
           {isReady ? (

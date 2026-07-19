@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { ChevronRight } from "lucide-react";
 
 import { publicAgentActivityLabel } from "@/lib/agent-activity";
 import type { AgentActivityEvent, SourceIngestionRecord } from "@/types";
@@ -87,21 +88,33 @@ export function SourceCodexActivity({
   events,
   className,
   title = "后端 Codex 实时输出",
+  expandedByDefault = true,
 }: {
   events: AgentActivityEvent[];
   className?: string;
   title?: string;
+  expandedByDefault?: boolean;
 }) {
   if (!events.length) {
     return null;
   }
   const visibleEvents = events.slice(-4);
+  const latestEvent = visibleEvents.at(-1);
   return (
-    <div
-      className={clsx("mt-2 rounded-md border border-gray-200 bg-gray-50/80 px-2.5 py-2", className)}
+    <details
+      open={expandedByDefault || undefined}
+      className={clsx("group mt-2 rounded-md border border-gray-200 bg-gray-50/80 px-2.5 py-2", className)}
       aria-live="polite"
     >
-      <p className="text-[10px] font-semibold tracking-wide text-gray-500">{title}</p>
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-gray-500 marker:content-none [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" aria-hidden="true" />
+        <span className="shrink-0 font-semibold tracking-wide">{title}</span>
+        {latestEvent ? (
+          <span className="truncate text-gray-400">
+            · {publicAgentActivityLabel(latestEvent.label)}
+          </span>
+        ) : null}
+      </summary>
       <div className="mt-1.5 space-y-1.5">
         {visibleEvents.map((event) => {
           const detail = activityDetail(event);
@@ -128,7 +141,7 @@ export function SourceCodexActivity({
           );
         })}
       </div>
-    </div>
+    </details>
   );
 }
 
