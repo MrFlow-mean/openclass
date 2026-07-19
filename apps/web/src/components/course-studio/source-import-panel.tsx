@@ -4,7 +4,10 @@ import clsx from "clsx";
 import { BookOpen, Check, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
-import { SourceBatchControls } from "@/components/course-studio/source-batch-controls";
+import {
+  SourceBatchControls,
+  type SourceSortOption,
+} from "@/components/course-studio/source-batch-controls";
 import { SourceCatalogModelPicker } from "@/components/course-studio/source-catalog-model-picker";
 import { SourceChapterTree } from "@/components/course-studio/source-chapter-tree";
 import {
@@ -86,6 +89,7 @@ export function SourceImportPanel({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [removingSourceId, setRemovingSourceId] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [sortOption, setSortOption] = useState<SourceSortOption>("uploaded_desc");
   const [catalogModel, setCatalogModel] = useState<AIModelSelection>(defaultCatalogModel);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
@@ -112,6 +116,7 @@ export function SourceImportPanel({
   const activeCatalogModel = selectedCatalogModelOption?.enabled
     ? selectionForModelOption(selectedCatalogModelOption, catalogModel)
     : null;
+  const sortedSources = sortSources(sources, sortOption);
 
   useEffect(() => {
     if (
@@ -481,13 +486,15 @@ export function SourceImportPanel({
               isActive={batchManagement.isActive}
               isRemoving={batchManagement.isRemoving}
               disabled={disabled || isImporting || Boolean(removingSourceId)}
+              sortOption={sortOption}
+              onSortChange={setSortOption}
               onStart={batchManagement.start}
               onCancel={batchManagement.cancel}
               onToggleAll={batchManagement.toggleAll}
               onClear={batchManagement.clear}
               onRemove={() => void batchManagement.removeSelected()}
             />
-            {sources.map((source) => (
+            {sortedSources.map((source) => (
               <SourceRow
                 key={source.id}
                 packageId={packageId}
@@ -547,6 +554,36 @@ export function SourceImportPanel({
       </div>
     </div>
   );
+}
+
+const SOURCE_TITLE_COLLATOR = new Intl.Collator("zh-CN", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function sortSources(sources: SourceIngestionRecord[], sortOption: SourceSortOption) {
+  return sources
+    .map((source, index) => ({ source, index }))
+    .sort((left, right) => {
+      if (sortOption === "name_asc" || sortOption === "name_desc") {
+        const titleOrder = SOURCE_TITLE_COLLATOR.compare(
+          left.source.title || left.source.file_name,
+          right.source.title || right.source.file_name
+        );
+        if (titleOrder !== 0) {
+          return sortOption === "name_asc" ? titleOrder : -titleOrder;
+        }
+      } else {
+        const leftCreatedAt = Date.parse(left.source.created_at) || 0;
+        const rightCreatedAt = Date.parse(right.source.created_at) || 0;
+        const createdAtOrder = leftCreatedAt - rightCreatedAt;
+        if (createdAtOrder !== 0) {
+          return sortOption === "uploaded_asc" ? createdAtOrder : -createdAtOrder;
+        }
+      }
+      return left.index - right.index;
+    })
+    .map(({ source }) => source);
 }
 
 function SourceRow({

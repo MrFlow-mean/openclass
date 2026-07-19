@@ -124,7 +124,7 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
       title: `批量资料 B ${unique}`,
       file_name: `batch-b-${unique}.pdf`,
     },
-  ].map((source) => ({
+  ].map((source, index) => ({
     ...source,
     owner_user_id: "guest-test",
     package_id: "package-test",
@@ -143,7 +143,7 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
     structure_error: "",
     structure_updated_at: new Date().toISOString(),
     ingestion_job: null,
-    created_at: new Date().toISOString(),
+    created_at: new Date(Date.UTC(2026, index, 1)).toISOString(),
     updated_at: new Date().toISOString(),
     metadata: {},
   }));
@@ -254,6 +254,20 @@ test("batch selects and deletes uploaded sources", async ({ page }) => {
   await page.getByRole("button", { name: "Sources" }).click();
 
   await expect(page.getByText("已上传 2 份资料")).toBeVisible();
+  await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
+    "aria-label",
+    `重命名资料 批量资料 B ${unique}`
+  );
+  await page.getByLabel("资料排序").selectOption("name_asc");
+  await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
+    "aria-label",
+    `重命名资料 批量资料 A ${unique}`
+  );
+  await page.getByLabel("资料排序").selectOption("uploaded_asc");
+  await expect(page.locator('[aria-label^="重命名资料 "]').first()).toHaveAttribute(
+    "aria-label",
+    `重命名资料 批量资料 A ${unique}`
+  );
   await page.getByLabel(`查看资料目录状态 批量资料 A ${unique}`).click();
   await page.getByLabel(`重新建立资料目录 批量资料 A ${unique}`).click();
   await expect.poll(() => legacyStructureRebuildRequests).toBe(1);
