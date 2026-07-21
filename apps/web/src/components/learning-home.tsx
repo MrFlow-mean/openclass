@@ -213,6 +213,7 @@ export function LearningHome() {
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
   const [isCreatingPackageInline, setIsCreatingPackageInline] = useState(false);
+  const [standaloneCreateMenuOpen, setStandaloneCreateMenuOpen] = useState(false);
   const ridocFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -286,6 +287,9 @@ export function LearningHome() {
       if (!(target instanceof HTMLElement)) {
         return;
       }
+      if (!target.closest("[data-standalone-create-menu-root]")) {
+        setStandaloneCreateMenuOpen(false);
+      }
       if (target.closest("[data-lesson-menu-root]")) {
         return;
       }
@@ -307,6 +311,7 @@ export function LearningHome() {
       setLessonMenuState(null);
       setLessonMoveMenuState(null);
       setIsCreatingPackageInline(false);
+      setStandaloneCreateMenuOpen(false);
       setSelectedPackageId(null);
       setSelectedLessonId(null);
       setPackageLessonsExpanded(false);
@@ -423,6 +428,7 @@ export function LearningHome() {
   }
 
   async function handleOpenStandaloneWorkspace() {
+    setStandaloneCreateMenuOpen(false);
     if (!standalonePackage) {
       router.push("/studio");
       return;
@@ -501,6 +507,7 @@ export function LearningHome() {
 
   async function handleLoadLessonPackage(file: File) {
     setBusyKey("ridoc:import");
+    setStandaloneCreateMenuOpen(false);
     setLessonMenuState(null);
     setLessonMoveMenuState(null);
     try {
@@ -886,19 +893,59 @@ export function LearningHome() {
                     }}
                     onCancel={lessonBatch.cancel}
                   />
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenStandaloneWorkspace()}
-                    disabled={standalonePackage ? busyKey === `package:${standalonePackage.id}` : false}
-                    className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
-                    aria-label={h.standaloneWorkspaceAria}
-                  >
-                    {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Plus className="h-4 w-4" />
-                    )}
-                  </button>
+                  <div className="relative" data-standalone-create-menu-root>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLessonMenuState(null);
+                        setLessonMoveMenuState(null);
+                        setStandaloneCreateMenuOpen((current) => !current);
+                      }}
+                      disabled={busyKey !== null}
+                      className={clsx(
+                        "rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950",
+                        standaloneCreateMenuOpen && "bg-stone-200/60 text-stone-950"
+                      )}
+                      aria-label={h.standaloneCreateMenuAria}
+                      aria-haspopup="menu"
+                      aria-expanded={standaloneCreateMenuOpen}
+                    >
+                      {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Plus className="h-4 w-4" />
+                      )}
+                    </button>
+
+                    {standaloneCreateMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute right-0 top-full z-[130] mt-2 w-44 rounded-[18px] border border-stone-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setStandaloneCreateMenuOpen(false);
+                            ridocFileInputRef.current?.click();
+                          }}
+                          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50"
+                        >
+                          <Upload className="h-4 w-4" />
+                          {h.importCourseFile}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => void handleOpenStandaloneWorkspace()}
+                          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50"
+                        >
+                          <Plus className="h-4 w-4" />
+                          {h.createCourse}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
