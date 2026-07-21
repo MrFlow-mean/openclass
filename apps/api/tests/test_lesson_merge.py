@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from app.models import LessonMergeConflictResolution
+from app.models import AIModelSelection, LessonMergeConflictResolution
+from app.services.ai_execution_adapter import StructuredExecutionResult
 from app.services.history import commit_operations, create_branch, current_head_commit, switch_branch
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.lesson_merge import (
@@ -10,6 +11,7 @@ from app.services.lesson_merge import (
     submit_merge_session,
     update_merge_session,
 )
+from app.services.lesson_merge_ai import propose_ai_merge
 from app.services.rich_document import build_document
 
 
@@ -185,3 +187,49 @@ def test_runtime_fields_form_conflicts_and_can_choose_source() -> None:
     assert commit.runtime_snapshot is not None
     assert commit.runtime_snapshot.learning_requirements is not None
     assert commit.runtime_snapshot.learning_requirements.current_level == "source level"
+
+
+def test_ai_merge_resolves_only_explicit_conflicts_and_records_model() -> None:
+    lesson, _, _, _ = _divergent_lesson(
+        target_text="# Topic\n\nAlpha target\n\nBeta",
+        source_text="# Topic\n\nAlpha source\n\nBeta",
+    )
+    session = create_merge_session(
+        lesson,
+        owner_user_id="user_1",
+        source_branch_name="source",
+        mode="ai",
+        ai_model=AIModelSelection(
+            provider="openai_codex",
+            model="gpt-test",
+            reasoning_effort="high",
+        ),
+    )
+    conflict_id = session.conflicts[0].id
+
+    class FakeAdapter:
+        def parse_structured(self, **kwargs):
+            return StructuredExecutionResult(
+                output_parsed=kwargs["schema"].model_validate(
+                    {
+                        "decisions": [
+                            {
+                                "conflict_id": conflict_id,
+                                "resolution": "source",
+                                "explanation": "Source keeps the intended revision.",
+                            }
+                        ]
+                    }
+                )
+            )
+
+    propose_ai_merge(
+        session,
+        expected_version=session.version,
+        adapter=FakeAdapter(),  # type: ignore[arg-type]
+    )
+
+    assert session.status == "ready"
+    assert "Alpha source" in session.draft_document.content_text
+    assert session.audit["ai_proposal"]["model"] == "gpt-test"
+    assert session.audit["ai_proposal"]["reasoning_effort"] == "high"

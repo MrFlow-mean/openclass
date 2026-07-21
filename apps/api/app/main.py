@@ -7,7 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import AIModelCatalog, UserView
 from app.routers.auth import current_user
-from app.routers import auth, chat, codex_provider, documents, geometry, realtime, sources, speech, workspace
+from app.routers import (
+    auth,
+    chat,
+    codex_provider,
+    documents,
+    geometry,
+    lesson_merges,
+    realtime,
+    sources,
+    speech,
+    workspace,
+)
 from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.deepseek_api import deepseek_provider_configured
@@ -33,6 +44,7 @@ app.add_middleware(
 app.include_router(workspace.router)
 app.include_router(auth.router)
 app.include_router(documents.router)
+app.include_router(lesson_merges.router)
 app.include_router(chat.router)
 app.include_router(codex_provider.router)
 app.include_router(sources.router)

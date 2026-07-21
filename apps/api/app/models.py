@@ -680,7 +680,12 @@ class SubmitLessonMergeSessionRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class AIProposalLessonMergeSessionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
 class RecomputeLessonMergeSessionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
     mode: LessonMergeMode | None = None
     text_model: AIModelSelection | None = None
 

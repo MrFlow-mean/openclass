@@ -182,6 +182,9 @@ def submit_merge_session(
     if unresolved:
         raise LessonMergeConflictError("仍有未解决的合并冲突。")
     if lesson.history_graph.current_branch != session.target_branch_name:
+        session.status = "stale"
+        session.version += 1
+        session.updated_at = now_iso()
         raise LessonMergeStaleError("当前分支已改变，请切回目标分支后重试。")
     target_branch = lesson.history_graph.branches.get(session.target_branch_name)
     source_branch = lesson.history_graph.branches.get(session.source_branch_name)
@@ -192,6 +195,7 @@ def submit_merge_session(
         or source_branch.head_commit_id != session.source_head_commit_id
     ):
         session.status = "stale"
+        session.version += 1
         session.updated_at = now_iso()
         raise LessonMergeStaleError("合并期间分支已产生新内容，需要基于最新节点重新计算。")
 

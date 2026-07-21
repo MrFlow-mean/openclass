@@ -109,11 +109,15 @@ class CodexAIExecutionAdapter:
         *,
         owner_user_id: str,
         model: str,
+        reasoning_effort: str | None = None,
+        service_tier: str | None = None,
         board_runner: BoardRunner | None = None,
         image_analysis_runner: ImageAnalysisRunner | None = None,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
         self._board_runner = board_runner
         self._image_analysis_runner = image_analysis_runner
 
@@ -135,6 +139,9 @@ class CodexAIExecutionAdapter:
             image_inputs=image_inputs,
             allow_live_web_search=allow_live_web_search,
             on_activity=on_activity,
+            reasoning_effort=self.reasoning_effort,
+            service_tier=self.service_tier,
+            service_tier_is_set=self.service_tier is not None,
         )
         return StructuredExecutionResult(
             output_parsed=response.output_parsed,
@@ -327,6 +334,8 @@ def build_ai_execution_adapter(
         return CodexAIExecutionAdapter(
             owner_user_id=owner_user_id,
             model=selection.model,
+            reasoning_effort=selection.reasoning_effort,
+            service_tier=selection.service_tier,
             board_runner=board_runner,
             image_analysis_runner=image_analysis_runner,
         )

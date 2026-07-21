@@ -14,7 +14,6 @@ from app.models import (
     new_id,
     now_iso,
 )
-from app.services.rich_document import rebuild_document_from_content_json
 
 _CHAT_HISTORY_KINDS = {
     "basic_chat",
@@ -132,7 +131,7 @@ def ensure_document_block_ids(document: BoardDocument) -> BoardDocument:
             changed = True
     if not changed:
         return document
-    return rebuild_document_from_content_json(document, content_json)
+    return document.model_copy(update={"content_json": content_json})
 
 
 def _with_history_node_metadata(
@@ -291,7 +290,5 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
             "kind": "restore_snapshot",
             "restored_commit_id": commit.id,
             "restored_commit_label": commit.label,
-            "active_requirement_sheet_after": None,
-            "active_board_task_sheet_after": None,
         },
     )

@@ -225,6 +225,34 @@ class SqliteCourseStore:
                         raise ValueError("Merge session lesson is not owned by the current user.")
                     _upsert_merge_session(conn, session)
 
+    def save_merge_session_for_user_if_version(
+        self,
+        session: LessonMergeSession,
+        *,
+        expected_version: int,
+    ) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    stored = conn.execute(
+                        """
+                        SELECT version
+                        FROM lesson_merge_sessions
+                        WHERE id = ? AND owner_user_id = ?
+                        """,
+                        (session.id, session.owner_user_id),
+                    ).fetchone()
+                    if stored is None or int(stored["version"]) != expected_version:
+                        conn.rollback()
+                        return False
+                    _upsert_merge_session(conn, session)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
     def save_workspace_and_merge_session_for_user_if_revision(
         self,
         owner_user_id: str,
