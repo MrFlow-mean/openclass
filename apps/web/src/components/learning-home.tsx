@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ChevronRight,
   Code2,
+  Download,
   Eye,
   Flame,
   FolderClosed,
@@ -31,6 +32,7 @@ import {
   Share2,
   Star,
   Trash2,
+  Upload,
 } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
@@ -45,6 +47,7 @@ import { RecentFeedCard } from "@/components/recent-feed-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import { homeRelativeFormat } from "@/lib/i18n/product-ui";
+import { downloadRidoc, RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
 import { useHomeLessonBatch } from "@/hooks/use-home-lesson-batch";
 import {
   PROFILE_SETTINGS_CHANGED_EVENT,
@@ -210,6 +213,7 @@ export function LearningHome() {
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
   const [isCreatingPackageInline, setIsCreatingPackageInline] = useState(false);
+  const ridocFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let isDisposed = false;
@@ -475,6 +479,47 @@ export function LearningHome() {
       setError(null);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : errMsgs.current.deleteLessonFail);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleExportLessonPackage(lesson: Lesson) {
+    setBusyKey(`ridoc:export:${lesson.id}`);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+    try {
+      const blob = await api.exportRidoc(lesson.id);
+      downloadRidoc(blob, lesson);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.exportLessonPackageFail);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleLoadLessonPackage(file: File) {
+    setBusyKey("ridoc:import");
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+    try {
+      const importedPackage = await api.importRidoc(file);
+      const payload = await api.getWorkspace();
+      const importedWorkspacePackage = payload.packages.find((item) => item.id === importedPackage.id) ?? null;
+      setWorkspaceState(payload);
+      setSelectedLessonId(null);
+      if (importedWorkspacePackage?.is_standalone) {
+        setSelectedPackageId(null);
+        setStandaloneLessonsCollapsed(false);
+      } else {
+        setSelectedPackageId(importedPackage.id);
+        setCoursePackagesCollapsed(false);
+        setPackageLessonsExpanded(true);
+      }
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.loadLessonPackageFail);
     } finally {
       setBusyKey(null);
     }
@@ -1163,6 +1208,36 @@ export function LearningHome() {
 
             <button
               type="button"
+              onClick={() => void handleExportLessonPackage(lessonMenuLesson)}
+              disabled={busyKey !== null}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busyKey === `ridoc:export:${lessonMenuLesson.id}` ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {h.exportLessonPackage}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setLessonMenuState(null);
+                setLessonMoveMenuState(null);
+                ridocFileInputRef.current?.click();
+              }}
+              disabled={busyKey !== null}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Upload className="h-4 w-4" />
+              {h.loadExportedLessonPackage}
+            </button>
+
+            <div className="my-1 h-px bg-stone-100" />
+
+            <button
+              type="button"
               onClick={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect();
                 setLessonMoveMenuState((current) =>
@@ -1201,6 +1276,20 @@ export function LearningHome() {
           </div>
         </div>
       ) : null}
+
+      <input
+        ref={ridocFileInputRef}
+        type="file"
+        accept={RIDOC_FILE_ACCEPT}
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) {
+            void handleLoadLessonPackage(file);
+          }
+        }}
+      />
 
       {lessonMoveMenuState && lessonMenuLesson ? (
         <div

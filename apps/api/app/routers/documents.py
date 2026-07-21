@@ -28,6 +28,8 @@ from app.services.chat_service import document_ai_edit_request
 from app.services.board_asset_store import get_board_asset_store
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
 from app.services.html_document_export import HtmlExportBudgetError, export_html
+from app.services.lesson_package_format import RIDOC_MEDIA_TYPE, RidocFormatError
+from app.services.lesson_package_export import export_lesson_ridoc
 from app.services.rich_document import (
     document_changed,
     export_docx,
@@ -154,6 +156,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
     ):
         previous_updated_at = lesson.updated_at
         lesson.board_document = request.document
+        _clear_transient_ai_state(lesson)
         commit_metadata: dict[str, object] = {
             "kind": "manual_document_save",
             **request.metadata,
@@ -193,7 +196,6 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 flatten_guard_evaluated=is_autosave,
             )
         )
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user_id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -274,13 +276,13 @@ def manual_commit(
     ):
         if request.document is not None:
             lesson.board_document = request.document
+        _clear_transient_ai_state(lesson)
         commit_document_snapshot(
             lesson,
             label=request.label,
             message=request.message,
             metadata={"kind": "manual_document_edit"},
         )
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -343,13 +345,13 @@ def import_document_docx(
         with destination.open("wb") as output:
             shutil.copyfileobj(file.file, output)
         lesson.board_document = import_docx(destination, title=lesson.board_document.title or lesson.title)
+        _clear_transient_ai_state(lesson)
         commit_document_snapshot(
             lesson,
             label="Import DOCX",
             message=f"Imported {safe_name} into the rich document editor",
             metadata={"kind": "import_docx", "filename": safe_name},
         )
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -394,9 +396,37 @@ def export_document_html(lesson_id: str, user: UserView = Depends(current_user))
     )
 
 
+@router.get("/api/lessons/{lesson_id}/document/export-ridoc")
+def export_lesson_package(
+    lesson_id: str,
+    source_mode: str = Query("evidence", pattern="^(evidence|references)$"),
+    user: UserView = Depends(current_user),
+) -> FileResponse:
+    workspace = load_workspace_for_user(user.id)
+    _, lesson = find_lesson_package(workspace, lesson_id)
+    target_path = _unique_export_path("ridoc")
+    try:
+        export_lesson_ridoc(
+            owner_user_id=user.id,
+            lesson=lesson,
+            target_path=target_path,
+            source_mode=source_mode,
+        )
+    except RidocFormatError as exc:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FileResponse(
+        target_path,
+        media_type=RIDOC_MEDIA_TYPE,
+        filename=f"{lesson.slug or lesson.id}.ridoc",
+        headers=_DOCX_NO_STORE_HEADERS,
+        background=BackgroundTask(target_path.unlink, missing_ok=True),
+    )
+
+
 def _unique_export_path(extension: str) -> Path:
     safe_extension = extension.lower().lstrip(".")
-    if safe_extension not in {"docx", "html"}:
+    if safe_extension not in {"docx", "html", "ridoc"}:
         raise ValueError("Unsupported document export extension.")
     return EXPORT_DIR / "requests" / f"{uuid.uuid4().hex}.{safe_extension}"
 
@@ -430,7 +460,6 @@ def create_lesson_branch(
         from_commit_id=request.from_commit_id,
     ):
         create_branch(lesson, request.name, request.from_commit_id)
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -451,7 +480,6 @@ def checkout_lesson_branch(
         branch_name=request.name,
     ):
         switch_branch(lesson, request.name)
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -473,6 +501,5 @@ def restore_lesson_commit(
         restore_label=request.label,
     ):
         restore_commit(lesson, request.commit_id, request.label)
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)

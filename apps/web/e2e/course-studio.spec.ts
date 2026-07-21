@@ -1053,6 +1053,44 @@ test("collapses course package and standalone lesson lists independently", async
   await expect(page.getByLabel("展开单独课程")).toHaveAttribute("aria-expanded", "false");
 });
 
+test("exports and loads a RIDOC package from the standalone lesson menu", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `主页课程包入口 ${unique}`;
+  await enterAsGuest(page);
+  await page.getByLabel("进入单独课程工作台").click();
+  await createLessonFromEmptyStudio(page, lessonTitle);
+  await writeEditorTextAndWaitForSave(page, `主页导出内容 ${unique}`);
+  await page.goto("/home");
+
+  const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle });
+  await lessonCard.getByLabel("打开课程操作菜单").click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出课程包", exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
+  const ridocStream = await download.createReadStream();
+  const ridocChunks: Buffer[] = [];
+  for await (const chunk of ridocStream) {
+    ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  await lessonCard.getByLabel("打开课程操作菜单").click();
+  const importResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
+  );
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "加载导出的课程包", exact: true }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles({
+    name: download.suggestedFilename(),
+    mimeType: "application/vnd.openclass.ridoc+zip",
+    buffer: Buffer.concat(ridocChunks),
+  });
+  await importResponse;
+
+  await expect(page.locator("[data-package-selection-root]").filter({ hasText: lessonTitle }).first()).toBeVisible();
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
@@ -1093,6 +1131,67 @@ test("restores an older document version from history", async ({ page }) => {
   const editor = page.locator(".ProseMirror").first();
   await expect(editor).toContainText(firstVersion);
   await expect(editor).not.toContainText(secondVersion);
+});
+
+test("merges a lesson branch through a persistent editable draft", async ({ page }) => {
+  const unique = Date.now();
+  const sourceBranch = `source-${unique}`;
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `合并测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `合并测试页面 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, `共同版本 ${unique}`);
+  await openHistoryPanel(page);
+
+  await page.getByPlaceholder("新分支名").fill(sourceBranch);
+  const branchResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "开分支" }).click();
+  await branchResponse;
+  await writeEditorTextAndWaitForSave(page, `来源分支内容 ${unique}`);
+
+  const checkoutResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches/checkout") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "main", exact: true }).click();
+  await checkoutResponse;
+  await writeEditorTextAndWaitForSave(page, `当前分支内容 ${unique}`);
+
+  const createMergeResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/merge-sessions") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "合并到当前分支" }).click();
+  await createMergeResponse;
+  await expect(page.getByText("Studio Merge Mode")).toBeVisible();
+  await expect(page.getByPlaceholder("合并期间对话已暂停，提交或放弃合并后可继续")).toBeVisible();
+
+  const resolutionResponse = page.waitForResponse(
+    (response) => response.url().includes("/merge-sessions/") && response.request().method() === "PATCH"
+  );
+  await page.getByRole("button", { name: "来源", exact: true }).first().click();
+  await resolutionResponse;
+  const editor = page.locator(".ProseMirror").first();
+  await expect(editor).toContainText(`来源分支内容 ${unique}`);
+
+  const finalDraft = `最终人工合并内容 ${unique}`;
+  const draftSaveResponse = page.waitForResponse(
+    (response) => response.url().includes("/merge-sessions/") && response.request().method() === "PATCH"
+  );
+  await editor.fill(finalDraft);
+  await draftSaveResponse;
+
+  await page.reload();
+  await expect(page.getByText("Studio Merge Mode")).toBeVisible();
+  await expect(page.locator(".ProseMirror").first()).toContainText(finalDraft);
+
+  const submitResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/submit") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "提交合并" }).click();
+  await submitResponse;
+  await expect(page.getByText("Merge").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: sourceBranch, exact: true })).toBeVisible();
+  await expect(page.locator(".ProseMirror").first()).toContainText(finalDraft);
 });
 
 test("DOCX import and export entry points complete without breaking the editor", async ({ page }) => {
@@ -1143,6 +1242,58 @@ test("DOCX import and export entry points complete without breaking the editor",
   await page.getByRole("button", { name: "导出 DOCX" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
+});
+
+test("exports, imports, replays, and forks a RIDOC lesson package", async ({ page }) => {
+  const unique = Date.now();
+  const firstVersion = `RIDOC 历史版本一 ${unique}`;
+  const secondVersion = `RIDOC 历史版本二 ${unique}`;
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `RIDOC 测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `RIDOC 测试页面 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, firstVersion);
+  await writeEditorTextAndWaitForSave(page, secondVersion);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出课程包", exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
+  const ridocStream = await download.createReadStream();
+  const ridocChunks: Buffer[] = [];
+  for await (const chunk of ridocStream) {
+    ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  const importResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
+  );
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "加载课程包", exact: true }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles({
+    name: download.suggestedFilename(),
+    mimeType: "application/vnd.openclass.ridoc+zip",
+    buffer: Buffer.concat(ridocChunks),
+  });
+  await importResponse;
+
+  await expect(page.locator(".ProseMirror").first()).toContainText(secondVersion);
+  await openHistoryPanel(page);
+  await expect(page.getByText("RIDOC 课程包")).toBeVisible();
+  await page.getByRole("button", { name: "播放课程" }).click();
+  await page.getByRole("button", { name: "暂停播放" }).click();
+  await expect(page.getByRole("button", { name: "退出并继续学习" })).toBeVisible();
+  await expect(page.getByText(/\/\d+$/)).toBeVisible();
+  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "下一步" }).click();
+
+  const branchResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "从这里分叉" }).click();
+  await branchResponse;
+  await expect(page.getByRole("button", { name: "退出并继续学习" })).toHaveCount(0);
+  await expect(page.locator(".ProseMirror").first()).toContainText(firstVersion);
 });
 
 test("normalizes raw bold vector notation and math delimiters in the board editor", async ({ page }) => {

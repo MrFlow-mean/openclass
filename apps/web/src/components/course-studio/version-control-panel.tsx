@@ -5,6 +5,7 @@ import {
   FileText,
   GitBranch,
   GitCommitHorizontal,
+  GitMerge,
   MessageCircle,
   RotateCcw,
 } from "lucide-react";
@@ -23,6 +24,10 @@ import {
   type HistoryNodeKind,
 } from "@/components/course-studio/history-graph-utils";
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
+import {
+  LessonPackageControls,
+  type LessonPackageControlsProps,
+} from "@/components/course-studio/lesson-package-controls";
 import type { BoardDecision, CommitRecord, Lesson } from "@/types";
 
 type VersionControlPanelProps = {
@@ -39,6 +44,8 @@ type VersionControlPanelProps = {
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  onMergeBranch: (branchName: string) => void | Promise<void>;
+  lessonPackageControls: LessonPackageControlsProps;
 };
 
 function FactorList({ title, factors }: { title: string; factors: LearningRequirementDisplayFactor[] }) {
@@ -74,6 +81,9 @@ function HistoryNodeIcon({ kind }: { kind: HistoryNodeKind }) {
   if (kind === "restore") {
     return <RotateCcw className="h-3.5 w-3.5" />;
   }
+  if (kind === "merge") {
+    return <GitMerge className="h-3.5 w-3.5" />;
+  }
   return <Circle className="h-3.5 w-3.5" />;
 }
 
@@ -86,6 +96,9 @@ function nodeKindClasses(kind: HistoryNodeKind) {
   }
   if (kind === "restore") {
     return "bg-amber-50 text-amber-700";
+  }
+  if (kind === "merge") {
+    return "bg-violet-50 text-violet-700";
   }
   return "bg-gray-100 text-gray-600";
 }
@@ -249,6 +262,14 @@ function HistoryGraphRowItem({
             </button>
           ) : null}
         </div>
+        {row.nodeKind === "merge" && row.commit.parent_ids[1] ? (
+          <details className="mt-2 rounded border border-violet-100 bg-violet-50/60 px-2 py-1.5 text-[10px] text-violet-700">
+            <summary className="cursor-pointer font-semibold">展开来源分支谱系</summary>
+            <p className="mt-1 font-mono">
+              {String(row.commit.metadata?.merge_source_branch ?? "source")} · {row.commit.parent_ids[1].slice(0, 10)}
+            </p>
+          </details>
+        ) : null}
       </div>
     </div>
   );
@@ -268,6 +289,8 @@ export function VersionControlPanel({
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
+  onMergeBranch,
+  lessonPackageControls,
 }: VersionControlPanelProps) {
   const learningRequirementDisplay = activeRequirements
     ? buildLearningRequirementDisplay({ requirementSheet: activeRequirements })
@@ -276,7 +299,9 @@ export function VersionControlPanel({
 
   return (
     <div className="space-y-8">
-      <section>
+      <LessonPackageControls {...lessonPackageControls} />
+
+      <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">历史分支图</p>
@@ -304,27 +329,38 @@ export function VersionControlPanel({
           </button>
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 space-y-2">
           {lanes.map((lane) => (
-            <button
-              key={lane.branchName}
-              type="button"
-              onClick={() => void onSwitchBranch(lane.branchName)}
-              className={clsx(
-                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] transition",
-                lane.isCurrent
-                  ? "border-black bg-black text-white"
-                  : "border-gray-200 bg-white text-gray-500 hover:text-black"
-              )}
-            >
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: lane.color }} />
-              {lane.branchName}
-            </button>
+            <div key={lane.branchName} className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void onSwitchBranch(lane.branchName)}
+                className={clsx(
+                  "inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] transition",
+                  lane.isCurrent
+                    ? "border-black bg-black text-white"
+                    : "border-gray-200 bg-white text-gray-500 hover:text-black"
+                )}
+              >
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: lane.color }} />
+                <span className="truncate">{lane.branchName}</span>
+              </button>
+              {!lane.isCurrent ? (
+                <button
+                  type="button"
+                  onClick={() => void onMergeBranch(lane.branchName)}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700 hover:bg-violet-100"
+                >
+                  <GitMerge className="h-3 w-3" />
+                  合并到当前分支
+                </button>
+              ) : null}
+            </div>
           ))}
         </div>
       </section>
 
-      <section>
+      <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
         <div className="mt-4 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
           {rows.map((row) => (
@@ -342,7 +378,12 @@ export function VersionControlPanel({
         </div>
       </section>
 
-      <section className="border-t border-gray-200 pt-6">
+      <section
+        className={clsx(
+          "border-t border-gray-200 pt-6",
+          lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60"
+        )}
+      >
         <div className="flex items-center gap-2">
           <GitBranch className="h-4 w-4 text-gray-400" />
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前上下文</p>

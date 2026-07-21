@@ -90,6 +90,7 @@ import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { RichCodeBlock } from "@/lib/rich-code-block-extension";
+import { RIDOC_FILE_ACCEPT } from "@/lib/ridoc-file";
 import type {
   BoardDocument,
   BoardFocusRef,
@@ -714,6 +715,8 @@ export function WordBoardEditor({
   onImportDocx,
   onExportDocx,
   onExportHtml,
+  onImportRidoc,
+  onExportRidoc,
   onFormulaReference,
   onFormulaGeometryReference,
   onFormulaInkSubmit,
@@ -737,11 +740,14 @@ export function WordBoardEditor({
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
+  onImportRidoc: (file: File) => void;
+  onExportRidoc: () => void;
   onFormulaReference?: (selection: WordBoardSelectionPayload) => void;
   onFormulaGeometryReference?: (selection: WordBoardSelectionPayload) => void;
   onFormulaInkSubmit?: (payload: FormulaInkEditorSubmitPayload) => boolean;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
+  const ridocImportRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const pageScrollRef = useRef<HTMLDivElement | null>(null);
   const pageZoomRef = useRef(PAGE_ZOOM_DEFAULT);
@@ -1870,6 +1876,35 @@ export function WordBoardEditor({
               >
                 <FileText className="h-4 w-4" />
                 导出 HTML
+              </button>
+              <input
+                ref={ridocImportRef}
+                type="file"
+                accept={RIDOC_FILE_ACCEPT}
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    onImportRidoc(file);
+                  }
+                  event.currentTarget.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => ridocImportRef.current?.click()}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
+              >
+                <Files className="h-4 w-4" />
+                加载课程包
+              </button>
+              <button
+                type="button"
+                onClick={onExportRidoc}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
+              >
+                <Download className="h-4 w-4" />
+                导出课程包
               </button>
             </div>
           </div>

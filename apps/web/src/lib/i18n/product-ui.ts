@@ -137,6 +137,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       openStandaloneFail: z ? "打开单独课程工作台失败" : "Could not open standalone workspace",
       moveLessonFail: z ? "移动课程失败" : "Could not move lesson",
       deleteLessonFail: z ? "删除课程失败" : "Could not delete lesson",
+      exportLessonPackageFail: z ? "导出课程包失败" : "Could not export lesson package",
+      loadLessonPackageFail: z ? "加载课程包失败" : "Could not load lesson package",
       createPackageFail: z ? "新建课程包失败" : "Could not create package",
       openPackageFail: z ? "打开课程包失败" : "Could not open package",
       renamePackageFail: z ? "重命名课程包失败" : "Could not rename package",
@@ -188,6 +190,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         ? "这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。"
         : "This package is empty. Move a lesson into it, or open Studio to create the first page.",
       moveToPackage: z ? "移动到课程包" : "Move to package",
+      exportLessonPackage: z ? "导出课程包" : "Export lesson package",
+      loadExportedLessonPackage: z ? "加载导出的课程包" : "Load exported lesson package",
       delete: z ? "删除" : "Delete",
       noMovablePackages: z ? "暂无可移动课程包" : "No packages to move into",
       moreUpdatesAria: z ? "更多更新操作" : "More updates",

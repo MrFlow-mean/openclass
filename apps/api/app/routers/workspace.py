@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.models import (
     BatchLessonActionRequest,
@@ -18,6 +21,14 @@ from app.models import (
 from app.routers.auth import current_user
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_package_format import (
+    RIDOC_MAX_ARCHIVE_BYTES,
+    RidocFormatError,
+    RidocSizeError,
+    RidocVersionError,
+    read_ridoc,
+)
+from app.services.lesson_package_import import import_ridoc_archive, rollback_imported_assets
 from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
     find_lesson_package,
@@ -29,11 +40,56 @@ from app.services.workspace_state import (
     load_workspace_package_for_user_with_revision,
     normalize_package_state,
     package_view_for_lesson,
+    UPLOAD_DIR,
     save_workspace_for_user_if_revision,
     workspace_view,
 )
 
 router = APIRouter()
+
+
+@router.post("/api/workspace/import-ridoc", response_model=CoursePackageView)
+def import_lesson_package(
+    file: UploadFile = File(...),
+    user: UserView = Depends(current_user),
+) -> CoursePackageView:
+    safe_name = Path(file.filename or "lesson.ridoc").name
+    if Path(safe_name).suffix.lower() != ".ridoc":
+        raise HTTPException(status_code=400, detail="请选择 .ridoc 课程文件")
+    import_dir = UPLOAD_DIR / "ridoc-imports"
+    import_dir.mkdir(parents=True, exist_ok=True)
+    destination = import_dir / f"{uuid.uuid4().hex}.ridoc"
+    imported_lesson_id: str | None = None
+    try:
+        written = 0
+        with destination.open("wb") as output:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > RIDOC_MAX_ARCHIVE_BYTES:
+                    raise RidocSizeError("RIDOC archive exceeds the 256 MiB limit.")
+                output.write(chunk)
+        archive = read_ridoc(destination)
+        workspace, revision = load_workspace_for_user_with_revision(user.id)
+        package = import_ridoc_archive(
+            owner_user_id=user.id,
+            workspace=workspace,
+            archive=archive,
+        )
+        imported_lesson_id = package.lessons[0].id
+        try:
+            save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+        except Exception:
+            rollback_imported_assets(owner_user_id=user.id, lesson_id=imported_lesson_id)
+            raise
+        return package_view_for_lesson(workspace, package, imported_lesson_id)
+    except RidocSizeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except RidocVersionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RidocFormatError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        destination.unlink(missing_ok=True)
 
 
 @router.get("/api/workspace", response_model=WorkspaceStateView)

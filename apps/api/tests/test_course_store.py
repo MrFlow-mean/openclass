@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from app.models import BoardDocument, ResourceLibraryItem
+from app.models import BoardDocument, LessonMergeSession, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document, rich_structure_counts, would_flatten_rich_document
@@ -101,6 +101,34 @@ def test_sqlite_store_round_trips_workspace_without_store_json(tmp_path) -> None
     assert package_count == 1
     assert lesson_count == 1
     assert commit_count == 1
+
+
+def test_sqlite_store_keeps_merge_session_across_workspace_replacement(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    workspace = build_initial_workspace_state()
+    lesson = _append_lesson(workspace, "Merge session")
+    store.save_for_user("user_a", workspace)
+    session = LessonMergeSession(
+        owner_user_id="user_a",
+        lesson_id=lesson.id,
+        target_branch_name="main",
+        source_branch_name="source",
+        base_commit_id=lesson.history_graph.commits[0].id,
+        target_head_commit_id=lesson.history_graph.commits[0].id,
+        source_head_commit_id=lesson.history_graph.commits[0].id,
+        draft_document=lesson.board_document,
+        merge_blueprint=[{"kind": "nodes", "nodes": []}],
+    )
+    store.save_merge_session_for_user(session)
+
+    workspace.packages[0].summary = "updated"
+    store.save_for_user("user_a", workspace)
+    reloaded = store.load_merge_session_for_user("user_a", session.id)
+
+    assert reloaded is not None
+    assert reloaded.id == session.id
+    assert reloaded.merge_blueprint == session.merge_blueprint
 
 
 def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> None:
