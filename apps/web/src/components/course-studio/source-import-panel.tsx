@@ -11,6 +11,17 @@ import {
 import { SourceCatalogModelPicker } from "@/components/course-studio/source-catalog-model-picker";
 import { SourceChapterTree } from "@/components/course-studio/source-chapter-tree";
 import {
+  MediaUrlOptions,
+  MediaVisualGrid,
+  SourceMediaSummary,
+} from "@/components/course-studio/source-media-controls";
+import {
+  mergeSourceWithCatalog,
+  metadataString,
+  sortSources,
+  sourceNeedsRefresh,
+} from "@/components/course-studio/source-import-utils";
+import {
   findModelOption,
   persistModelSelection,
   readStoredModelSelection,
@@ -42,6 +53,7 @@ import type {
   SelectionRef,
   SourceCatalogView,
   SourceIngestionRecord,
+  SourceVisualAsset,
 } from "@/types";
 
 type SourceImportPanelProps = {
@@ -49,9 +61,14 @@ type SourceImportPanelProps = {
   catalogCache: SourceCatalogCacheController;
   catalogModelOptions: AIModelOption[];
   defaultCatalogModel: AIModelSelection;
+  transcriptionModelOptions: AIModelOption[];
+  defaultTranscriptionModel: AIModelSelection;
+  visionModelOptions: AIModelOption[];
+  defaultVisionModel: AIModelSelection;
   disabled?: boolean;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onLearnSourceChapter?: (selection: SelectionRef) => void;
 };
 
 const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
@@ -63,8 +80,6 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
   failed: "失败",
 };
 
-const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
-const ACTIVE_STRUCTURE_STATUSES = new Set<SourceIngestionRecord["structure_status"]>(["pending", "building"]);
 const CATALOG_MODEL_STORAGE_KEY = "blackboard-ai:selected-catalog-model";
 
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
@@ -76,9 +91,14 @@ export function SourceImportPanel({
   catalogCache,
   catalogModelOptions,
   defaultCatalogModel,
+  transcriptionModelOptions,
+  defaultTranscriptionModel,
+  visionModelOptions,
+  defaultVisionModel,
   disabled = false,
   onError,
   onSourceReference,
+  onLearnSourceChapter,
 }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
@@ -91,6 +111,9 @@ export function SourceImportPanel({
   const [isDragActive, setIsDragActive] = useState(false);
   const [sortOption, setSortOption] = useState<SourceSortOption>("uploaded_desc");
   const [catalogModel, setCatalogModel] = useState<AIModelSelection>(defaultCatalogModel);
+  const [videoUrlMode, setVideoUrlMode] = useState(false);
+  const [transcriptionModel, setTranscriptionModel] = useState(defaultTranscriptionModel);
+  const [visionModel, setVisionModel] = useState(defaultVisionModel);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const didRestoreCatalogModelRef = useRef(false);
@@ -117,6 +140,11 @@ export function SourceImportPanel({
     ? selectionForModelOption(selectedCatalogModelOption, catalogModel)
     : null;
   const sortedSources = sortSources(sources, sortOption);
+  const videoModelsReady = Boolean(
+    findModelOption(transcriptionModelOptions, transcriptionModel)?.enabled &&
+      findModelOption(visionModelOptions, visionModel)?.enabled &&
+      activeCatalogModel
+  );
 
   useEffect(() => {
     if (
@@ -207,7 +235,14 @@ export function SourceImportPanel({
     }
     setIsImporting(true);
     try {
-      const record = await api.importPackageSource(packageId, { sourceUri: uri, title: title.trim() });
+      const record = await api.importPackageSource(packageId, {
+        sourceUri: uri,
+        title: title.trim(),
+        sourceKind: videoUrlMode ? "video" : null,
+        transcriptionModel: videoUrlMode ? transcriptionModel : null,
+        visionModel: videoUrlMode ? visionModel : null,
+        catalogModel: videoUrlMode ? activeCatalogModel : null,
+      });
       setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
       setSourceUri("");
       setTitle("");
@@ -382,6 +417,17 @@ export function SourceImportPanel({
           仅用于上传后建立目录；后续按章阅读使用聊天框当前模型。
         </p>
         <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">URL</label>
+        <MediaUrlOptions
+          checked={videoUrlMode}
+          disabled={disabled || isImporting}
+          transcriptionOptions={transcriptionModelOptions}
+          transcriptionSelection={transcriptionModel}
+          visionOptions={visionModelOptions}
+          visionSelection={visionModel}
+          onCheckedChange={setVideoUrlMode}
+          onTranscriptionChange={setTranscriptionModel}
+          onVisionChange={setVisionModel}
+        />
         <div className="mt-2 flex gap-2">
           <input
             value={sourceUri}
@@ -393,7 +439,7 @@ export function SourceImportPanel({
           <button
             type="button"
             onClick={() => void submitUrl()}
-            disabled={!sourceUri.trim() || disabled || isImporting}
+            disabled={!sourceUri.trim() || disabled || isImporting || (videoUrlMode && !videoModelsReady)}
             className="flex h-9 w-9 items-center justify-center rounded-md bg-black text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
             title="导入 URL"
             aria-label="导入 URL"
@@ -500,6 +546,8 @@ export function SourceImportPanel({
                 packageId={packageId}
                 source={source}
                 catalogModel={activeCatalogModel}
+                transcriptionModel={transcriptionModel}
+                visionModel={visionModel}
                 catalog={catalogCache.catalogsBySourceId.get(source.id) ?? null}
                 isCatalogLoading={
                   catalogCache.prefetchingPackageIds.has(packageId) ||
@@ -513,6 +561,7 @@ export function SourceImportPanel({
                 onToggleSelection={() => batchManagement.toggle(source.id)}
                 onError={onError}
                 onSourceReference={onSourceReference}
+                onLearnSourceChapter={onLearnSourceChapter}
                 onSourceUpdate={(updatedSource) =>
                   setSources((current) =>
                     current.map((item) => (item.id === updatedSource.id ? updatedSource : item))
@@ -556,40 +605,12 @@ export function SourceImportPanel({
   );
 }
 
-const SOURCE_TITLE_COLLATOR = new Intl.Collator("zh-CN", {
-  numeric: true,
-  sensitivity: "base",
-});
-
-function sortSources(sources: SourceIngestionRecord[], sortOption: SourceSortOption) {
-  return sources
-    .map((source, index) => ({ source, index }))
-    .sort((left, right) => {
-      if (sortOption === "name_asc" || sortOption === "name_desc") {
-        const titleOrder = SOURCE_TITLE_COLLATOR.compare(
-          left.source.title || left.source.file_name,
-          right.source.title || right.source.file_name
-        );
-        if (titleOrder !== 0) {
-          return sortOption === "name_asc" ? titleOrder : -titleOrder;
-        }
-      } else {
-        const leftCreatedAt = Date.parse(left.source.created_at) || 0;
-        const rightCreatedAt = Date.parse(right.source.created_at) || 0;
-        const createdAtOrder = leftCreatedAt - rightCreatedAt;
-        if (createdAtOrder !== 0) {
-          return sortOption === "uploaded_asc" ? createdAtOrder : -createdAtOrder;
-        }
-      }
-      return left.index - right.index;
-    })
-    .map(({ source }) => source);
-}
-
 function SourceRow({
   packageId,
   source,
   catalogModel,
+  transcriptionModel,
+  visionModel,
   catalog,
   isCatalogLoading,
   isRemoving,
@@ -600,6 +621,7 @@ function SourceRow({
   onToggleSelection,
   onError,
   onSourceReference,
+  onLearnSourceChapter,
   onSourceUpdate,
   onCatalogUpdate,
   onCatalogInvalidate,
@@ -608,6 +630,8 @@ function SourceRow({
   packageId: string;
   source: SourceIngestionRecord;
   catalogModel: AIModelSelection | null;
+  transcriptionModel: AIModelSelection;
+  visionModel: AIModelSelection;
   catalog: SourceCatalogView | null;
   isCatalogLoading: boolean;
   isRemoving: boolean;
@@ -618,6 +642,7 @@ function SourceRow({
   onToggleSelection: () => void;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onLearnSourceChapter?: (selection: SelectionRef) => void;
   onSourceUpdate: (source: SourceIngestionRecord) => void;
   onCatalogUpdate: (catalog: SourceCatalogView) => void;
   onCatalogInvalidate: () => void;
@@ -635,13 +660,16 @@ function SourceRow({
   const [isEditingContent, setIsEditingContent] = useState(false);
   const [isSavingContent, setIsSavingContent] = useState(false);
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
+  const [mediaVisuals, setMediaVisuals] = useState<SourceVisualAsset[]>([]);
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
   const isOpenNotebookManaged = metadataString(source, "source_processing_owner") === "open_notebook";
   const isDirectoryOnlyCatalog =
     isDirectoryCatalogSource(source) ||
     catalog?.strategy === "codex_directory_v1" ||
-    catalog?.catalog_schema_version === "codex_directory_v1";
+    catalog?.catalog_schema_version === "codex_directory_v1" ||
+    source.structure_strategy === "media_timeline" ||
+    catalog?.strategy === "media_timeline";
   const sourceQuality = source.structure_quality;
   const viewQuality = catalog?.quality;
   const structureQuality =
@@ -672,11 +700,20 @@ function SourceRow({
     return () => window.clearInterval(intervalId);
   }, [isRebuildingStructure, isRetrying, onRefresh]);
 
-  function toggleStructure() {
+  async function toggleStructure() {
     if (!isReady) {
       return;
     }
-    setIsStructureOpen((current) => !current);
+    const nextOpen = !isStructureOpen;
+    setIsStructureOpen(nextOpen);
+    if (nextOpen && source.source_type === "video_url" && !mediaVisuals.length) {
+      try {
+        const view = await api.getPackageSourceStructure(packageId, source.id);
+        setMediaVisuals(view.visuals);
+      } catch (error) {
+        onError(error instanceof Error ? error.message : "关键帧目录读取失败");
+      }
+    }
   }
 
   async function rebuildStructure() {
@@ -717,6 +754,25 @@ function SourceRow({
       onSourceUpdate(await api.retryPackageSource(packageId, source.id));
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料重试失败");
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+
+  async function retryMedia(operation: "retranscribe" | "visuals") {
+    if (isRetrying) {
+      return;
+    }
+    setIsRetrying(true);
+    try {
+      onCatalogInvalidate();
+      onSourceUpdate(
+        operation === "retranscribe"
+          ? await api.retranscribeMediaSource(packageId, source.id, transcriptionModel)
+          : await api.retryMediaVisuals(packageId, source.id, visionModel)
+      );
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "媒体处理重试失败");
     } finally {
       setIsRetrying(false);
     }
@@ -918,15 +974,17 @@ function SourceRow({
                   <TextQuote className="h-3.5 w-3.5" />
                 </button>
               ) : null}
-              <button
-                type="button"
-                onClick={() => void downloadSource()}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-50 hover:text-black"
-                title="下载原始资料"
-                aria-label={`下载资料 ${source.title}`}
-              >
-                <Download className="h-3.5 w-3.5" />
-              </button>
+              {source.source_type !== "video_url" ? (
+                <button
+                  type="button"
+                  onClick={() => void downloadSource()}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-50 hover:text-black"
+                  title="下载原始资料"
+                  aria-label={`下载资料 ${source.title}`}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
               {isFailed ? (
                 <button
                   type="button"
@@ -942,7 +1000,7 @@ function SourceRow({
               {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
-                  onClick={toggleStructure}
+                  onClick={() => void toggleStructure()}
                   className={clsx(
                     "flex min-w-10 flex-col items-center justify-center gap-0.5 rounded-md border border-transparent px-1 py-1 text-[10px] leading-none transition disabled:cursor-not-allowed disabled:opacity-50",
                     canViewDirectory
@@ -997,6 +1055,7 @@ function SourceRow({
           ) : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
+          <SourceMediaSummary source={source} isRetrying={isRetrying} onRetry={(operation) => void retryMedia(operation)} />
           {isContentOpen ? (
             <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-2">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -1082,10 +1141,14 @@ function SourceRow({
                   expandedIds={expandedChapterIds}
                   onToggle={toggleChapter}
                   onSourceReference={onSourceReference}
+                  onLearnSourceChapter={onLearnSourceChapter}
                 />
               ) : (
                 <SourceStructureEmptyState source={source} catalog={catalog} />
               )}
+              {source.source_type === "video_url" ? (
+                <MediaVisualGrid packageId={packageId} sourceId={source.id} visuals={mediaVisuals} />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1113,29 +1176,4 @@ function SourceStructureEmptyState({
   return (
     <p className="text-xs leading-5 text-gray-600">{message}</p>
   );
-}
-
-function mergeSourceWithCatalog(source: SourceIngestionRecord, catalog: SourceCatalogView): SourceIngestionRecord {
-  return {
-    ...source,
-    ...catalog.source,
-    structure_status: catalog.status,
-    structure_strategy: catalog.strategy,
-    structure_has_verified_toc: catalog.has_verified_toc,
-    structure_quality: catalog.quality,
-    structure_error: catalog.error,
-    structure_updated_at: catalog.catalog_updated_at,
-  };
-}
-
-function sourceNeedsRefresh(source: SourceIngestionRecord) {
-  if (ACTIVE_SOURCE_STATUSES.has(source.status)) {
-    return true;
-  }
-  return source.status === "ready" && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status);
-}
-
-function metadataString(source: SourceIngestionRecord, key: string) {
-  const value = source.metadata?.[key];
-  return typeof value === "string" ? value : "";
 }

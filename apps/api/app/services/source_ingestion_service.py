@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import os
 import re
-import socket
 import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
-from urllib.parse import urlparse
 
 from app.models import (
     AgentActivityEvent,
@@ -19,7 +17,16 @@ from app.models import (
     SourceIngestionJob,
     SourceIngestionRecord,
 )
-from app.services.ai_model_catalog import default_text_selection
+from app.services.ai_model_catalog import (
+    default_text_selection,
+    default_transcription_selection,
+)
+from app.services.media_ingestion_pipeline import (
+    MediaIngestionPipeline,
+    MediaIngestionPipelineError,
+)
+from app.services.media_package_store import MediaPackageStore
+from app.services.public_url_policy import PublicUrlPolicyError, validate_public_http_url
 from app.services.open_notebook_adapter import (
     OpenNotebookAdapter,
     OpenNotebookAdapterError,
@@ -123,6 +130,8 @@ class SourceIngestionService:
         directory_processor: SourceDirectoryProcessor | None = None,
         import_automation_runner: SourceImportAutomationRunner | None = None,
         media_transcription_provider: object | None = None,
+        media_package_store: MediaPackageStore | None = None,
+        media_pipeline: MediaIngestionPipeline | None = None,
     ) -> None:
         self.adapter = adapter
         self.open_notebook_backend = OpenNotebookSourceBackend(
@@ -145,6 +154,12 @@ class SourceIngestionService:
         self.directory_catalog_enabled = directory_processor is not None or structure_indexer is None
         self.import_automation_runner = import_automation_runner
         self.media_transcription_provider = media_transcription_provider
+        store_path = getattr(store, "_path", None)
+        self.media_package_store = media_package_store or MediaPackageStore(store_path)
+        self.media_pipeline = media_pipeline or MediaIngestionPipeline(
+            package_store=self.media_package_store,
+            structure_store=self.structure_store,
+        )
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
@@ -155,7 +170,237 @@ class SourceIngestionService:
                 else self._refresh_open_notebook_source(record)
                 for record in records
             ]
-        return [self._attach_job(self.structure_store.attach_summary(record)) for record in records]
+        return [self._attach_media_package(self._attach_job(self.structure_store.attach_summary(record))) for record in records]
+
+    def queue_media_url_source(
+        self,
+        *,
+        owner_user_id: str,
+        package: CoursePackage,
+        source_uri: str,
+        title: str = "",
+        transcription_model: AIModelSelection | None = None,
+        vision_model: AIModelSelection | None = None,
+        catalog_model: AIModelSelection | None = None,
+    ) -> SourceIngestionRecord:
+        if not media_ingestion_enabled():
+            raise SourceIngestionError("Video URL ingestion is not enabled on this deployment.")
+        normalized_uri = _validate_public_url(source_uri)
+        transcription = transcription_model or default_transcription_selection()
+        vision = vision_model or default_text_selection()
+        catalog = catalog_model or default_text_selection()
+        record = SourceIngestionRecord(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            title=title.strip() or normalized_uri,
+            source_type="video_url",
+            source_uri=normalized_uri,
+            mime_type="video/*",
+            status="queued",
+            metadata={
+                "adapter": "media_pipeline_v1",
+                "media_operation": "full",
+                "transcription_model": transcription.model_dump(mode="json"),
+                "vision_model": vision.model_dump(mode="json"),
+                "catalog_model": catalog.model_dump(mode="json"),
+            },
+        )
+        record = self.store.save_source(record)
+        self._start_job(record, adapter="media_pipeline_v1", phase="queued", progress=0)
+        return self._attach_job(record)
+
+    def process_media_url_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None:
+            return None
+        if record.source_type != "video_url":
+            raise SourceIngestionError("The requested source is not a video URL source.")
+        with _directory_catalog_processing_slot(database_path=self.store.path, record=record):
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if current is None:
+                return None
+            worker_id = f"media-worker-{uuid.uuid4().hex}"
+            if not self.media_package_store.claim_source(
+                source_id=source_id,
+                worker_id=worker_id,
+            ):
+                return self._attach_media_package(self._attach_job(current))
+            heartbeat_stop = threading.Event()
+
+            def renew_heartbeat() -> None:
+                while not heartbeat_stop.wait(30):
+                    self.media_package_store.renew_lease(
+                        source_id=source_id,
+                        worker_id=worker_id,
+                    )
+
+            heartbeat_thread = threading.Thread(
+                target=renew_heartbeat,
+                name=f"media-heartbeat-{source_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
+            job = self.job_store.latest_for_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            ) or self._start_job(current, adapter="media_pipeline_v1", phase="queued", progress=0)
+            running = self.store.save_source(current.model_copy(update={"status": "fetching", "error": ""}))
+            selections = _media_model_selections(running)
+            operation = str(running.metadata.get("media_operation") or "full")
+            previous_manifest = self.media_package_store.get_manifest(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+
+            def report(phase: str, progress: int, metrics: dict[str, object]) -> None:
+                nonlocal job
+                metrics = {
+                    **metrics,
+                    "progress_determinate": (
+                        phase == "downloading_media"
+                        and isinstance(metrics.get("total_bytes"), int)
+                        and int(metrics["total_bytes"]) > 0
+                    )
+                    or (
+                        phase == "transcribing_audio"
+                        and isinstance(metrics.get("audio_segment_count"), int)
+                        and int(metrics["audio_segment_count"]) > 0
+                    ),
+                }
+                self.media_package_store.renew_lease(
+                    source_id=source_id,
+                    worker_id=worker_id,
+                )
+                status = "fetching" if phase in {"resolving_media", "downloading_media"} else "parsing"
+                job = self._update_job(
+                    job,
+                    record=running,
+                    status=status,
+                    progress=progress,
+                    phase=phase,
+                    metrics={**job.metrics, **metrics},
+                )
+
+            try:
+                processing_weight = self.store.coordinator.processing_weight(
+                    size_bytes=running.size_bytes,
+                    source_type=running.source_type,
+                )
+                with self.store.coordinator.processing_slot(weight=processing_weight):
+                    ready = self.media_pipeline.process(
+                        running,
+                        transcription_model=selections[0],
+                        vision_model=selections[1],
+                        catalog_model=selections[2],
+                        force_transcription=operation == "retranscribe",
+                        reuse_active_transcript=(
+                            operation == "visuals_retry"
+                            or bool(
+                                operation == "full"
+                                and previous_manifest
+                                and previous_manifest.transcript_status == "ready"
+                            )
+                        ),
+                        reuse_active_visuals=(
+                            operation == "retranscribe"
+                            or bool(
+                                operation == "full"
+                                and previous_manifest
+                                and previous_manifest.visual_status in {"ready", "empty"}
+                            )
+                        ),
+                        force_download=bool(running.metadata.get("media_force_redownload")),
+                        progress=report,
+                    )
+            except Exception as exc:
+                if not isinstance(exc, (MediaIngestionPipelineError, SourceIngestionError)):
+                    exc = MediaIngestionPipelineError(
+                        f"Media processing failed during {job.phase_history[-1] if job.phase_history else 'processing'}: {exc}"
+                    )
+                failed = self.store.save_source(
+                    running.model_copy(update={"status": "failed", "error": str(exc)})
+                )
+                self._finish_job(
+                    job,
+                    record=failed,
+                    status="failed",
+                    progress=100,
+                    phase="failed",
+                    error=str(exc),
+                )
+                self.media_package_store.release_lease(
+                    source_id=source_id,
+                    worker_id=worker_id,
+                )
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=1)
+                return self._attach_media_package(self._attach_job(failed))
+            ready = ready.model_copy(
+                update={
+                    "metadata": {
+                        **ready.metadata,
+                        "media_operation": "full",
+                        "media_force_redownload": False,
+                    },
+                }
+            )
+            ready = self.store.save_source(ready)
+            self._finish_job(job, record=ready, status="ready", progress=100, phase="ready")
+            self.media_package_store.release_lease(
+                source_id=source_id,
+                worker_id=worker_id,
+            )
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
+            return self._attach_media_package(self._attach_job(ready))
+
+    def retry_media_component(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        operation: str,
+        selection: AIModelSelection | None = None,
+    ) -> SourceIngestionRecord | None:
+        if operation not in {"full", "retranscribe", "visuals_retry"}:
+            raise SourceIngestionError("Unsupported media retry operation.")
+        record = self.store.get_source(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+        )
+        if record is None:
+            return None
+        if record.source_type != "video_url":
+            raise SourceIngestionError("The requested source is not a video URL source.")
+        metadata = {
+            **record.metadata,
+            "media_operation": operation,
+            "media_force_redownload": True,
+        }
+        if selection is not None and operation != "full":
+            key = "transcription_model" if operation == "retranscribe" else "vision_model"
+            metadata[key] = selection.model_dump(mode="json")
+        queued = self.store.save_source(record.model_copy(update={"status": "queued", "error": "", "metadata": metadata}))
+        self._start_job(queued, adapter="media_pipeline_v1", phase=operation, progress=0)
+        return self._attach_media_package(self._attach_job(queued))
 
     def add_url_source(
         self,
@@ -573,6 +818,16 @@ class SourceIngestionService:
             package_id=record.package_id,
             source_id=record.id,
         )
+        self.media_package_store.delete_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        media_package_dir = workspace_state.UPLOAD_DIR / "media-packages" / record.id
+        if media_package_dir.is_dir():
+            import shutil
+
+            shutil.rmtree(media_package_dir, ignore_errors=True)
         _delete_local_source_file(record)
         return removed
 
@@ -740,6 +995,13 @@ class SourceIngestionService:
         return self._retry_source_unlocked(record)
 
     def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+        if record.source_type == "video_url":
+            return self.retry_media_component(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+                operation="full",
+            )
         record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
@@ -1089,6 +1351,7 @@ class SourceIngestionService:
         phase: str,
         error: str = "",
         agent_activity: list[AgentActivityEvent] | None = None,
+        metrics: dict[str, object] | None = None,
     ) -> SourceIngestionJob:
         phases = job.phase_history
         if not phases or phases[-1] != phase:
@@ -1103,6 +1366,7 @@ class SourceIngestionService:
                     "agent_activity": (
                         job.agent_activity if agent_activity is None else agent_activity
                     ),
+                    "metrics": job.metrics if metrics is None else metrics,
                 }
             ),
             owner_user_id=record.owner_user_id,
@@ -1116,6 +1380,16 @@ class SourceIngestionService:
             source_id=record.id,
         )
         return record.model_copy(update={"ingestion_job": job})
+
+    def _attach_media_package(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
+        if record.source_type != "video_url":
+            return record
+        manifest = self.media_package_store.get_manifest(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
+        return record.model_copy(update={"media_package": manifest})
 
     def _save_and_index(
         self,
@@ -1540,8 +1814,11 @@ def source_local_path(record: SourceIngestionRecord) -> Path | None:
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
     path = Path(raw_path).expanduser().resolve()
-    allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
-    if allowed_root not in path.parents or not path.is_file():
+    allowed_roots = {
+        (workspace_state.UPLOAD_DIR / "sources").resolve(),
+        (workspace_state.UPLOAD_DIR / "media-packages").resolve(),
+    }
+    if not any(root in path.parents for root in allowed_roots) or not path.is_file():
         return None
     return path
 
@@ -1551,8 +1828,11 @@ def source_download_path(record: SourceIngestionRecord) -> Path | None:
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
     path = Path(raw_path).expanduser().resolve()
-    allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
-    return path if allowed_root in path.parents and path.is_file() else None
+    allowed_roots = {
+        (workspace_state.UPLOAD_DIR / "sources").resolve(),
+        (workspace_state.UPLOAD_DIR / "media-packages").resolve(),
+    }
+    return path if any(root in path.parents for root in allowed_roots) and path.is_file() else None
 
 
 def _stored_source_file_name(record: SourceIngestionRecord) -> str:
@@ -1698,21 +1978,38 @@ def _structure_store_for_source_store(
 
 
 def _validate_public_url(raw_uri: str) -> str:
-    uri = raw_uri.strip()
-    parsed = urlparse(uri)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise SourceIngestionError("Only http and https URLs are supported.")
-    hostname = parsed.hostname or ""
-    if hostname in {"localhost", "127.0.0.1", "::1"}:
-        raise SourceIngestionError("Localhost URLs are not allowed for source ingestion.")
     try:
-        for info in socket.getaddrinfo(hostname, None):
-            address = ipaddress.ip_address(info[4][0])
-            if address.is_private or address.is_loopback or address.is_link_local:
-                raise SourceIngestionError("Private network URLs are not allowed for source ingestion.")
-    except socket.gaierror as exc:
-        raise SourceIngestionError("URL hostname could not be resolved.") from exc
-    return uri
+        return validate_public_http_url(raw_uri)
+    except PublicUrlPolicyError as exc:
+        raise SourceIngestionError(str(exc)) from exc
+
+
+def media_ingestion_enabled() -> bool:
+    return (os.getenv("OPENCLASS_MEDIA_INGESTION_ENABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _media_model_selections(
+    record: SourceIngestionRecord,
+) -> tuple[AIModelSelection, AIModelSelection, AIModelSelection]:
+    def selection(key: str, default: AIModelSelection) -> AIModelSelection:
+        raw = record.metadata.get(key)
+        if not isinstance(raw, dict):
+            return default
+        try:
+            return AIModelSelection.model_validate(raw)
+        except ValueError as exc:
+            raise SourceIngestionError(f"Stored {key} is invalid.") from exc
+
+    return (
+        selection("transcription_model", default_transcription_selection()),
+        selection("vision_model", default_text_selection()),
+        selection("catalog_model", default_text_selection()),
+    )
 
 
 source_ingestion_service = SourceIngestionService()

@@ -52,9 +52,33 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       transport: "openai_webrtc",
     },
   ],
+  transcription: [
+    {
+      provider: "openai",
+      model: "gpt-4o-mini-transcribe",
+      label: "OpenAI GPT-4o Mini Transcribe",
+      capability: "transcription",
+      enabled: false,
+      configured: false,
+      default: true,
+    },
+  ],
+  vision: [
+    {
+      provider: "openai_codex",
+      model: "gpt-5.6-sol",
+      label: "OpenAI Codex GPT-5.6-Sol",
+      capability: "vision",
+      enabled: false,
+      configured: false,
+      default: true,
+    },
+  ],
   defaults: {
     text: { provider: "openai_codex", model: "gpt-5.6-sol" },
     realtime: { provider: "openai", model: "gpt-realtime-2.1" },
+    transcription: { provider: "openai", model: "gpt-4o-mini-transcribe" },
+    vision: { provider: "openai_codex", model: "gpt-5.6-sol" },
   },
 };
 
@@ -109,6 +133,13 @@ export function normalizeCourseStudioModelCatalog(catalog: AIModelCatalog): AIMo
         ? { ...option, enabled: false, configured: false, default: false }
         : option
     ),
+    transcription: catalog.transcription ?? FALLBACK_MODEL_CATALOG.transcription,
+    vision: catalog.vision ?? FALLBACK_MODEL_CATALOG.vision,
+    defaults: {
+      ...catalog.defaults,
+      transcription: catalog.defaults.transcription ?? FALLBACK_MODEL_CATALOG.defaults.transcription,
+      vision: catalog.defaults.vision ?? FALLBACK_MODEL_CATALOG.defaults.vision,
+    },
   };
 }
 

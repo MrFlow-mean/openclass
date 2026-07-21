@@ -241,6 +241,21 @@ class SourceEvidenceStore:
                 ).fetchall()
         return [self._source_from_row(row) for row in rows]
 
+    def list_pending_media_sources(self, *, limit: int = 20) -> list[SourceIngestionRecord]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM source_ingestions
+                    WHERE source_type = 'video_url' AND status IN ('queued', 'fetching', 'parsing')
+                    ORDER BY updated_at ASC
+                    LIMIT ?
+                    """,
+                    (max(1, min(limit, 100)),),
+                ).fetchall()
+        return [self._source_from_row(row) for row in rows]
+
     def ready_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         return [
             source

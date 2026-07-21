@@ -10,7 +10,7 @@ export type AIProvider =
   | "minimax"
   | "openai_compatible"
   | "anthropic_compatible";
-export type AIModelCapability = "text" | "realtime";
+export type AIModelCapability = "text" | "realtime" | "transcription" | "vision";
 export type AIRealtimeTransport = "openai_webrtc" | "gemini_live_websocket";
 export type DocumentMarginPreset = "narrow" | "normal" | "wide";
 export type DocumentOrientation = "portrait" | "landscape";
@@ -58,6 +58,8 @@ export interface LearningSourceReference {
   page_range: string;
   page_start?: number | null;
   page_end?: number | null;
+  media_time_range?: MediaTimeRange | null;
+  media_package_version?: number | null;
   body_start_offset?: number | null;
   body_end_offset?: number | null;
   chunk_ids: string[];
@@ -354,7 +356,37 @@ export type SourceStructureStrategy =
   | "docx_heading"
   | "markdown_heading"
   | "linear_text"
-  | "open_notebook_search_only";
+  | "open_notebook_search_only"
+  | "media_timeline";
+
+export interface MediaTimeRange {
+  start_ms: number;
+  end_ms: number;
+  display_label: string;
+}
+
+export type MediaComponentStatus = "pending" | "running" | "ready" | "empty" | "partial" | "failed";
+export type MediaVisualRole = "board_final" | "slide_final" | "teaching_visual";
+
+export interface MediaPackageManifest {
+  version: number;
+  duration_ms: number;
+  language: string;
+  source_content_hash: string;
+  active_transcript_version: number;
+  transcript_status: MediaComponentStatus;
+  visual_status: MediaComponentStatus;
+  chapter_status: MediaComponentStatus;
+  transcription_model?: AIModelSelection | null;
+  vision_model?: AIModelSelection | null;
+  catalog_model?: AIModelSelection | null;
+  transcript_segment_count: number;
+  chapter_count: number;
+  visual_count: number;
+  warnings: string[];
+  raw_media_retained: boolean;
+  updated_at: string;
+}
 
 export interface SourceStructureQuality {
   evaluator_version: number;
@@ -390,6 +422,7 @@ export interface SourceIngestionJob {
   progress: number;
   error: string;
   phase_history: string[];
+  metrics: Record<string, unknown>;
   agent_activity: AgentActivityEvent[];
   created_at: string;
   updated_at: string;
@@ -414,6 +447,7 @@ export interface SourceIngestionRecord {
   structure_error: string;
   structure_updated_at?: string | null;
   ingestion_job?: SourceIngestionJob | null;
+  media_package?: MediaPackageManifest | null;
   created_at: string;
   updated_at: string;
   metadata: Record<string, unknown>;
@@ -427,6 +461,7 @@ export interface RetrievalEvidence {
   chapter_id: string;
   section_path: string[];
   page_range: string;
+  media_time_range?: MediaTimeRange | null;
   chunk_ids: string[];
   excerpt: string;
   expanded_text: string;
@@ -474,6 +509,7 @@ export interface SourceChapter {
   page_end?: number | null;
   anchor_status: "verified" | "unverified";
   range?: SourceRange | null;
+  media_time_range?: MediaTimeRange | null;
   mapping_status?: SourceChapterMappingStatus;
   source_content_hash?: string;
   catalog_evidence?: SourceCatalogEvidence[];
@@ -564,6 +600,8 @@ export interface SourceChunk {
   end_offset: number;
   page_start?: number | null;
   page_end?: number | null;
+  media_time_range?: MediaTimeRange | null;
+  transcript_segment_ids: string[];
   token_count: number;
   metadata: Record<string, unknown>;
 }
@@ -586,6 +624,8 @@ export interface SourceVisualAsset {
   paragraph_index?: number | null;
   slide_no?: number | null;
   sheet_name: string;
+  timestamp_ms?: number | null;
+  media_role?: MediaVisualRole | null;
   bbox: number[];
   before_chunk_id?: string | null;
   after_chunk_id?: string | null;
@@ -616,6 +656,8 @@ export interface SourceVisualEvidence {
   paragraph_index?: number | null;
   slide_no?: number | null;
   sheet_name: string;
+  timestamp_ms?: number | null;
+  media_role?: MediaVisualRole | null;
   bbox: number[];
   before_chunk_id?: string | null;
   after_chunk_id?: string | null;
@@ -841,9 +883,13 @@ export interface AIModelOption {
 export interface AIModelCatalog {
   text: AIModelOption[];
   realtime: AIModelOption[];
+  transcription: AIModelOption[];
+  vision: AIModelOption[];
   defaults: {
     text: AIModelSelection;
     realtime: AIModelSelection;
+    transcription: AIModelSelection;
+    vision: AIModelSelection;
   };
 }
 
@@ -900,6 +946,8 @@ export interface SelectionRef {
   source_page_end?: number | null;
   source_scope_kind?: "source" | "chapter" | "page_range";
   source_range?: SourceRange | null;
+  source_time_range?: MediaTimeRange | null;
+  media_package_version?: number | null;
   catalog_version?: number | null;
   source_content_hash?: string;
 }

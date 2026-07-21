@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.routers.auth import current_user
 from app.services import workspace_state
+from app.services.ai_model_catalog import build_model_catalog
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_download_path, source_ingestion_service
 from app.services.source_structure_indexer import source_structure_indexer
@@ -38,6 +39,45 @@ class SourceContentView(BaseModel):
 
 class SourceContentUpdateRequest(BaseModel):
     content: str
+
+
+class MediaModelRetryRequest(BaseModel):
+    model: AIModelSelection
+
+
+def _parse_media_model(
+    raw: str | None,
+    *,
+    capability: str,
+    user_id: str,
+) -> AIModelSelection:
+    catalog = build_model_catalog(user_id)
+    options = getattr(catalog, capability)
+    default = catalog.defaults[capability]
+    if raw is None or not raw.strip():
+        selection = default
+    else:
+        try:
+            selection = AIModelSelection.model_validate(json.loads(raw))
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{capability}_model must be a valid model selection.",
+            ) from exc
+    matching = next(
+        (
+            option
+            for option in options
+            if option.provider == selection.provider and option.model == selection.model
+        ),
+        None,
+    )
+    if matching is None or not matching.enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The selected model does not provide enabled {capability} capability.",
+        )
+    return selection
 
 
 def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
@@ -67,6 +107,9 @@ async def import_package_source(
     title: str = Form(default=""),
     text: str | None = Form(default=None),
     catalog_model: str | None = Form(default=None),
+    source_kind: str | None = Form(default=None),
+    transcription_model: str | None = Form(default=None),
+    vision_model: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
     user: UserView = Depends(current_user),
 ) -> SourceIngestionRecord:
@@ -103,6 +146,39 @@ async def import_package_source(
                 title=title,
             )
         if source_uri and source_uri.strip():
+            if (source_kind or "").strip() == "video":
+                selected_transcription_model = _parse_media_model(
+                    transcription_model,
+                    capability="transcription",
+                    user_id=user.id,
+                )
+                selected_vision_model = _parse_media_model(
+                    vision_model,
+                    capability="vision",
+                    user_id=user.id,
+                )
+                selected_catalog_model = _parse_media_model(
+                    catalog_model,
+                    capability="text",
+                    user_id=user.id,
+                )
+                queued = await run_in_threadpool(
+                    source_ingestion_service.queue_media_url_source,
+                    owner_user_id=user.id,
+                    package=package,
+                    source_uri=source_uri,
+                    title=title,
+                    transcription_model=selected_transcription_model,
+                    vision_model=selected_vision_model,
+                    catalog_model=selected_catalog_model,
+                )
+                background_tasks.add_task(
+                    source_ingestion_service.process_media_url_source,
+                    owner_user_id=user.id,
+                    package_id=package.id,
+                    source_id=queued.id,
+                )
+                return queued
             return source_ingestion_service.add_url_source(
                 owner_user_id=user.id,
                 package=package,
@@ -112,6 +188,92 @@ async def import_package_source(
     except SourceIngestionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise HTTPException(status_code=400, detail="Provide a file, source_uri, or pasted text.")
+
+
+def _queue_media_retry(
+    *,
+    background_tasks: BackgroundTasks,
+    package_id: str,
+    source_id: str,
+    user_id: str,
+    operation: str,
+    request: MediaModelRetryRequest,
+) -> SourceIngestionRecord:
+    capability = "transcription" if operation == "retranscribe" else "vision"
+    catalog = build_model_catalog(user_id)
+    options = getattr(catalog, capability)
+    if not any(
+        option.enabled
+        and option.provider == request.model.provider
+        and option.model == request.model.model
+        for option in options
+    ):
+        raise HTTPException(status_code=400, detail=f"Selected {capability} model is unavailable.")
+    try:
+        queued = source_ingestion_service.retry_media_component(
+            owner_user_id=user_id,
+            package_id=package_id,
+            source_id=source_id,
+            operation=operation,
+            selection=request.model,
+        )
+    except SourceIngestionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if queued is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    background_tasks.add_task(
+        source_ingestion_service.process_media_url_source,
+        owner_user_id=user_id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    return queued
+
+
+@router.post(
+    "/api/packages/{package_id}/sources/{source_id}/retranscribe",
+    response_model=SourceIngestionRecord,
+)
+def retranscribe_media_source(
+    package_id: str,
+    source_id: str,
+    request: MediaModelRetryRequest,
+    background_tasks: BackgroundTasks,
+    user: UserView = Depends(current_user),
+) -> SourceIngestionRecord:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    return _queue_media_retry(
+        background_tasks=background_tasks,
+        package_id=package_id,
+        source_id=source_id,
+        user_id=user.id,
+        operation="retranscribe",
+        request=request,
+    )
+
+
+@router.post(
+    "/api/packages/{package_id}/sources/{source_id}/visuals/retry",
+    response_model=SourceIngestionRecord,
+)
+def retry_media_visuals(
+    package_id: str,
+    source_id: str,
+    request: MediaModelRetryRequest,
+    background_tasks: BackgroundTasks,
+    user: UserView = Depends(current_user),
+) -> SourceIngestionRecord:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    return _queue_media_retry(
+        background_tasks=background_tasks,
+        package_id=package_id,
+        source_id=source_id,
+        user_id=user.id,
+        operation="visuals_retry",
+        request=request,
+    )
 
 
 @router.get("/api/packages/{package_id}/sources/jobs", response_model=list[SourceIngestionJob])
@@ -182,6 +344,27 @@ def get_package_source_content(
         raise HTTPException(status_code=404, detail="Source not found.")
     source, content = result
     return SourceContentView(source=source, content=content)
+
+
+@router.get("/api/packages/{package_id}/sources/{source_id}/visuals/{visual_id}/content")
+def get_source_visual_content(
+    package_id: str,
+    source_id: str,
+    visual_id: str,
+    user: UserView = Depends(current_user),
+) -> Response:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    result = source_structure_store.read_visual_bytes(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+        visual_id=visual_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Visual evidence not found.")
+    asset, content = result
+    return Response(content=content, media_type=asset.mime_type or "application/octet-stream")
 
 
 @router.put("/api/packages/{package_id}/sources/{source_id}/content", response_model=SourceContentView)
