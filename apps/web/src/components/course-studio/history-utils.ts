@@ -115,7 +115,7 @@ const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
   "请求已发出，生成讲义可能需要",
 ] as const;
 
-const DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
+const LEGACY_DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
   "chat_flow",
   "board_section_teaching",
   "board_document_generation",
@@ -124,6 +124,23 @@ const DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
   "learning_requirement_refinement",
   "board_task_requirement_refinement",
 ]);
+
+function commitContainsDisplayableChat(commit: CommitRecord): boolean {
+  const historyNodeKind = metadataText(commit, "history_node_kind");
+  const requirementPhase = metadataText(commit, "requirement_phase");
+  if (requirementPhase === "ready" || requirementPhase === "frozen") {
+    return false;
+  }
+  if (historyNodeKind === "chat") {
+    return true;
+  }
+  if (LEGACY_DISPLAYABLE_CHAT_COMMIT_KINDS.has(String(commit.metadata?.kind ?? ""))) {
+    return true;
+  }
+  return !historyNodeKind && Boolean(
+    metadataText(commit, "user_message") || metadataText(commit, "assistant_message")
+  );
+}
 
 function isDisplayableAssistantContent(content: string | null): content is string {
   const text = content?.trim();
@@ -437,7 +454,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
   const messages: ChatMessage[] = [];
 
   lesson.history_graph.commits.forEach((commit) => {
-    if (!lineageIds.has(commit.id) || !DISPLAYABLE_CHAT_COMMIT_KINDS.has(String(commit.metadata?.kind ?? ""))) {
+    if (!lineageIds.has(commit.id) || !commitContainsDisplayableChat(commit)) {
       return;
     }
 

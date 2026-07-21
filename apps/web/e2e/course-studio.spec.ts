@@ -1466,6 +1466,7 @@ test("scrolls to and highlights the Board AI-authorized section being explained"
 
   await page.reload();
 
+  await expect(page.locator("article").filter({ hasText: `正在讲解 ${targetHeading}` })).toBeVisible();
   const teachingFocus = page.locator('[data-teaching-focus="true"]');
   const highlightedHeading = teachingFocus.filter({ hasText: targetHeading });
   const highlightedSentence = teachingFocus.filter({ hasText: targetSentence });
