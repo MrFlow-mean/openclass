@@ -18,6 +18,8 @@ from app.models import (
     DocumentSegmentSearchResult,
     Lesson,
     LessonHistoryGraph,
+    LessonMergeSession,
+    LessonRuntimeSnapshot,
     LibraryChapter,
     ResourceLibraryItem,
     ResourcePageStructure,
@@ -28,7 +30,7 @@ from app.models import (
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -164,6 +166,93 @@ class SqliteCourseStore:
                         lesson,
                         int(row["sort_order"]),
                     )
+                    self._advance_workspace_revision(conn, owner_user_id)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
+    def load_merge_session_for_user(
+        self,
+        owner_user_id: str,
+        session_id: str,
+    ) -> LessonMergeSession | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM lesson_merge_sessions
+                    WHERE id = ? AND owner_user_id = ?
+                    """,
+                    (session_id, owner_user_id),
+                ).fetchone()
+                return _merge_session_from_row(row) if row is not None else None
+
+    def load_active_merge_session_for_user(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> LessonMergeSession | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM lesson_merge_sessions
+                    WHERE owner_user_id = ? AND lesson_id = ?
+                      AND status IN ('draft', 'ai_running', 'ready', 'stale', 'failed')
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (owner_user_id, lesson_id),
+                ).fetchone()
+                return _merge_session_from_row(row) if row is not None else None
+
+    def save_merge_session_for_user(self, session: LessonMergeSession) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    owner_row = conn.execute(
+                        """
+                        SELECT 1
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                        """,
+                        (session.lesson_id, session.owner_user_id),
+                    ).fetchone()
+                    if owner_row is None:
+                        raise ValueError("Merge session lesson is not owned by the current user.")
+                    _upsert_merge_session(conn, session)
+
+    def save_workspace_and_merge_session_for_user_if_revision(
+        self,
+        owner_user_id: str,
+        workspace: WorkspaceState,
+        session: LessonMergeSession,
+        *,
+        expected_revision: int,
+    ) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if self._workspace_revision(conn, owner_user_id) != expected_revision:
+                        conn.rollback()
+                        return False
+                    stored = conn.execute(
+                        """
+                        SELECT version, target_head_commit_id, source_head_commit_id
+                        FROM lesson_merge_sessions
+                        WHERE id = ? AND owner_user_id = ?
+                        """,
+                        (session.id, owner_user_id),
+                    ).fetchone()
+                    if stored is None or int(stored["version"]) != session.version - 1:
+                        conn.rollback()
+                        return False
+                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    _upsert_merge_session(conn, session)
                     self._advance_workspace_revision(conn, owner_user_id)
                     conn.commit()
                     return True
@@ -319,6 +408,7 @@ class SqliteCourseStore:
                 snapshot_content_html TEXT NOT NULL,
                 snapshot_content_text TEXT NOT NULL,
                 snapshot_page_settings_json TEXT NOT NULL,
+                runtime_snapshot_json TEXT,
                 metadata_json TEXT NOT NULL
             );
 
@@ -340,6 +430,25 @@ class SqliteCourseStore:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (lesson_id, name)
             );
+
+            CREATE TABLE IF NOT EXISTS lesson_merge_sessions (
+                id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                lesson_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                target_branch_name TEXT NOT NULL,
+                source_branch_name TEXT NOT NULL,
+                base_commit_id TEXT NOT NULL,
+                target_head_commit_id TEXT NOT NULL,
+                source_head_commit_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_merge_sessions_owner_lesson
+                ON lesson_merge_sessions(owner_user_id, lesson_id, updated_at);
 
             CREATE TABLE IF NOT EXISTS resources (
                 id TEXT PRIMARY KEY,
@@ -425,6 +534,12 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_teaching_progress_json TEXT")
         if "board_task_requirements_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_task_requirements_json TEXT")
+        commit_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(lesson_commits)").fetchall()
+        }
+        if "runtime_snapshot_json" not in commit_columns:
+            conn.execute("ALTER TABLE lesson_commits ADD COLUMN runtime_snapshot_json TEXT")
         resource_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(resources)").fetchall()
@@ -714,6 +829,11 @@ class SqliteCourseStore:
             parent_ids=parent_ids,
             operations=_loads(row["operations_json"], []),
             snapshot=_document_from_row(row, "snapshot"),
+            runtime_snapshot=(
+                LessonRuntimeSnapshot.model_validate(_loads(row["runtime_snapshot_json"], {}))
+                if "runtime_snapshot_json" in row.keys() and row["runtime_snapshot_json"]
+                else _runtime_snapshot_from_legacy_metadata(_loads(row["metadata_json"], {}))
+            ),
             metadata=_loads(row["metadata_json"], {}),
         )
 
@@ -939,8 +1059,8 @@ class SqliteCourseStore:
                 id, lesson_id, sort_order, label, message, branch_name, created_at,
                 operations_json, snapshot_document_id, snapshot_title, snapshot_content_json,
                 snapshot_content_html, snapshot_content_text, snapshot_page_settings_json,
-                metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                runtime_snapshot_json, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 commit.id,
@@ -957,6 +1077,7 @@ class SqliteCourseStore:
                 snapshot.content_html,
                 snapshot.content_text,
                 _dumps(snapshot.page_settings.model_dump(mode="json")),
+                _dumps_optional(commit.runtime_snapshot),
                 _dumps(commit.metadata),
             ),
         )
@@ -1124,6 +1245,77 @@ def _document_from_row(row: sqlite3.Row, prefix: str) -> BoardDocument:
             content_text=row[f"{prefix}_content_text"],
             page_settings=_loads(row[f"{prefix}_page_settings_json"], {}),
         )
+    )
+
+
+def _runtime_snapshot_from_legacy_metadata(metadata: dict[str, Any]) -> LessonRuntimeSnapshot:
+    requirement = metadata.get("active_requirement_sheet_after")
+    board_task = metadata.get("active_board_task_sheet_after")
+    return LessonRuntimeSnapshot(
+        learning_requirements=(
+            requirement if isinstance(requirement, dict) else None
+        ),
+        board_task_requirements=(
+            board_task if isinstance(board_task, dict) else None
+        ),
+    )
+
+
+def _merge_session_payload(session: LessonMergeSession) -> dict[str, Any]:
+    payload = session.model_dump(mode="json")
+    payload["owner_user_id"] = session.owner_user_id
+    payload["merge_blueprint"] = session.merge_blueprint
+    return payload
+
+
+def _merge_session_from_row(row: sqlite3.Row) -> LessonMergeSession:
+    payload = _loads(row["payload_json"], {})
+    payload.update(
+        {
+            "owner_user_id": row["owner_user_id"],
+            "status": row["status"],
+            "version": int(row["version"]),
+            "updated_at": row["updated_at"],
+        }
+    )
+    return LessonMergeSession.model_validate(payload)
+
+
+def _upsert_merge_session(conn: sqlite3.Connection, session: LessonMergeSession) -> None:
+    conn.execute(
+        """
+        INSERT INTO lesson_merge_sessions(
+            id, owner_user_id, lesson_id, status, target_branch_name,
+            source_branch_name, base_commit_id, target_head_commit_id,
+            source_head_commit_id, version, payload_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            status = excluded.status,
+            target_branch_name = excluded.target_branch_name,
+            source_branch_name = excluded.source_branch_name,
+            base_commit_id = excluded.base_commit_id,
+            target_head_commit_id = excluded.target_head_commit_id,
+            source_head_commit_id = excluded.source_head_commit_id,
+            version = excluded.version,
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        WHERE lesson_merge_sessions.owner_user_id = excluded.owner_user_id
+        """,
+        (
+            session.id,
+            session.owner_user_id,
+            session.lesson_id,
+            session.status,
+            session.target_branch_name,
+            session.source_branch_name,
+            session.base_commit_id,
+            session.target_head_commit_id,
+            session.source_head_commit_id,
+            session.version,
+            _dumps(_merge_session_payload(session)),
+            session.created_at,
+            session.updated_at,
+        ),
     )
 
 

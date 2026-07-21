@@ -1,0 +1,668 @@
+from __future__ import annotations
+
+import copy
+import json
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from typing import Any, Iterable
+
+from app.models import (
+    AIModelSelection,
+    BoardDocument,
+    BoardTaskRequirementSheet,
+    CommitRecord,
+    LearningRequirementSheet,
+    Lesson,
+    LessonMergeConflict,
+    LessonMergeConflictResolution,
+    LessonMergeMode,
+    LessonMergeSession,
+    LessonMergeSessionView,
+    LessonRuntimeSnapshot,
+    MergeRuntimeDraft,
+    now_iso,
+)
+from app.services.history import commit_merge, ensure_document_block_ids, get_commit
+from app.services.rich_document import rebuild_document_from_content_json
+
+
+class LessonMergeError(ValueError):
+    pass
+
+
+class LessonMergeConflictError(LessonMergeError):
+    pass
+
+
+class LessonMergeStaleError(LessonMergeError):
+    pass
+
+
+@dataclass(frozen=True)
+class _BlockHunk:
+    side: str
+    start: int
+    end: int
+    replacements: tuple[dict[str, Any], ...]
+
+
+def create_merge_session(
+    lesson: Lesson,
+    *,
+    owner_user_id: str,
+    source_branch_name: str,
+    mode: LessonMergeMode = "manual",
+    ai_model: AIModelSelection | None = None,
+    supersedes_session_id: str | None = None,
+) -> LessonMergeSession:
+    target_branch_name = lesson.history_graph.current_branch
+    if source_branch_name == target_branch_name:
+        raise LessonMergeError("不能把当前分支合并到自己。")
+    source_branch = lesson.history_graph.branches.get(source_branch_name)
+    target_branch = lesson.history_graph.branches.get(target_branch_name)
+    if source_branch is None:
+        raise LessonMergeError(f"未找到来源分支 {source_branch_name}。")
+    if target_branch is None:
+        raise LessonMergeError(f"未找到当前分支 {target_branch_name}。")
+
+    commits_by_id = {commit.id: commit for commit in lesson.history_graph.commits}
+    target_head = get_commit(lesson, target_branch.head_commit_id)
+    source_head = get_commit(lesson, source_branch.head_commit_id)
+    if _is_ancestor(commits_by_id, source_head.id, target_head.id):
+        raise LessonMergeError("来源分支的内容已经包含在当前分支中。")
+    base_commit = _find_merge_base(lesson, target_head.id, source_head.id)
+
+    board_conflicts, blueprint, draft_document = _merge_documents(
+        base_commit.snapshot,
+        target_head.snapshot,
+        source_head.snapshot,
+    )
+    runtime_conflicts, draft_runtime, runtime_audit = _merge_runtime(
+        _runtime_for_commit(base_commit),
+        _runtime_for_commit(target_head),
+        _runtime_for_commit(source_head),
+        board_changed=_document_signature(draft_document) != _document_signature(target_head.snapshot),
+    )
+    conflicts = [*board_conflicts, *runtime_conflicts]
+    status = "ready" if not conflicts else "draft"
+    return LessonMergeSession(
+        owner_user_id=owner_user_id,
+        lesson_id=lesson.id,
+        target_branch_name=target_branch_name,
+        source_branch_name=source_branch_name,
+        base_commit_id=base_commit.id,
+        target_head_commit_id=target_head.id,
+        source_head_commit_id=source_head.id,
+        mode=mode,
+        status=status,
+        conflicts=conflicts,
+        merge_blueprint=blueprint,
+        draft_document=draft_document,
+        draft_runtime=draft_runtime,
+        ai_model=ai_model,
+        supersedes_session_id=supersedes_session_id,
+        audit={
+            "target_branch_name": target_branch_name,
+            "source_branch_name": source_branch_name,
+            "base_commit_id": base_commit.id,
+            "target_head_commit_id": target_head.id,
+            "source_head_commit_id": source_head.id,
+            "runtime": runtime_audit,
+            "board_conflict_count": len(board_conflicts),
+            "runtime_conflict_count": len(runtime_conflicts),
+        },
+    )
+
+
+def update_merge_session(
+    session: LessonMergeSession,
+    *,
+    expected_version: int,
+    resolutions: Iterable[LessonMergeConflictResolution] = (),
+    draft_document: BoardDocument | None = None,
+    draft_runtime: MergeRuntimeDraft | None = None,
+) -> LessonMergeSession:
+    if session.version != expected_version:
+        raise LessonMergeStaleError("合并草案已在其他操作中更新，请刷新后继续。")
+    if session.status not in {"draft", "ready", "failed"}:
+        raise LessonMergeError("当前合并会话不可编辑。")
+
+    by_id = {conflict.id: conflict for conflict in session.conflicts}
+    board_resolution_changed = False
+    for incoming in resolutions:
+        conflict = by_id.get(incoming.conflict_id)
+        if conflict is None:
+            raise LessonMergeConflictError(f"未找到冲突 {incoming.conflict_id}。")
+        if incoming.resolution == "unresolved":
+            conflict.resolution = "unresolved"
+            conflict.custom_value = None
+            conflict.resolved = False
+        else:
+            conflict.resolution = incoming.resolution
+            conflict.custom_value = incoming.custom_value
+            conflict.resolved = True
+        if conflict.kind == "board":
+            board_resolution_changed = True
+        else:
+            _apply_runtime_conflict(session.draft_runtime, conflict)
+
+    if board_resolution_changed:
+        session.draft_document = _render_blueprint(session)
+    if draft_document is not None:
+        session.draft_document = ensure_document_block_ids(draft_document)
+    if draft_runtime is not None:
+        session.draft_runtime = draft_runtime
+
+    session.version += 1
+    session.updated_at = now_iso()
+    session.status = "ready" if all(conflict.resolved for conflict in session.conflicts) else "draft"
+    return session
+
+
+def abandon_merge_session(session: LessonMergeSession) -> LessonMergeSession:
+    if session.status == "committed":
+        raise LessonMergeError("已提交的合并会话不能放弃。")
+    session.status = "abandoned"
+    session.version += 1
+    session.updated_at = now_iso()
+    return session
+
+
+def submit_merge_session(
+    lesson: Lesson,
+    session: LessonMergeSession,
+    *,
+    expected_version: int,
+) -> CommitRecord:
+    if session.version != expected_version:
+        raise LessonMergeStaleError("合并草案版本已变化，请刷新后重试。")
+    if session.status not in {"ready", "draft"}:
+        raise LessonMergeError("当前合并会话不可提交。")
+    unresolved = [conflict for conflict in session.conflicts if not conflict.resolved]
+    if unresolved:
+        raise LessonMergeConflictError("仍有未解决的合并冲突。")
+    if lesson.history_graph.current_branch != session.target_branch_name:
+        raise LessonMergeStaleError("当前分支已改变，请切回目标分支后重试。")
+    target_branch = lesson.history_graph.branches.get(session.target_branch_name)
+    source_branch = lesson.history_graph.branches.get(session.source_branch_name)
+    if (
+        target_branch is None
+        or source_branch is None
+        or target_branch.head_commit_id != session.target_head_commit_id
+        or source_branch.head_commit_id != session.source_head_commit_id
+    ):
+        session.status = "stale"
+        session.updated_at = now_iso()
+        raise LessonMergeStaleError("合并期间分支已产生新内容，需要基于最新节点重新计算。")
+
+    runtime = LessonRuntimeSnapshot(
+        learning_requirements=session.draft_runtime.learning_requirements,
+        board_task_requirements=session.draft_runtime.board_task_requirements,
+        board_teaching_guide=None,
+        board_teaching_progress=None,
+    )
+    commit = commit_merge(
+        lesson,
+        source_head_commit_id=session.source_head_commit_id,
+        new_document=session.draft_document,
+        runtime_snapshot=runtime,
+        label=f"合并 {session.source_branch_name} 到 {session.target_branch_name}",
+        message=(
+            f"将分支 {session.source_branch_name} 合并到 "
+            f"{session.target_branch_name}，并保留两条历史。"
+        ),
+        metadata={
+            "merge_session_id": session.id,
+            "merge_mode": session.mode,
+            "merge_base_commit_id": session.base_commit_id,
+            "merge_target_head_commit_id": session.target_head_commit_id,
+            "merge_source_head_commit_id": session.source_head_commit_id,
+            "merge_target_branch": session.target_branch_name,
+            "merge_source_branch": session.source_branch_name,
+            "merge_conflict_count": len(session.conflicts),
+            "merge_resolutions": [
+                {
+                    "conflict_id": conflict.id,
+                    "kind": conflict.kind,
+                    "path": conflict.path,
+                    "resolution": conflict.resolution,
+                }
+                for conflict in session.conflicts
+            ],
+            "reset_codex_thread": True,
+            "document_changed": True,
+            "teaching_state_invalidated": session.draft_runtime.invalidated_teaching_state,
+            "ai_model": session.ai_model.model_dump(mode="json") if session.ai_model else None,
+        },
+    )
+    session.status = "committed"
+    session.committed_commit_id = commit.id
+    session.version += 1
+    session.updated_at = now_iso()
+    return commit
+
+
+def merge_session_view(session: LessonMergeSession) -> LessonMergeSessionView:
+    payload = session.model_dump(mode="json")
+    payload["conflicts"] = [
+        {
+            **conflict.model_dump(mode="json"),
+            "base_value": _sanitize_public_value(conflict.base_value),
+            "target_value": _sanitize_public_value(conflict.target_value),
+            "source_value": _sanitize_public_value(conflict.source_value),
+            "custom_value": _sanitize_public_value(conflict.custom_value),
+        }
+        for conflict in session.conflicts
+    ]
+    payload["audit"] = _sanitize_public_value(session.audit)
+    return LessonMergeSessionView.model_validate(payload)
+
+
+def branch_history_summary(lesson: Lesson, head_commit_id: str, *, limit: int = 12) -> list[dict[str, str]]:
+    commits = _first_parent_lineage(lesson, head_commit_id)
+    result: list[dict[str, str]] = []
+    for commit in commits[-limit:]:
+        metadata = commit.metadata if isinstance(commit.metadata, dict) else {}
+        user_message = metadata.get("user_message")
+        assistant_message = metadata.get("assistant_message")
+        if isinstance(user_message, str) and user_message.strip():
+            result.append({"role": "user", "content": user_message.strip()})
+        if isinstance(assistant_message, str) and assistant_message.strip():
+            result.append({"role": "assistant", "content": assistant_message.strip()})
+    return result[-limit * 2 :]
+
+
+def _find_merge_base(lesson: Lesson, target_head_id: str, source_head_id: str) -> CommitRecord:
+    commits_by_id = {commit.id: commit for commit in lesson.history_graph.commits}
+    target_distances = _ancestor_distances(commits_by_id, target_head_id)
+    source_distances = _ancestor_distances(commits_by_id, source_head_id)
+    common = set(target_distances) & set(source_distances)
+    if not common:
+        raise LessonMergeError("两个分支没有可用的共同祖先。")
+    commit_order = {commit.id: index for index, commit in enumerate(lesson.history_graph.commits)}
+    best_id = min(
+        common,
+        key=lambda commit_id: (
+            max(target_distances[commit_id], source_distances[commit_id]),
+            target_distances[commit_id] + source_distances[commit_id],
+            -commit_order.get(commit_id, -1),
+        ),
+    )
+    return commits_by_id[best_id]
+
+
+def _ancestor_distances(commits: dict[str, CommitRecord], head_id: str) -> dict[str, int]:
+    distances: dict[str, int] = {}
+    pending: list[tuple[str, int]] = [(head_id, 0)]
+    while pending:
+        commit_id, distance = pending.pop(0)
+        if commit_id in distances and distances[commit_id] <= distance:
+            continue
+        distances[commit_id] = distance
+        commit = commits.get(commit_id)
+        if commit is not None:
+            pending.extend((parent_id, distance + 1) for parent_id in commit.parent_ids)
+    return distances
+
+
+def _is_ancestor(commits: dict[str, CommitRecord], ancestor_id: str, descendant_id: str) -> bool:
+    return ancestor_id in _ancestor_distances(commits, descendant_id)
+
+
+def _first_parent_lineage(lesson: Lesson, head_id: str) -> list[CommitRecord]:
+    commits_by_id = {commit.id: commit for commit in lesson.history_graph.commits}
+    result: list[CommitRecord] = []
+    cursor = commits_by_id.get(head_id)
+    seen: set[str] = set()
+    while cursor is not None and cursor.id not in seen:
+        seen.add(cursor.id)
+        result.append(cursor)
+        cursor = commits_by_id.get(cursor.parent_ids[0]) if cursor.parent_ids else None
+    return list(reversed(result))
+
+
+def _runtime_for_commit(commit: CommitRecord) -> LessonRuntimeSnapshot:
+    if commit.runtime_snapshot is not None:
+        return LessonRuntimeSnapshot.model_validate(commit.runtime_snapshot.model_dump(mode="json"))
+    metadata = commit.metadata if isinstance(commit.metadata, dict) else {}
+    return LessonRuntimeSnapshot(
+        learning_requirements=(
+            metadata.get("active_requirement_sheet_after")
+            if isinstance(metadata.get("active_requirement_sheet_after"), dict)
+            else None
+        ),
+        board_task_requirements=(
+            metadata.get("active_board_task_sheet_after")
+            if isinstance(metadata.get("active_board_task_sheet_after"), dict)
+            else None
+        ),
+    )
+
+
+def _merge_documents(
+    base: BoardDocument,
+    target: BoardDocument,
+    source: BoardDocument,
+) -> tuple[list[LessonMergeConflict], list[dict[str, Any]], BoardDocument]:
+    base_nodes = _top_level_nodes(base)
+    target_nodes = _top_level_nodes(target)
+    source_nodes = _top_level_nodes(source)
+    target_hunks = _build_hunks("target", base_nodes, target_nodes)
+    source_hunks = _build_hunks("source", base_nodes, source_nodes)
+    clusters = _change_clusters([*target_hunks, *source_hunks])
+    conflicts: list[LessonMergeConflict] = []
+    blueprint: list[dict[str, Any]] = []
+    cursor = 0
+
+    for cluster in clusters:
+        start = min(hunk.start for hunk in cluster)
+        end = max(hunk.end for hunk in cluster)
+        if cursor < start:
+            blueprint.append({"kind": "nodes", "nodes": copy.deepcopy(base_nodes[cursor:start])})
+        target_changes = [hunk for hunk in cluster if hunk.side == "target"]
+        source_changes = [hunk for hunk in cluster if hunk.side == "source"]
+        if target_changes and not source_changes:
+            nodes = _apply_hunks_to_range(base_nodes, start, end, target_changes)
+            blueprint.append({"kind": "nodes", "nodes": nodes})
+        elif source_changes and not target_changes:
+            nodes = _apply_hunks_to_range(base_nodes, start, end, source_changes)
+            blueprint.append({"kind": "nodes", "nodes": nodes})
+        else:
+            target_result = _apply_hunks_to_range(base_nodes, start, end, target_changes)
+            source_result = _apply_hunks_to_range(base_nodes, start, end, source_changes)
+            if _nodes_equal(target_result, source_result):
+                blueprint.append({"kind": "nodes", "nodes": target_result})
+            else:
+                conflict = LessonMergeConflict(
+                    kind="board",
+                    path=f"content[{start}:{end}]",
+                    title=_conflict_title(base_nodes[start:end], target_result, source_result),
+                    base_value=copy.deepcopy(base_nodes[start:end]),
+                    target_value=target_result,
+                    source_value=source_result,
+                )
+                conflicts.append(conflict)
+                blueprint.append({"kind": "conflict", "conflict_id": conflict.id})
+        cursor = max(cursor, end)
+    if cursor < len(base_nodes):
+        blueprint.append({"kind": "nodes", "nodes": copy.deepcopy(base_nodes[cursor:])})
+
+    shell = target.model_copy(update={"content_json": {"type": "doc", "content": []}})
+    temporary = LessonMergeSession.model_construct(
+        conflicts=conflicts,
+        merge_blueprint=blueprint,
+        draft_document=shell,
+    )
+    draft = _render_blueprint(temporary)
+    return conflicts, blueprint, draft
+
+
+def _top_level_nodes(document: BoardDocument) -> list[dict[str, Any]]:
+    content = document.content_json.get("content") if isinstance(document.content_json, dict) else None
+    return [copy.deepcopy(node) for node in content or [] if isinstance(node, dict)]
+
+
+def _canonical_node(node: dict[str, Any]) -> str:
+    value = copy.deepcopy(node)
+    attrs = value.get("attrs")
+    if isinstance(attrs, dict):
+        attrs.pop("blockId", None)
+        attrs.pop("id", None)
+        if not attrs:
+            value.pop("attrs", None)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _build_hunks(side: str, base: list[dict[str, Any]], other: list[dict[str, Any]]) -> list[_BlockHunk]:
+    matcher = SequenceMatcher(
+        a=[_canonical_node(node) for node in base],
+        b=[_canonical_node(node) for node in other],
+        autojunk=False,
+    )
+    return [
+        _BlockHunk(side=side, start=i1, end=i2, replacements=tuple(copy.deepcopy(other[j1:j2])))
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+
+
+def _change_clusters(hunks: list[_BlockHunk]) -> list[list[_BlockHunk]]:
+    ordered = sorted(hunks, key=lambda item: (item.start, item.end, item.side))
+    clusters: list[list[_BlockHunk]] = []
+    for hunk in ordered:
+        if clusters and any(_hunks_overlap(existing, hunk) for existing in clusters[-1]):
+            clusters[-1].append(hunk)
+        else:
+            clusters.append([hunk])
+    return clusters
+
+
+def _hunks_overlap(left: _BlockHunk, right: _BlockHunk) -> bool:
+    left_insert = left.start == left.end
+    right_insert = right.start == right.end
+    if left_insert and right_insert:
+        return left.start == right.start
+    if left_insert:
+        return right.start <= left.start <= right.end
+    if right_insert:
+        return left.start <= right.start <= left.end
+    return max(left.start, right.start) < min(left.end, right.end)
+
+
+def _apply_hunks_to_range(
+    base: list[dict[str, Any]],
+    start: int,
+    end: int,
+    hunks: list[_BlockHunk],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    cursor = start
+    for hunk in sorted(hunks, key=lambda item: (item.start, item.end)):
+        if cursor < hunk.start:
+            result.extend(copy.deepcopy(base[cursor:hunk.start]))
+        result.extend(copy.deepcopy(list(hunk.replacements)))
+        cursor = max(cursor, hunk.end)
+    if cursor < end:
+        result.extend(copy.deepcopy(base[cursor:end]))
+    return result
+
+
+def _nodes_equal(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+    return [_canonical_node(node) for node in left] == [_canonical_node(node) for node in right]
+
+
+def _render_blueprint(session: LessonMergeSession) -> BoardDocument:
+    conflicts = {conflict.id: conflict for conflict in session.conflicts}
+    nodes: list[dict[str, Any]] = []
+    for item in session.merge_blueprint:
+        if item.get("kind") == "nodes":
+            nodes.extend(copy.deepcopy(item.get("nodes") or []))
+            continue
+        conflict = conflicts.get(str(item.get("conflict_id") or ""))
+        if conflict is None:
+            continue
+        nodes.extend(_nodes_for_resolution(conflict))
+    rebuilt = rebuild_document_from_content_json(
+        session.draft_document,
+        {"type": "doc", "content": nodes or [{"type": "paragraph"}]},
+    )
+    return ensure_document_block_ids(rebuilt)
+
+
+def _nodes_for_resolution(conflict: LessonMergeConflict) -> list[dict[str, Any]]:
+    resolution = conflict.resolution
+    if resolution in {"unresolved", "target"}:
+        value = conflict.target_value
+    elif resolution == "source":
+        value = conflict.source_value
+    elif resolution == "both":
+        value = [*(conflict.target_value or []), *(conflict.source_value or [])]
+    elif resolution == "clear":
+        value = []
+    else:
+        value = conflict.custom_value
+    if isinstance(value, list):
+        return [copy.deepcopy(node) for node in value if isinstance(node, dict)]
+    if isinstance(value, dict):
+        return [copy.deepcopy(value)]
+    if isinstance(value, str) and value.strip():
+        return [{"type": "paragraph", "content": [{"type": "text", "text": value.strip()}]}]
+    return []
+
+
+def _conflict_title(
+    base: list[dict[str, Any]],
+    target: list[dict[str, Any]],
+    source: list[dict[str, Any]],
+) -> str:
+    kinds = [str(node.get("type") or "content") for node in (target or source or base)]
+    label = " / ".join(dict.fromkeys(kinds[:3])) or "content"
+    return f"两个分支都修改了 {label}"
+
+
+def _merge_runtime(
+    base: LessonRuntimeSnapshot,
+    target: LessonRuntimeSnapshot,
+    source: LessonRuntimeSnapshot,
+    *,
+    board_changed: bool,
+) -> tuple[list[LessonMergeConflict], MergeRuntimeDraft, dict[str, Any]]:
+    conflicts: list[LessonMergeConflict] = []
+    learning, learning_conflicts = _merge_model_fields(
+        "learning_requirements",
+        "learning_requirement",
+        LearningRequirementSheet,
+        base.learning_requirements,
+        target.learning_requirements,
+        source.learning_requirements,
+    )
+    board_task, task_conflicts = _merge_model_fields(
+        "board_task_requirements",
+        "board_task",
+        BoardTaskRequirementSheet,
+        base.board_task_requirements,
+        target.board_task_requirements,
+        source.board_task_requirements,
+    )
+    conflicts.extend(learning_conflicts)
+    conflicts.extend(task_conflicts)
+    invalidated = board_changed and any(
+        value is not None
+        for value in (
+            target.board_teaching_guide,
+            target.board_teaching_progress,
+            source.board_teaching_guide,
+            source.board_teaching_progress,
+        )
+    )
+    return (
+        conflicts,
+        MergeRuntimeDraft(
+            learning_requirements=learning,
+            board_task_requirements=board_task,
+            invalidated_teaching_state=invalidated,
+        ),
+        {
+            "teaching_state_invalidated": invalidated,
+            "target_had_teaching_state": bool(target.board_teaching_guide or target.board_teaching_progress),
+            "source_had_teaching_state": bool(source.board_teaching_guide or source.board_teaching_progress),
+        },
+    )
+
+
+def _merge_model_fields(
+    path_prefix: str,
+    default_kind: str,
+    model_type: type[LearningRequirementSheet] | type[BoardTaskRequirementSheet],
+    base_model: Any,
+    target_model: Any,
+    source_model: Any,
+) -> tuple[Any, list[LessonMergeConflict]]:
+    base = base_model.model_dump(mode="json") if base_model is not None else {}
+    target = target_model.model_dump(mode="json") if target_model is not None else {}
+    source = source_model.model_dump(mode="json") if source_model is not None else {}
+    if not target and not source:
+        return None, []
+    result = copy.deepcopy(target)
+    conflicts: list[LessonMergeConflict] = []
+    for key in sorted(set(base) | set(target) | set(source)):
+        base_value = base.get(key)
+        target_value = target.get(key)
+        source_value = source.get(key)
+        if target_value == source_value:
+            result[key] = copy.deepcopy(target_value)
+        elif target_value == base_value:
+            result[key] = copy.deepcopy(source_value)
+        elif source_value == base_value:
+            result[key] = copy.deepcopy(target_value)
+        else:
+            kind = "source_reference" if key == "source_grounding" else default_kind
+            conflicts.append(
+                LessonMergeConflict(
+                    kind=kind,
+                    path=f"{path_prefix}.{key}",
+                    title=f"运行状态 {key} 在两个分支中不同",
+                    base_value=copy.deepcopy(base_value),
+                    target_value=copy.deepcopy(target_value),
+                    source_value=copy.deepcopy(source_value),
+                )
+            )
+            result[key] = copy.deepcopy(target_value)
+    try:
+        return model_type.model_validate(result), conflicts
+    except Exception:
+        return target_model or source_model, conflicts
+
+
+def _apply_runtime_conflict(draft: MergeRuntimeDraft, conflict: LessonMergeConflict) -> None:
+    root, _, field = conflict.path.partition(".")
+    if not field or root not in {"learning_requirements", "board_task_requirements"}:
+        return
+    current_model = getattr(draft, root)
+    current = current_model.model_dump(mode="json") if current_model is not None else {}
+    if conflict.resolution == "source":
+        value = conflict.source_value
+    elif conflict.resolution == "both":
+        if isinstance(conflict.target_value, list) and isinstance(conflict.source_value, list):
+            value = [*conflict.target_value, *conflict.source_value]
+        else:
+            value = conflict.custom_value
+    elif conflict.resolution == "clear":
+        value = None
+    elif conflict.resolution in {"custom", "ai"}:
+        value = conflict.custom_value
+    else:
+        value = conflict.target_value
+    current[field] = copy.deepcopy(value)
+    model_type = LearningRequirementSheet if root == "learning_requirements" else BoardTaskRequirementSheet
+    try:
+        setattr(draft, root, model_type.model_validate(current))
+    except Exception as exc:
+        raise LessonMergeConflictError(f"冲突 {conflict.id} 的运行状态无效。") from exc
+
+
+def _document_signature(document: BoardDocument) -> str:
+    return json.dumps(
+        [_canonical_node(node) for node in _top_level_nodes(document)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _sanitize_public_value(value: Any) -> Any:
+    blocked = {
+        "local_source_path",
+        "original_source_path",
+        "parser_artifacts_path",
+        "expanded_text",
+        "context_text",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_public_value(item)
+            for key, item in value.items()
+            if key not in blocked
+        }
+    if isinstance(value, list):
+        return [_sanitize_public_value(item) for item in value]
+    return value
