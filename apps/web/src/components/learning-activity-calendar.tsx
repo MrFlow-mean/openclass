@@ -182,7 +182,7 @@ export function LearningActivityCalendar({
       </div>
 
       <div className="mt-6 overflow-x-auto" aria-label={labels.subtitle} data-testid="learning-activity-calendar">
-        <div className="flex min-w-max gap-[4px]">
+        <div className="flex w-full min-w-[42rem] justify-between">
           {activity.weeks.map((week) => (
             <div key={week.key} className="flex flex-col gap-[4px]">
               {week.days.map((day, index) =>
