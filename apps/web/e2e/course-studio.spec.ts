@@ -1251,7 +1251,11 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   const firstVersion = `RIDOC 历史版本一 ${unique}`;
   const secondVersion = `RIDOC 历史版本二 ${unique}`;
   await enterAsGuest(page);
-  await createPackageFromHome(page, `RIDOC 测试课程包 ${unique}`);
+  await page.getByLabel(/进入单独课程工作台|添加单独课程/).click();
+  const createLessonMenuItem = page.getByRole("menuitem", { name: "新建课程" });
+  if (await createLessonMenuItem.isVisible()) {
+    await createLessonMenuItem.click();
+  }
   await createLessonFromEmptyStudio(page, `RIDOC 测试页面 ${unique}`);
   await writeEditorTextAndWaitForSave(page, firstVersion);
   await writeEditorTextAndWaitForSave(page, secondVersion);
@@ -1266,11 +1270,17 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
     ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
 
+  await page.goto("/home");
+  const originalLessonCard = page
+    .locator("[data-lesson-selection-root]")
+    .filter({ hasText: `RIDOC 测试页面 ${unique}` })
+    .first();
+  await originalLessonCard.getByLabel("打开课程操作菜单").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "加载课程包", exact: true }).click();
+  await page.getByRole("button", { name: "加载导出的课程包", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),
@@ -1279,8 +1289,14 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   });
   await importResponse;
 
+  const lessonCards = page
+    .locator("[data-lesson-selection-root]")
+    .filter({ hasText: `RIDOC 测试页面 ${unique}` });
+  await expect(lessonCards).toHaveCount(2);
+  await lessonCards.last().click();
   await expect(page.locator(".ProseMirror").first()).toContainText(secondVersion);
-  await openHistoryPanel(page);
+  await page.getByTitle("展开右侧栏").dispatchEvent("click");
+  await expect(page.getByText("修订记录")).toBeVisible();
   await expect(page.getByText("RIDOC 课程包")).toBeVisible();
   await page.getByRole("button", { name: "播放课程" }).click();
   await page.getByRole("button", { name: "暂停播放" }).click();
