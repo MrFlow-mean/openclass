@@ -810,6 +810,10 @@ export function CourseStudio() {
             (option) => option.provider === "openai_codex"
           )}
           defaultCatalogModel={modelCatalog.defaults.text}
+          selectedTextModel={selectedTextModel}
+          selectedTextOption={selectedTextOption}
+          textModelOptions={modelCatalog.text}
+          onSelectTextModel={selectTextModel}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsLoading={chatSpeech.isSpeechLoading}
           speechIsPlaying={chatSpeech.isSpeechPlaying}
