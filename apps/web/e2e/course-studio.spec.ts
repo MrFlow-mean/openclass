@@ -708,16 +708,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 5\.6 Luna，推理强度 中，速度 标准/
   );
-  await page.getByTestId("source-catalog-model-reasoning-row").click();
-  await expect(page.getByTestId("source-catalog-model-reasoning-menu")).toBeVisible();
-  await expect(
-    page
-      .getByTestId("source-catalog-model-reasoning-menu")
-      .getByRole("button", { name: "推理强度 高" })
-  ).toHaveCount(0);
-  await page.getByTestId("source-catalog-model-reasoning-row").click();
-  await expect(page.getByTestId("source-catalog-model-speed-row")).toBeDisabled();
-  await expect(page.getByTestId("source-catalog-model-speed-row")).toContainText("仅标准");
+  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toHaveCount(0);
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
   await catalogModelButton.click();
 
   await page.getByTestId("source-file-input").setInputFiles({
@@ -740,7 +732,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 Default only test model，推理强度 默认，速度 标准/
   );
-  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toBeDisabled();
+  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toHaveCount(0);
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
   await page.getByTestId("source-catalog-model-reset-button").click();
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
