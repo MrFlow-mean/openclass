@@ -845,6 +845,8 @@ export function CourseStudio() {
           }}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}
+          onImportRidoc={(file) => void lessonPackage.importRidoc(file)}
+          onExportRidoc={() => void lessonPackage.exportRidoc()}
           onReferenceFormula={(formulaSelection) => focusComposerWithSelection("ask", formulaSelection)}
           onReferenceFormulaToGeometry={(formulaSelection) => openGeometryWithSelection(formulaSelection)}
           onFormulaInkSubmit={handleFormulaInkSubmit}

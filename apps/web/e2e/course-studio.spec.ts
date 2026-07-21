@@ -1253,25 +1253,32 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   await createLessonFromEmptyStudio(page, `RIDOC 测试页面 ${unique}`);
   await writeEditorTextAndWaitForSave(page, firstVersion);
   await writeEditorTextAndWaitForSave(page, secondVersion);
-  await openHistoryPanel(page);
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出", exact: true }).click();
+  await page.getByRole("button", { name: "导出课程包", exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
-  const ridocPath = await download.path();
-  expect(ridocPath).toBeTruthy();
+  const ridocStream = await download.createReadStream();
+  const ridocChunks: Buffer[] = [];
+  for await (const chunk of ridocStream) {
+    ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
 
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "导入", exact: true }).click();
+  await page.getByRole("button", { name: "加载课程包", exact: true }).click();
   const fileChooser = await fileChooserPromise;
-  await fileChooser.setFiles(ridocPath!);
+  await fileChooser.setFiles({
+    name: download.suggestedFilename(),
+    mimeType: "application/vnd.openclass.ridoc+zip",
+    buffer: Buffer.concat(ridocChunks),
+  });
   await importResponse;
 
   await expect(page.locator(".ProseMirror").first()).toContainText(secondVersion);
+  await openHistoryPanel(page);
   await expect(page.getByText("RIDOC 课程包")).toBeVisible();
   await page.getByRole("button", { name: "播放课程" }).click();
   await page.getByRole("button", { name: "暂停播放" }).click();

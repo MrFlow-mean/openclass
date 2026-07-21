@@ -27,6 +27,8 @@ type BoardEditorPanelProps = {
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
+  onImportRidoc: (file: File) => void;
+  onExportRidoc: () => void;
   onReferenceFormula: (selection: SelectionRef) => void;
   onReferenceFormulaToGeometry: (selection: SelectionRef) => void;
   onFormulaInkSubmit: (payload: FormulaInkEditorSubmitPayload) => boolean;
@@ -116,6 +118,8 @@ export function BoardEditorPanel({
   onImportDocx,
   onExportDocx,
   onExportHtml,
+  onImportRidoc,
+  onExportRidoc,
   onReferenceFormula,
   onReferenceFormulaToGeometry,
   onFormulaInkSubmit,
@@ -184,6 +188,8 @@ export function BoardEditorPanel({
         onImportDocx={onImportDocx}
         onExportDocx={onExportDocx}
         onExportHtml={onExportHtml}
+        onImportRidoc={onImportRidoc}
+        onExportRidoc={onExportRidoc}
         onFormulaReference={(selection) =>
           onReferenceFormula({
             kind: "board",
