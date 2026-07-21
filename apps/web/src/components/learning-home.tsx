@@ -1267,20 +1267,6 @@ export function LearningHome() {
               {h.exportLessonPackage}
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setLessonMenuState(null);
-                setLessonMoveMenuState(null);
-                ridocFileInputRef.current?.click();
-              }}
-              disabled={busyKey !== null}
-              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Upload className="h-4 w-4" />
-              {h.loadExportedLessonPackage}
-            </button>
-
             <div className="my-1 h-px bg-stone-100" />
 
             <button

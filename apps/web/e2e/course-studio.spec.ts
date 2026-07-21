@@ -1076,12 +1076,12 @@ test("exports and imports a RIDOC file as a standalone lesson", async ({ page })
     ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
 
-  await lessonCard.getByLabel("打开课程操作菜单").click();
+  await page.getByLabel("添加单独课程").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "加载导出的课程包", exact: true }).click();
+  await page.getByRole("menuitem", { name: "导入课程文件", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),
@@ -1271,16 +1271,12 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   }
 
   await page.goto("/home");
-  const originalLessonCard = page
-    .locator("[data-lesson-selection-root]")
-    .filter({ hasText: `RIDOC 测试页面 ${unique}` })
-    .first();
-  await originalLessonCard.getByLabel("打开课程操作菜单").click();
+  await page.getByLabel("添加单独课程").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "加载导出的课程包", exact: true }).click();
+  await page.getByRole("menuitem", { name: "导入课程文件", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),

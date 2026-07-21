@@ -194,7 +194,6 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         : "This package is empty. Move a lesson into it, or open Studio to create the first page.",
       moveToPackage: z ? "移动到课程包" : "Move to package",
       exportLessonPackage: z ? "导出课程包" : "Export lesson package",
-      loadExportedLessonPackage: z ? "加载导出的课程包" : "Load exported lesson package",
       delete: z ? "删除" : "Delete",
       noMovablePackages: z ? "暂无可移动课程包" : "No packages to move into",
       moreUpdatesAria: z ? "更多更新操作" : "More updates",
