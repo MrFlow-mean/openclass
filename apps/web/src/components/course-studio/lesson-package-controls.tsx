@@ -13,7 +13,7 @@ import { useRef } from "react";
 
 import type { LessonPlaybackStep } from "@/hooks/course-studio/use-lesson-package";
 
-type LessonPackageControlsProps = {
+export type LessonPackageControlsProps = {
   currentStep: LessonPlaybackStep | null;
   stepIndex: number;
   stepCount: number;

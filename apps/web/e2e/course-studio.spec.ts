@@ -1206,6 +1206,51 @@ test("DOCX import and export entry points complete without breaking the editor",
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
 });
 
+test("exports, imports, replays, and forks a RIDOC lesson package", async ({ page }) => {
+  const unique = Date.now();
+  const firstVersion = `RIDOC 历史版本一 ${unique}`;
+  const secondVersion = `RIDOC 历史版本二 ${unique}`;
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `RIDOC 测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `RIDOC 测试页面 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, firstVersion);
+  await writeEditorTextAndWaitForSave(page, secondVersion);
+  await openHistoryPanel(page);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出", exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
+  const ridocPath = await download.path();
+  expect(ridocPath).toBeTruthy();
+
+  const importResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
+  );
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "导入", exact: true }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles(ridocPath!);
+  await importResponse;
+
+  await expect(page.locator(".ProseMirror").first()).toContainText(secondVersion);
+  await expect(page.getByText("RIDOC 课程包")).toBeVisible();
+  await page.getByRole("button", { name: "播放课程" }).click();
+  await page.getByRole("button", { name: "暂停播放" }).click();
+  await expect(page.getByRole("button", { name: "退出并继续学习" })).toBeVisible();
+  await expect(page.getByText(/\/\d+$/)).toBeVisible();
+  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "下一步" }).click();
+
+  const branchResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "从这里分叉" }).click();
+  await branchResponse;
+  await expect(page.getByRole("button", { name: "退出并继续学习" })).toHaveCount(0);
+  await expect(page.locator(".ProseMirror").first()).toContainText(firstVersion);
+});
+
 test("normalizes raw bold vector notation and math delimiters in the board editor", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `公式显示回归页面 ${unique}`;

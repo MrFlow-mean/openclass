@@ -7,6 +7,7 @@ import { GeometryGenerationPanel } from "@/components/course-studio/geometry-gen
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import { LessonMergePanel } from "@/components/course-studio/lesson-merge-panel";
 import { VoiceControlPanel } from "@/components/course-studio/voice-control-panel";
+import type { LessonPackageControlsProps } from "@/components/course-studio/lesson-package-controls";
 import { useGeometryWorkspace } from "@/hooks/course-studio/use-geometry-workspace";
 import { useSourceCatalogCache } from "@/hooks/course-studio/use-source-catalog-cache";
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
@@ -45,6 +46,7 @@ type CourseStudioSidePanelProps = {
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onMergeBranch: (branchName: string) => void | Promise<void>;
+  lessonPackageControls: LessonPackageControlsProps;
   mergeSession: LessonMergeSessionView | null;
   mergeDraftDirty: boolean;
   mergeAIProposing: boolean;
@@ -107,6 +109,7 @@ export function CourseStudioSidePanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
   onMergeBranch,
+  lessonPackageControls,
   mergeSession,
   mergeDraftDirty,
   mergeAIProposing,
@@ -268,6 +271,7 @@ export function CourseStudioSidePanel({
             onCreateBranchFromCommit={onCreateBranchFromCommit}
             onSwitchBranch={onSwitchBranch}
             onMergeBranch={onMergeBranch}
+            lessonPackageControls={lessonPackageControls}
           />
         ) : sidebarTab === "voice" ? (
           <VoiceControlPanel
