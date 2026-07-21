@@ -1487,6 +1487,85 @@ test("scrolls to and highlights the Board AI-authorized section being explained"
   await expect(highlightedSentence).toBeAttached();
 });
 
+test("restores future and legacy persisted chat shapes after refresh", async ({ page }) => {
+  const unique = Date.now();
+  const visibleFutureUser = `未来流程用户消息 ${unique}`;
+  const visibleFutureAssistant = `未来流程 AI 回复 ${unique}`;
+  const visibleLegacyAssistant = `旧课程 AI 回复 ${unique}`;
+  const hiddenReadyAssistant = `内部 ready 回复 ${unique}`;
+  const hiddenFrozenAssistant = `内部 frozen 回复 ${unique}`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `聊天刷新兼容课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `聊天刷新兼容页面 ${unique}`);
+
+  let injectedPackage: Record<string, unknown> | null = null;
+  await page.route("**/api/course-package", async (route) => {
+    if (!injectedPackage) {
+      const authHeader = route.request().headers().authorization;
+      const upstream = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      });
+      const nextPackage = (await upstream.json()) as Record<string, unknown>;
+      const lesson = (nextPackage.lessons as Array<Record<string, unknown>>)[0];
+      const historyGraph = lesson.history_graph as {
+        commits: Array<Record<string, unknown>>;
+        current_branch: string;
+        branches: Record<string, { head_commit_id: string | null }>;
+      };
+      const branch = historyGraph.branches[historyGraph.current_branch];
+      const appendCommit = (suffix: string, metadata: Record<string, unknown>) => {
+        const commitId = `commit_${suffix}_${unique}`;
+        historyGraph.commits.push({
+          id: commitId,
+          label: suffix,
+          message: suffix,
+          branch_name: historyGraph.current_branch,
+          created_at: new Date().toISOString(),
+          parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+          operations: [],
+          snapshot: lesson.board_document,
+          metadata,
+        });
+        branch.head_commit_id = commitId;
+      };
+
+      appendCommit("internal_ready", {
+        kind: "future_requirement_lifecycle",
+        history_node_kind: "chat",
+        requirement_phase: "ready",
+        assistant_message: hiddenReadyAssistant,
+      });
+      appendCommit("future_chat", {
+        kind: "future_workflow_step",
+        history_node_kind: "chat",
+        user_message: visibleFutureUser,
+        assistant_message: visibleFutureAssistant,
+      });
+      appendCommit("legacy_chat", {
+        kind: "legacy_unknown_workflow_step",
+        assistant_message: visibleLegacyAssistant,
+      });
+      appendCommit("internal_frozen", {
+        kind: "future_requirement_lifecycle",
+        history_node_kind: "chat",
+        requirement_phase: "frozen",
+        assistant_message: hiddenFrozenAssistant,
+      });
+      injectedPackage = nextPackage;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(injectedPackage) });
+  });
+
+  await page.reload();
+
+  await expect(page.locator("article").filter({ hasText: visibleFutureUser })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleFutureAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleLegacyAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: hiddenReadyAssistant })).toHaveCount(0);
+  await expect(page.locator("article").filter({ hasText: hiddenFrozenAssistant })).toHaveCount(0);
+});
+
 test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {
   const unique = Date.now();
   const userMessage = `继续整理我的学习需求 ${unique}`;

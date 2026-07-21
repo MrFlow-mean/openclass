@@ -94,6 +94,24 @@ def test_commit_metadata_context_and_history_node_classification() -> None:
     assert metadata["chat_edit_source_commit_id"] == "previous"
 
 
+def test_unknown_future_commit_kind_with_messages_is_classified_as_chat() -> None:
+    lesson = create_empty_lesson("Future conversation")
+
+    commit_operations(
+        lesson,
+        [],
+        label="Future workflow step",
+        message="Recorded a future conversation shape.",
+        metadata={
+            "kind": "future_workflow_step",
+            "user_message": "A future user message",
+            "assistant_message": "A future assistant reply",
+        },
+    )
+
+    assert current_head_commit(lesson).metadata["history_node_kind"] == "chat"
+
+
 def test_document_commit_snapshot_is_isolated_from_later_mutation() -> None:
     lesson = create_empty_lesson("Snapshot")
     document = build_document(title="Snapshot", content_text="# Heading")
