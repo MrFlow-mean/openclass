@@ -1485,6 +1485,10 @@ test("restores future and legacy persisted chat shapes after refresh", async ({ 
   const visibleFutureUser = `未来流程用户消息 ${unique}`;
   const visibleFutureAssistant = `未来流程 AI 回复 ${unique}`;
   const visibleLegacyAssistant = `旧课程 AI 回复 ${unique}`;
+  const visibleRealtimeUser = `Realtime 用户消息 ${unique}`;
+  const visibleRealtimeAssistant = `Realtime AI 回复 ${unique}`;
+  const hiddenRealtimeToolUser = `Realtime 内部工具用户消息 ${unique}`;
+  const hiddenRealtimeToolAssistant = `Realtime 内部工具 AI 回复 ${unique}`;
   const hiddenReadyAssistant = `内部 ready 回复 ${unique}`;
   const hiddenFrozenAssistant = `内部 frozen 回复 ${unique}`;
 
@@ -1539,6 +1543,29 @@ test("restores future and legacy persisted chat shapes after refresh", async ({ 
         kind: "legacy_unknown_workflow_step",
         assistant_message: visibleLegacyAssistant,
       });
+      appendCommit("realtime_user", {
+        kind: "realtime_transcript",
+        history_node_kind: "chat",
+        interaction_channel: "realtime",
+        realtime_client_event_id: `realtime_user_${unique}`,
+        user_message: visibleRealtimeUser,
+      });
+      appendCommit("realtime_assistant", {
+        kind: "realtime_transcript",
+        history_node_kind: "chat",
+        interaction_channel: "realtime",
+        realtime_client_event_id: `realtime_assistant_${unique}`,
+        assistant_message_source: "realtime",
+        assistant_message: visibleRealtimeAssistant,
+      });
+      appendCommit("hidden_realtime_tool", {
+        kind: "chat_flow",
+        history_node_kind: "chat",
+        chat_visibility: "hidden",
+        interaction_channel: "realtime_tool",
+        user_message: hiddenRealtimeToolUser,
+        assistant_message: hiddenRealtimeToolAssistant,
+      });
       appendCommit("internal_frozen", {
         kind: "future_requirement_lifecycle",
         history_node_kind: "chat",
@@ -1555,6 +1582,10 @@ test("restores future and legacy persisted chat shapes after refresh", async ({ 
   await expect(page.locator("article").filter({ hasText: visibleFutureUser })).toBeVisible();
   await expect(page.locator("article").filter({ hasText: visibleFutureAssistant })).toBeVisible();
   await expect(page.locator("article").filter({ hasText: visibleLegacyAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleRealtimeUser })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleRealtimeAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: hiddenRealtimeToolUser })).toHaveCount(0);
+  await expect(page.locator("article").filter({ hasText: hiddenRealtimeToolAssistant })).toHaveCount(0);
   await expect(page.locator("article").filter({ hasText: hiddenReadyAssistant })).toHaveCount(0);
   await expect(page.locator("article").filter({ hasText: hiddenFrozenAssistant })).toHaveCount(0);
 });

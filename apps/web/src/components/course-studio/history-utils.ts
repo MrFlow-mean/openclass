@@ -126,6 +126,9 @@ const LEGACY_DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
 ]);
 
 function commitContainsDisplayableChat(commit: CommitRecord): boolean {
+  if (metadataText(commit, "chat_visibility") === "hidden") {
+    return false;
+  }
   const historyNodeKind = metadataText(commit, "history_node_kind");
   const requirementPhase = metadataText(commit, "requirement_phase");
   if (requirementPhase === "ready" || requirementPhase === "frozen") {
@@ -483,10 +486,8 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
     const assistantMessageSource = metadataText(commit, "assistant_message_source");
     const legacyChatbotGeneratedDuringHandoff =
       metadataLearningClarificationForcedStart(commit) && assistantMessageSource === "ai";
-    const assistantMessageHidden = metadataText(commit, "chat_visibility") === "hidden";
     if (
       !legacyChatbotGeneratedDuringHandoff &&
-      !assistantMessageHidden &&
       isDisplayableAssistantContent(assistantMessage)
     ) {
       messages.push(
