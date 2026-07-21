@@ -1466,6 +1466,7 @@ class ChatRequest(BaseModel):
     message: str
     text_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
+    selections: list[SelectionRef] = Field(default_factory=list, max_length=8)
     formula_ink: FormulaInkPayload | None = None
     attachments: list[ChatAttachmentRef] = Field(default_factory=list, max_length=10)
     interaction_mode: ChatInteractionMode = "ask"

@@ -2470,6 +2470,39 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "Use fenced code blocks only for real code" in normalized_generation
 
 
+def test_turn_prompt_keeps_multiple_board_references_in_order() -> None:
+    first = SelectionRef(kind="board", excerpt="First referenced paragraph")
+    second = SelectionRef(kind="board", excerpt="Second referenced paragraph")
+
+    prompt = codex_chat._turn_prompt(
+        ChatRequest(
+            message="Compare these references.",
+            selection=second,
+            selections=[first, second],
+        ),
+        is_new_thread=False,
+        board_state="non_empty",
+    )
+
+    assert "Reference 1:\nkind: board\nexcerpt: First referenced paragraph" in prompt
+    assert "Reference 2:\nkind: board\nexcerpt: Second referenced paragraph" in prompt
+    assert prompt.index("First referenced paragraph") < prompt.index("Second referenced paragraph")
+
+
+def test_turn_prompt_preserves_single_selection_compatibility() -> None:
+    prompt = codex_chat._turn_prompt(
+        ChatRequest(
+            message="Explain this.",
+            selection=SelectionRef(kind="board", excerpt="Only referenced paragraph"),
+        ),
+        is_new_thread=False,
+        board_state="non_empty",
+    )
+
+    assert "Reference 1:\nkind: board\nexcerpt: Only referenced paragraph" in prompt
+    assert "Reference 2:" not in prompt
+
+
 @pytest.fixture
 def codex_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)

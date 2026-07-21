@@ -957,6 +957,7 @@ export interface ChatRequestPayload {
   message: string;
   text_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
+  selections?: SelectionRef[];
   formula_ink?: FormulaInkPayload | null;
   attachments?: ChatAttachmentRef[];
   interaction_mode?: ChatInteractionMode;

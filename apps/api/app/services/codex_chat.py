@@ -678,6 +678,11 @@ def _selection_context(selection: SelectionRef | None) -> str:
     return "\n".join(details)
 
 
+def _selection_contexts(request: ChatRequest) -> list[str]:
+    selections = request.selections or ([request.selection] if request.selection is not None else [])
+    return [context for selection in selections if (context := _selection_context(selection))]
+
+
 def _board_state(content_text: str) -> BoardState:
     return "empty" if not content_text.strip() else "non_empty"
 
@@ -719,9 +724,16 @@ def _turn_prompt(
         conversation = _conversation_context(request.conversation)
         if conversation:
             sections.append(f"Conversation already visible to the user:\n{conversation}")
-    selection = _selection_context(request.selection)
-    if selection:
-        sections.append(f"Current user selection:\n{selection}")
+    selection_contexts = _selection_contexts(request)
+    if selection_contexts:
+        rendered = "\n\n".join(
+            f"Reference {index}:\n{context}"
+            for index, context in enumerate(selection_contexts, start=1)
+        )
+        sections.append(
+            "Current user board references (ordered; use every reference without replacing earlier ones):\n"
+            f"{rendered}"
+        )
     if verified_source_context:
         sections.append(f"Verified source context (mandatory for this turn):\n{verified_source_context}")
     if request.formula_ink is not None and request.formula_ink.source_latex:
