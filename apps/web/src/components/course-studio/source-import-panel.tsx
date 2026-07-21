@@ -984,7 +984,7 @@ function SourceRow({
             <SourceCodexActivity
               className="mt-2"
               events={source.ingestion_job.agent_activity}
-              title="最近一次后端 Codex 输出"
+              title="最近一次后端 OpenClass 输出"
               expandedByDefault={false}
             />
           ) : null}
