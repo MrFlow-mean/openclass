@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import clsx from "clsx";
 import {
   ArrowRight,
@@ -12,7 +13,6 @@ import {
   MessageSquare,
   MoveUpRight,
   PencilLine,
-  Sparkles,
   TextQuote,
   X,
 } from "lucide-react";
@@ -219,7 +219,11 @@ export function CourseChatMessage({
     <article className={clsx("group flex gap-3", !isAssistant && "justify-end")}>
       {isAssistant ? (
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-900 shadow-sm">
-          {isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          {isPending ? (
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Image src="/icon.png" alt="" width={20} height={20} className="h-5 w-5 rounded-md" />
+          )}
         </div>
       ) : null}
 
