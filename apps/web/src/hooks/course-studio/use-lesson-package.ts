@@ -6,6 +6,7 @@ import { documentsEqual } from "@/components/course-studio/history-utils";
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import { api } from "@/lib/api";
+import { downloadRidoc } from "@/lib/ridoc-file";
 import type { BoardDocument, CommitRecord, CoursePackage, Lesson } from "@/types";
 
 export type LessonPlaybackStepKind =
@@ -179,22 +180,6 @@ export function buildLessonPlaybackSteps(lesson: Lesson): LessonPlaybackStep[] {
   return steps;
 }
 
-function safeFileName(value: string): string {
-  const normalized = value.trim().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
-  return normalized || "lesson";
-}
-
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
 export function useLessonPackage({
   activeLesson,
   mergeActive,
@@ -314,7 +299,7 @@ export function useLessonPackage({
     setBusyAction("ridoc-export");
     try {
       const blob = await api.exportRidoc(activeLesson.id);
-      downloadBlob(blob, `${safeFileName(activeLesson.slug || activeLesson.title)}.ridoc`);
+      downloadRidoc(blob, activeLesson);
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "课程包导出失败");
     } finally {

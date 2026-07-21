@@ -1053,6 +1053,44 @@ test("collapses course package and standalone lesson lists independently", async
   await expect(page.getByLabel("展开单独课程")).toHaveAttribute("aria-expanded", "false");
 });
 
+test("exports and loads a RIDOC package from the standalone lesson menu", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `主页课程包入口 ${unique}`;
+  await enterAsGuest(page);
+  await page.getByLabel("进入单独课程工作台").click();
+  await createLessonFromEmptyStudio(page, lessonTitle);
+  await writeEditorTextAndWaitForSave(page, `主页导出内容 ${unique}`);
+  await page.goto("/home");
+
+  const lessonCard = page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle });
+  await lessonCard.getByLabel("打开课程操作菜单").click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出课程包", exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.ridoc$/);
+  const ridocStream = await download.createReadStream();
+  const ridocChunks: Buffer[] = [];
+  for await (const chunk of ridocStream) {
+    ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  await lessonCard.getByLabel("打开课程操作菜单").click();
+  const importResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
+  );
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "加载导出的课程包", exact: true }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles({
+    name: download.suggestedFilename(),
+    mimeType: "application/vnd.openclass.ridoc+zip",
+    buffer: Buffer.concat(ridocChunks),
+  });
+  await importResponse;
+
+  await expect(page.locator("[data-package-selection-root]").filter({ hasText: lessonTitle }).first()).toBeVisible();
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
