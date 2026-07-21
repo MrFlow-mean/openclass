@@ -40,6 +40,7 @@ import {
   HomeLessonBatchToolbar,
 } from "@/components/home-lesson-batch-controls";
 import { InlineNameForm } from "@/components/inline-name-form";
+import { LearningActivityCalendar } from "@/components/learning-activity-calendar";
 import { RecentFeedCard } from "@/components/recent-feed-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
@@ -75,15 +76,7 @@ import {
 } from "@/lib/recent-feed";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
-const CONTRIBUTION_WEEKS = 32;
 const GITHUB_REPOSITORY_URL = "https://github.com/MrFlow-mean/openclass";
-
-type ActivityDay = {
-  key: string;
-  date: Date;
-  count: number;
-  level: 0 | 1 | 2 | 3 | 4;
-};
 
 type SearchFacet = { kind: "all" } | { kind: "category" | "language"; value: string };
 
@@ -142,100 +135,6 @@ function matchesQuery(query: string, ...values: Array<string | null | undefined>
   }
 
   return values.some((value) => value?.toLowerCase().includes(query));
-}
-
-function dayKey(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function getActivityLevel(count: number, maxCount: number): ActivityDay["level"] {
-  if (count <= 0) {
-    return 0;
-  }
-
-  if (maxCount <= 1) {
-    return count > 0 ? 4 : 0;
-  }
-
-  const ratio = count / maxCount;
-
-  if (ratio >= 0.75) {
-    return 4;
-  }
-  if (ratio >= 0.5) {
-    return 3;
-  }
-  if (ratio >= 0.25) {
-    return 2;
-  }
-  return 1;
-}
-
-function buildActivitySummary(coursePackage: CoursePackage | null) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const activityByDay = new Map<string, number>();
-  const track = (value?: string | null) => {
-    if (!value) {
-      return;
-    }
-
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return;
-    }
-
-    const key = dayKey(date);
-    activityByDay.set(key, (activityByDay.get(key) ?? 0) + 1);
-  };
-
-  coursePackage?.lessons.forEach((lesson) => {
-    track(lesson.created_at);
-    track(lesson.updated_at);
-    lesson.history_graph.commits.forEach((commit) => {
-      track(commit.created_at);
-    });
-  });
-  const days: ActivityDay[] = [];
-  const totalDays = CONTRIBUTION_WEEKS * 7;
-  for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
-    const date = new Date(today);
-    date.setDate(today.getDate() - offset);
-    const count = activityByDay.get(dayKey(date)) ?? 0;
-    days.push({
-      key: dayKey(date),
-      date,
-      count,
-      level: 0,
-    });
-  }
-
-  const maxCount = days.reduce((max, day) => Math.max(max, day.count), 0);
-  const leveledDays = days.map((day) => ({
-    ...day,
-    level: getActivityLevel(day.count, maxCount),
-  }));
-
-  const weeks = Array.from({ length: CONTRIBUTION_WEEKS }, (_, index) =>
-    leveledDays.slice(index * 7, index * 7 + 7)
-  );
-
-  return {
-    total: days.reduce((sum, day) => sum + day.count, 0),
-    recentActiveDay: [...leveledDays].reverse().find((day) => day.count > 0) ?? null,
-    weeks,
-  };
-}
-
-function activityTone(level: ActivityDay["level"]) {
-  return {
-    0: "bg-white",
-    1: "bg-amber-100",
-    2: "bg-amber-300",
-    3: "bg-amber-500",
-    4: "bg-orange-600",
-  }[level];
 }
 
 function followedUpdateTone(kind: FollowedCourseUpdate["updateKind"]) {
@@ -418,14 +317,11 @@ export function LearningHome() {
   }, []);
 
   const packages = workspaceState?.packages ?? [];
-  const workspaceActivePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
   const standalonePackage = packages.find((packageItem) => packageItem.is_standalone) ?? packages[0] ?? null;
   const coursePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
   const selectedCoursePackage = selectedPackageId
     ? coursePackages.find((item) => item.id === selectedPackageId) ?? null
     : null;
-  const coursePackage =
-    selectedCoursePackage ?? coursePackages.find((item) => item.id === workspaceActivePackageId) ?? coursePackages[0] ?? null;
   const movablePackages = coursePackages;
   const feedLessons = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
@@ -494,7 +390,6 @@ export function LearningHome() {
   }, [matchingOpenCourses, openCourseFacet, openCourseSort]);
   const collectedOpenCourseCount = collectedCourseIds.size;
 
-  const activity = buildActivitySummary(coursePackage);
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const feedItems = buildRecentFeed(feedLessons);
@@ -1131,54 +1026,21 @@ export function LearningHome() {
               renderOpenCourseSearchResults()
             ) : (
               <>
-            <section className="mb-12 rounded-[30px] border border-white/70 bg-white/80 p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur sm:p-7">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="flex items-center gap-2 text-base font-semibold text-stone-950">
-                    <Activity className="h-4 w-4" />
-                    {h.activityTitle}
-                  </h3>
-                  <p className="mt-1 text-sm text-stone-500">{h.activitySubtitle}</p>
-                </div>
-                <span className="text-xs font-medium text-stone-500">
-                  {h.activityTotal(activity.total)}
-                </span>
-              </div>
-
-              <div className="mt-6 overflow-x-auto">
-                <div className="flex min-w-max gap-[4px]">
-                  {activity.weeks.map((week, index) => (
-                    <div key={index} className="flex flex-col gap-[4px]">
-                      {week.map((day) => (
-                        <div
-                          key={day.key}
-                          className={clsx("h-3 w-3 rounded-[3px]", activityTone(day.level))}
-                          title={h.activityDayTitle(day.key, day.count)}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mt-5 flex flex-col gap-3 text-xs text-stone-400 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span>Less</span>
-                  <div className="h-3 w-3 rounded-[3px] bg-white" />
-                  <div className="h-3 w-3 rounded-[3px] bg-amber-100" />
-                  <div className="h-3 w-3 rounded-[3px] bg-amber-300" />
-                  <div className="h-3 w-3 rounded-[3px] bg-amber-500" />
-                  <div className="h-3 w-3 rounded-[3px] bg-orange-600" />
-                  <span>More</span>
-                </div>
-                <p>
-                  {h.lastActivePrefix}
-                  <span className="ml-1 text-stone-500">
-                    {activity.recentActiveDay ? homeRelFmt(activity.recentActiveDay.date) : h.noActivityYet}
-                  </span>
-                </p>
-              </div>
-            </section>
+            <LearningActivityCalendar
+              workspace={workspaceState}
+              language={language}
+              labels={{
+                title: h.activityTitle,
+                subtitle: h.activitySubtitle,
+                total: h.activityTotal,
+                dayTitle: h.activityDayTitle,
+                lastActivePrefix: h.lastActivePrefix,
+                noActivityYet: h.noActivityYet,
+                less: h.activityLess,
+                more: h.activityMore,
+              }}
+              formatRelativeDate={homeRelFmt}
+            />
 
             <section className="mb-12">
               <div className="rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">

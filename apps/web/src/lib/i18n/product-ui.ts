@@ -150,6 +150,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
           : `${count.toLocaleString(intl(lang))} activities`,
       activityDayTitle: (date: string, count: number) =>
         z ? `${date} · ${count} 次活动` : `${date} · ${count} activities`,
+      activityLess: z ? "少" : "Less",
+      activityMore: z ? "多" : "More",
       lastActivePrefix: z ? "最近一次活跃：" : "Last active: ",
       noActivityYet: z ? "暂无记录" : "No activity yet",
       feedCollapseAria: z ? "收起 Feed" : "Collapse feed",
