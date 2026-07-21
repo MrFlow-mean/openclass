@@ -5,7 +5,7 @@ import queue
 import threading
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.models import (
@@ -146,13 +146,16 @@ def update_lesson_merge_session(
     return merge_session_view(session)
 
 
-@router.delete("/api/lessons/{lesson_id}/merge-sessions/{session_id}", status_code=204)
+@router.delete(
+    "/api/lessons/{lesson_id}/merge-sessions/{session_id}",
+    response_model=LessonMergeSessionView,
+)
 def delete_lesson_merge_session(
     lesson_id: str,
     session_id: str,
     expected_version: int = Query(ge=1),
     user: UserView = Depends(current_user),
-) -> Response:
+) -> LessonMergeSessionView:
     session = _session_for_lesson(user.id, lesson_id, session_id)
     if session.version != expected_version:
         raise HTTPException(status_code=409, detail="合并草案已更新，请刷新后重试")
@@ -161,7 +164,7 @@ def delete_lesson_merge_session(
     except LessonMergeError as exc:
         raise _merge_http_error(exc) from exc
     save_merge_session_for_user_if_version(session, expected_version=expected_version)
-    return Response(status_code=204)
+    return merge_session_view(session)
 
 
 @router.post(

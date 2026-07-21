@@ -1095,6 +1095,67 @@ test("restores an older document version from history", async ({ page }) => {
   await expect(editor).not.toContainText(secondVersion);
 });
 
+test("merges a lesson branch through a persistent editable draft", async ({ page }) => {
+  const unique = Date.now();
+  const sourceBranch = `source-${unique}`;
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `合并测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `合并测试页面 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, `共同版本 ${unique}`);
+  await openHistoryPanel(page);
+
+  await page.getByPlaceholder("新分支名").fill(sourceBranch);
+  const branchResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "开分支" }).click();
+  await branchResponse;
+  await writeEditorTextAndWaitForSave(page, `来源分支内容 ${unique}`);
+
+  const checkoutResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches/checkout") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "main", exact: true }).click();
+  await checkoutResponse;
+  await writeEditorTextAndWaitForSave(page, `当前分支内容 ${unique}`);
+
+  const createMergeResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/merge-sessions") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "合并到当前分支" }).click();
+  await createMergeResponse;
+  await expect(page.getByText("Studio Merge Mode")).toBeVisible();
+  await expect(page.getByPlaceholder("合并期间对话已暂停，提交或放弃合并后可继续")).toBeVisible();
+
+  const resolutionResponse = page.waitForResponse(
+    (response) => response.url().includes("/merge-sessions/") && response.request().method() === "PATCH"
+  );
+  await page.getByRole("button", { name: "来源", exact: true }).first().click();
+  await resolutionResponse;
+  const editor = page.locator(".ProseMirror").first();
+  await expect(editor).toContainText(`来源分支内容 ${unique}`);
+
+  const finalDraft = `最终人工合并内容 ${unique}`;
+  const draftSaveResponse = page.waitForResponse(
+    (response) => response.url().includes("/merge-sessions/") && response.request().method() === "PATCH"
+  );
+  await editor.fill(finalDraft);
+  await draftSaveResponse;
+
+  await page.reload();
+  await expect(page.getByText("Studio Merge Mode")).toBeVisible();
+  await expect(page.locator(".ProseMirror").first()).toContainText(finalDraft);
+
+  const submitResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/submit") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "提交合并" }).click();
+  await submitResponse;
+  await expect(page.getByText("Merge").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: sourceBranch, exact: true })).toBeVisible();
+  await expect(page.locator(".ProseMirror").first()).toContainText(finalDraft);
+});
+
 test("DOCX import and export entry points complete without breaking the editor", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);

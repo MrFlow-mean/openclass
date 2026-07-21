@@ -28,6 +28,7 @@ import { useChatSpeech } from "@/hooks/course-studio/use-chat-speech";
 import { useCourseWorkspace, type CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import { useLessonChatAgent } from "@/hooks/course-studio/use-lesson-chat-agent";
 import { useLessonHistory } from "@/hooks/course-studio/use-lesson-history";
+import { useLessonMerge } from "@/hooks/course-studio/use-lesson-merge";
 import { useModelCatalog } from "@/hooks/course-studio/use-model-catalog";
 import {
   useRealtimeVoice,
@@ -148,6 +149,15 @@ export function CourseStudio() {
     return result;
   }
 
+  const lessonMerge = useLessonMerge({
+    activeLesson,
+    selectedTextModel,
+    flushBoardAutoSave: boardDraft.flushAutoSave,
+    applyCoursePackage: updateCoursePackage,
+    setError,
+    setBusyAction,
+  });
+
   const history = useLessonHistory({
     activeLesson,
     flushAutoSave: boardDraft.flushAutoSave,
@@ -182,11 +192,11 @@ export function CourseStudio() {
   const activeHeadCommit = history.activeHeadCommit;
   const isPreviewMode = history.isPreviewMode;
   const isDraftPreviewMode = !isPreviewMode && boardDraft.isPreviewing;
-  const displayedDocument = boardDraft.displayedDocument;
+  const displayedDocument = lessonMerge.draftDocument ?? boardDraft.displayedDocument;
   const displayedMessages =
     activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
-  const persistedRequirements = activeLesson?.learning_requirements ?? null;
-  const persistedBoardTask = activeLesson?.board_task_requirements ?? null;
+  const persistedRequirements = lessonMerge.session?.draft_runtime.learning_requirements ?? activeLesson?.learning_requirements ?? null;
+  const persistedBoardTask = lessonMerge.session?.draft_runtime.board_task_requirements ?? activeLesson?.board_task_requirements ?? null;
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
   const persistedLearningClarity = learningClarityFromCommit(activeHeadCommit);
   const currentRequirementCleared =
@@ -209,7 +219,7 @@ export function CourseStudio() {
     currentBoardDocument: displayedDocument,
     selectedTextModel,
     textModelReady,
-    isPreviewMode: isPreviewMode || isDraftPreviewMode,
+    isPreviewMode: isPreviewMode || isDraftPreviewMode || lessonMerge.isActive,
     chatRequestInFlightRef,
     flushAutoSave,
     exitPreviewMode: exitAnyPreviewMode,
@@ -481,7 +491,7 @@ export function CourseStudio() {
   }
 
   function handleFormulaInkSubmit(payload: FormulaInkEditorSubmitPayload) {
-    if (!activeLesson || !textModelReady || isChatBusy || chatRequestInFlightRef.current) {
+    if (!activeLesson || lessonMerge.isActive || !textModelReady || isChatBusy || chatRequestInFlightRef.current) {
       return false;
     }
     const formulaSelection: SelectionRef = {
@@ -527,6 +537,17 @@ export function CourseStudio() {
   useEffect(() => {
     adjustComposerHeightEffectEvent();
   }, [chatInput, composerSelection?.excerpt]);
+
+  useEffect(() => {
+    if (!lessonMerge.isActive) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      setSidebarTab("history");
+      setRightSidebarOpen(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [lessonMerge.isActive]);
 
   function resetTransientUi() {
     history.setPreviewCommitId(null);
@@ -587,6 +608,9 @@ export function CourseStudio() {
   }, []);
 
   async function handleReturnHome() {
+    if (lessonMerge.isActive && !(await lessonMerge.flushDraft())) {
+      return;
+    }
     if (!(await flushAutoSave("return-home"))) {
       return;
     }
@@ -609,9 +633,27 @@ export function CourseStudio() {
       activeLessonId={activeLesson?.id ?? null}
       isCreatingLessonInline={isCreatingLessonInline}
       isBusyCreating={busyAction === "generate"}
-      onSelectLesson={(lessonId) => void handleSelectLesson(lessonId)}
-      onCloseLesson={(lessonId) => void handleCloseLesson(lessonId)}
-      onStartCreateLesson={() => setIsCreatingLessonInline(true)}
+      onSelectLesson={(lessonId) => {
+        if (lessonMerge.isActive) {
+          setError("合并期间不能切换课程，请先提交或放弃合并。");
+          return;
+        }
+        void handleSelectLesson(lessonId);
+      }}
+      onCloseLesson={(lessonId) => {
+        if (lessonMerge.isActive) {
+          setError("合并期间不能关闭课程。");
+          return;
+        }
+        void handleCloseLesson(lessonId);
+      }}
+      onStartCreateLesson={() => {
+        if (lessonMerge.isActive) {
+          setError("合并期间不能创建新课程。");
+          return;
+        }
+        setIsCreatingLessonInline(true);
+      }}
       onCancelCreateLesson={() => setIsCreatingLessonInline(false)}
       onCreateLesson={handleCreateLessonFromName}
     />
@@ -720,6 +762,7 @@ export function CourseStudio() {
           previewCommit={previewCommit}
           displayedMessages={displayedMessages}
           isPreviewMode={isPreviewMode}
+          interactionLocked={lessonMerge.isActive}
           isChatBusy={isChatBusy}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
@@ -764,15 +807,22 @@ export function CourseStudio() {
           document={displayedDocument}
           isPreviewMode={isPreviewMode}
           isDraftPreviewMode={isDraftPreviewMode}
+          isMergeMode={lessonMerge.isActive}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
           transientTeachingFocus={realtimeTeachingFocus}
           onExitPreviewMode={exitAnyPreviewMode}
-          onDocumentChange={handleLocalDocumentChange}
+          onDocumentChange={lessonMerge.isActive ? lessonMerge.handleDocumentChange : handleLocalDocumentChange}
           onStructureRemovalIntent={markStructureRemovalIntent}
           onApplySelection={applySelection}
           onClearTransientSelection={clearTransientSelection}
-          onImportDocx={(file) => void handleImportDocx(file)}
+          onImportDocx={(file) => {
+            if (lessonMerge.isActive) {
+              setError("合并期间不能导入 DOCX，请先提交或放弃合并。");
+              return;
+            }
+            void handleImportDocx(file);
+          }}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}
           onReferenceFormula={(formulaSelection) => focusComposerWithSelection("ask", formulaSelection)}
@@ -801,6 +851,16 @@ export function CourseStudio() {
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
+          onMergeBranch={(branchName) => lessonMerge.startMerge(branchName)}
+          mergeSession={lessonMerge.session}
+          mergeDraftDirty={lessonMerge.isDraftDirty}
+          mergeAIProposing={lessonMerge.isAIProposing}
+          onResolveMergeConflict={lessonMerge.resolveConflict}
+          onProposeMergeWithAI={lessonMerge.proposeWithAI}
+          onCancelMergeAI={lessonMerge.cancelAI}
+          onRecomputeMerge={lessonMerge.recompute}
+          onAbandonMerge={lessonMerge.abandon}
+          onSubmitMerge={lessonMerge.submit}
           onError={setError}
           onSourceReference={applySourceReference}
           geometryReference={geometryReference}

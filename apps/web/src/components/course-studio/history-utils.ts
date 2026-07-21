@@ -405,7 +405,10 @@ function commitLineageIds(lesson: Lesson, commitId?: string | null): Set<string>
     }
     lineage.add(nextCommitId);
     const commit = commitsById.get(nextCommitId);
-    commit?.parent_ids.forEach((parentId) => stack.push(parentId));
+    const firstParentId = commit?.parent_ids[0];
+    if (firstParentId) {
+      stack.push(firstParentId);
+    }
   }
 
   return lineage;

@@ -15,6 +15,8 @@ import type {
   DocumentSavePayload,
   GoogleRealtimeSessionPayload,
   GoogleRealtimeSessionResponse,
+  LessonMergeResolution,
+  LessonMergeSessionView,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeToolCallPayload,
@@ -792,6 +794,134 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ commit_id: commitId, label }),
     });
+  },
+  createMergeSession(
+    lessonId: string,
+    sourceBranchName: string,
+    mode: "manual" | "ai",
+    textModel: AIModelSelection
+  ) {
+    return request<LessonMergeSessionView>(`/api/lessons/${lessonId}/merge-sessions`, {
+      method: "POST",
+      body: JSON.stringify({
+        source_branch_name: sourceBranchName,
+        mode,
+        text_model: textModel,
+      }),
+    });
+  },
+  getActiveMergeSession(lessonId: string) {
+    return request<LessonMergeSessionView | null>(`/api/lessons/${lessonId}/merge-sessions/active`);
+  },
+  getMergeSession(lessonId: string, sessionId: string) {
+    return request<LessonMergeSessionView>(`/api/lessons/${lessonId}/merge-sessions/${sessionId}`);
+  },
+  updateMergeSession(
+    lessonId: string,
+    sessionId: string,
+    payload: {
+      expected_version: number;
+      draft_document?: LessonMergeSessionView["draft_document"];
+      draft_runtime?: LessonMergeSessionView["draft_runtime"];
+      resolutions?: Array<{
+        conflict_id: string;
+        resolution: LessonMergeResolution;
+        custom_value?: unknown;
+      }>;
+    }
+  ) {
+    return request<LessonMergeSessionView>(`/api/lessons/${lessonId}/merge-sessions/${sessionId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+  abandonMergeSession(lessonId: string, sessionId: string, expectedVersion: number) {
+    return request<LessonMergeSessionView>(
+      `/api/lessons/${lessonId}/merge-sessions/${sessionId}?expected_version=${expectedVersion}`,
+      { method: "DELETE" }
+    );
+  },
+  recomputeMergeSession(
+    lessonId: string,
+    sessionId: string,
+    expectedVersion: number,
+    textModel: AIModelSelection
+  ) {
+    return request<LessonMergeSessionView>(
+      `/api/lessons/${lessonId}/merge-sessions/${sessionId}/recompute`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_version: expectedVersion, text_model: textModel }),
+      }
+    );
+  },
+  submitMergeSession(lessonId: string, sessionId: string, expectedVersion: number) {
+    return request<CoursePackage>(`/api/lessons/${lessonId}/merge-sessions/${sessionId}/submit`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version: expectedVersion }),
+    });
+  },
+  async streamMergeProposal(
+    lessonId: string,
+    sessionId: string,
+    expectedVersion: number,
+    handlers: {
+      onAgentActivity?: (event: LessonMergeSessionView["agent_activity"][number]) => void;
+      onFinal?: (session: LessonMergeSessionView) => void;
+    },
+    options?: { signal?: AbortSignal }
+  ) {
+    const response = await fetch(
+      `${getApiBase()}/api/lessons/${lessonId}/merge-sessions/${sessionId}/ai-proposal`,
+      {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ expected_version: expectedVersion }),
+        cache: "no-store",
+        signal: options?.signal,
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, `AI merge failed with ${response.status}`));
+    }
+    if (!response.body) {
+      throw new Error("AI merge stream returned no response body");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalSession: LessonMergeSessionView | null = null;
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        const parsed = parseSseBlock(block);
+        if (!parsed) {
+          continue;
+        }
+        const data = JSON.parse(parsed.data) as unknown;
+        if (parsed.event === "agent_activity") {
+          handlers.onAgentActivity?.(data as LessonMergeSessionView["agent_activity"][number]);
+        } else if (parsed.event === "final") {
+          finalSession = data as LessonMergeSessionView;
+          handlers.onFinal?.(finalSession);
+        } else if (parsed.event === "error") {
+          const message = data && typeof data === "object" && "message" in data
+            ? String((data as { message: unknown }).message)
+            : "AI merge failed";
+          throw new Error(message);
+        }
+      }
+      if (done) {
+        break;
+      }
+    }
+    if (!finalSession) {
+      throw new Error("AI merge stream ended before a final proposal was saved");
+    }
+    return finalSession;
   },
   reorderWorkspace(orderedLessonIds: string[], activeLessonId?: string | null) {
     return request<CoursePackage>("/api/workspace/reorder", {

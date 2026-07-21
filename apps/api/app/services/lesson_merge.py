@@ -593,6 +593,17 @@ def _merge_model_fields(
         base_value = base.get(key)
         target_value = target.get(key)
         source_value = source.get(key)
+        if key == "source_grounding":
+            merged_value, source_conflict = _merge_source_grounding(
+                base_value or {},
+                target_value or {},
+                source_value or {},
+                path=f"{path_prefix}.{key}",
+            )
+            result[key] = merged_value
+            if source_conflict is not None:
+                conflicts.append(source_conflict)
+            continue
         if target_value == source_value:
             result[key] = copy.deepcopy(target_value)
         elif target_value == base_value:
@@ -616,6 +627,131 @@ def _merge_model_fields(
         return model_type.model_validate(result), conflicts
     except Exception:
         return target_model or source_model, conflicts
+
+
+def _merge_source_grounding(
+    base: dict[str, Any],
+    target: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    path: str,
+) -> tuple[dict[str, Any], LessonMergeConflict | None]:
+    """Merge frozen source identities without discarding independent references."""
+
+    list_identities = {
+        "confirmed_references": _confirmed_reference_identity,
+        "frozen_evidence": _retrieval_evidence_identity,
+        "frozen_visual_evidence": _visual_evidence_identity,
+    }
+    target_candidate: dict[str, Any] = {}
+    source_candidate: dict[str, Any] = {}
+    has_conflict = False
+    for key in sorted(set(base) | set(target) | set(source)):
+        base_value = base.get(key)
+        target_value = target.get(key)
+        source_value = source.get(key)
+        identity = list_identities.get(key)
+        if identity is not None:
+            merged_target, merged_source, list_conflict = _merge_identity_list(
+                base_value or [],
+                target_value or [],
+                source_value or [],
+                identity=identity,
+            )
+            target_candidate[key] = merged_target
+            source_candidate[key] = merged_source
+            has_conflict = has_conflict or list_conflict
+            continue
+        if target_value == source_value:
+            target_candidate[key] = copy.deepcopy(target_value)
+            source_candidate[key] = copy.deepcopy(target_value)
+        elif target_value == base_value:
+            target_candidate[key] = copy.deepcopy(source_value)
+            source_candidate[key] = copy.deepcopy(source_value)
+        elif source_value == base_value:
+            target_candidate[key] = copy.deepcopy(target_value)
+            source_candidate[key] = copy.deepcopy(target_value)
+        else:
+            has_conflict = True
+            target_candidate[key] = copy.deepcopy(target_value)
+            source_candidate[key] = copy.deepcopy(source_value)
+    if not has_conflict:
+        return target_candidate, None
+    return (
+        target_candidate,
+        LessonMergeConflict(
+            kind="source_reference",
+            path=path,
+            title="冻结资料在两个分支中存在不同版本",
+            base_value=copy.deepcopy(base),
+            target_value=target_candidate,
+            source_value=source_candidate,
+        ),
+    )
+
+
+def _merge_identity_list(
+    base: list[dict[str, Any]],
+    target: list[dict[str, Any]],
+    source: list[dict[str, Any]],
+    *,
+    identity,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    base_map = {identity(item): item for item in base}
+    target_map = {identity(item): item for item in target}
+    source_map = {identity(item): item for item in source}
+    ordered_ids = list(
+        dict.fromkeys(
+            [identity(item) for item in target]
+            + [identity(item) for item in source]
+            + [identity(item) for item in base]
+        )
+    )
+    target_result: list[dict[str, Any]] = []
+    source_result: list[dict[str, Any]] = []
+    has_conflict = False
+    for item_id in ordered_ids:
+        base_item = base_map.get(item_id)
+        target_item = target_map.get(item_id)
+        source_item = source_map.get(item_id)
+        if target_item == source_item:
+            target_choice = source_choice = target_item
+        elif target_item == base_item:
+            target_choice = source_choice = source_item
+        elif source_item == base_item:
+            target_choice = source_choice = target_item
+        else:
+            has_conflict = True
+            target_choice = target_item
+            source_choice = source_item
+        if target_choice is not None:
+            target_result.append(copy.deepcopy(target_choice))
+        if source_choice is not None:
+            source_result.append(copy.deepcopy(source_choice))
+    return target_result, source_result, has_conflict
+
+
+def _confirmed_reference_identity(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        item.get("source_ingestion_id"),
+        item.get("source_chapter_id") or item.get("scope_chapter_id"),
+        item.get("source_locator"),
+        item.get("page_start"),
+        item.get("page_end"),
+    )
+
+
+def _retrieval_evidence_identity(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        item.get("source_ingestion_id"),
+        item.get("chapter_id"),
+        tuple(item.get("chunk_ids") or ()),
+        item.get("page_range"),
+    )
+
+
+def _visual_evidence_identity(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (item.get("source_ingestion_id"), item.get("visual_id"))
 
 
 def _apply_runtime_conflict(draft: MergeRuntimeDraft, conflict: LessonMergeConflict) -> None:

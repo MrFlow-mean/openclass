@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from app.models import AIModelSelection, LessonMergeConflictResolution
+from app.models import AIModelSelection, LearningSourceReference, LessonMergeConflictResolution
 from app.services.ai_execution_adapter import StructuredExecutionResult
+from app.services import codex_chat
 from app.services.history import commit_operations, create_branch, current_head_commit, switch_branch
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.lesson_merge import (
@@ -189,6 +190,72 @@ def test_runtime_fields_form_conflicts_and_can_choose_source() -> None:
     assert commit.runtime_snapshot.learning_requirements.current_level == "source level"
 
 
+def test_frozen_source_references_union_independent_additions_and_conflict_on_hash() -> None:
+    lesson = create_empty_lesson("Source merge")
+    base_requirements = build_requirements("Source merge")
+    base_requirements.source_grounding.confirmed_references = [
+        LearningSourceReference(
+            evidence_bundle_id="bundle_base",
+            source_ingestion_id="source_shared",
+            source_chapter_id="chapter_shared",
+            content_hash="base_hash",
+        )
+    ]
+    lesson.learning_requirements = base_requirements
+    base_id = _commit_text(lesson, "# Topic\n\nBody", "Base sources")
+
+    create_branch(lesson, "source", base_id)
+    source_requirements = base_requirements.model_copy(deep=True)
+    source_requirements.source_grounding.confirmed_references[0].content_hash = "source_hash"
+    source_requirements.source_grounding.confirmed_references.append(
+        LearningSourceReference(
+            evidence_bundle_id="bundle_source",
+            source_ingestion_id="source_only",
+            source_chapter_id="chapter_source",
+            content_hash="source_only_hash",
+        )
+    )
+    lesson.learning_requirements = source_requirements
+    _commit_text(lesson, "# Topic\n\nBody", "Source references")
+
+    switch_branch(lesson, "main")
+    target_requirements = base_requirements.model_copy(deep=True)
+    target_requirements.source_grounding.confirmed_references[0].content_hash = "target_hash"
+    target_requirements.source_grounding.confirmed_references.append(
+        LearningSourceReference(
+            evidence_bundle_id="bundle_target",
+            source_ingestion_id="target_only",
+            source_chapter_id="chapter_target",
+            content_hash="target_only_hash",
+        )
+    )
+    lesson.learning_requirements = target_requirements
+    _commit_text(lesson, "# Topic\n\nBody", "Target references")
+
+    session = create_merge_session(
+        lesson,
+        owner_user_id="user_1",
+        source_branch_name="source",
+    )
+    conflict = next(item for item in session.conflicts if item.kind == "source_reference")
+    assert conflict.path == "learning_requirements.source_grounding"
+
+    update_merge_session(
+        session,
+        expected_version=session.version,
+        resolutions=[
+            LessonMergeConflictResolution(
+                conflict_id=conflict.id,
+                resolution="target",
+            )
+        ],
+    )
+    references = session.draft_runtime.learning_requirements.source_grounding.confirmed_references
+    references_by_source = {item.source_ingestion_id: item for item in references}
+    assert set(references_by_source) == {"source_shared", "source_only", "target_only"}
+    assert references_by_source["source_shared"].content_hash == "target_hash"
+
+
 def test_ai_merge_resolves_only_explicit_conflicts_and_records_model() -> None:
     lesson, _, _, _ = _divergent_lesson(
         target_text="# Topic\n\nAlpha target\n\nBeta",
@@ -233,3 +300,61 @@ def test_ai_merge_resolves_only_explicit_conflicts_and_records_model() -> None:
     assert "Alpha source" in session.draft_document.content_text
     assert session.audit["ai_proposal"]["model"] == "gpt-test"
     assert session.audit["ai_proposal"]["reasoning_effort"] == "high"
+
+
+def test_merge_commit_resets_ai_thread_and_builds_labeled_handoff_context() -> None:
+    lesson, _, _, _ = _divergent_lesson(
+        target_text="# Topic\n\nTarget",
+        source_text="# Topic\n\nSource",
+    )
+    source_commit = next(
+        commit for commit in lesson.history_graph.commits if commit.label == "Source edit"
+    )
+    source_commit.metadata.update(
+        {
+            "kind": "basic_chat",
+            "user_message": "Source question",
+            "assistant_message": "Source answer",
+            "codex_thread_id": "source_thread",
+        }
+    )
+    target_commit = current_head_commit(lesson)
+    target_commit.metadata.update(
+        {
+            "kind": "basic_chat",
+            "user_message": "Target question",
+            "assistant_message": "Target answer",
+            "codex_thread_id": "target_thread",
+        }
+    )
+    session = create_merge_session(
+        lesson,
+        owner_user_id="user_1",
+        source_branch_name="source",
+    )
+    for conflict in session.conflicts:
+        conflict.resolved = True
+        conflict.resolution = "target"
+    submit_merge_session(lesson, session, expected_version=session.version)
+
+    assert codex_chat._thread_reference_for_current_branch(lesson) == (None, None)
+    handoff = codex_chat._merge_handoff_context(lesson)
+    assert "Target question" in handoff
+    assert "Source question" in handoff
+    assert "independent labeled lineages" in handoff
+
+    commit_operations(
+        lesson,
+        [],
+        label="Post-merge conversation",
+        message="New merged thread",
+        metadata={
+            "kind": "basic_chat",
+            "codex_thread_id": "merged_thread",
+            "codex_turn_id": "merged_turn",
+        },
+    )
+    assert codex_chat._thread_reference_for_current_branch(lesson) == (
+        "merged_thread",
+        "merged_turn",
+    )
