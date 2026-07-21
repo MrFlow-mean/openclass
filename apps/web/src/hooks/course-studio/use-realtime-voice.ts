@@ -134,6 +134,7 @@ type UseRealtimeVoiceOptions = {
   chatRequestInFlightRef: MutableRefObject<boolean>;
   onSubmitTranscript: (message: string) => void;
   currentSelection: SelectionRef | null;
+  currentSelections: SelectionRef[];
   onTranscriptUpdate: (update: RealtimeTranscriptUpdate) => void;
   onToolStatusUpdate: (update: RealtimeToolStatusUpdate) => void;
   onToolResult: (lessonId: string, result: RealtimeToolCallResponse) => void;
@@ -156,6 +157,7 @@ export function useRealtimeVoice({
   chatRequestInFlightRef,
   onSubmitTranscript,
   currentSelection,
+  currentSelections,
   onTranscriptUpdate,
   onToolStatusUpdate,
   onToolResult,
@@ -200,16 +202,20 @@ export function useRealtimeVoice({
     if (!lessonId) {
       return;
     }
-    const previousCount = realtimeBoardReferencesRef.current.length;
-    realtimeBoardReferencesRef.current = addRealtimeBoardReference(
-      realtimeBoardReferencesRef.current,
-      currentSelection,
-      lessonId
+    const nextReferences = currentSelections.reduce(
+      (references, selection) => addRealtimeBoardReference(references, selection, lessonId),
+      [] as SelectionRef[]
     );
-    if (voiceActive && realtimeBoardReferencesRef.current.length > previousCount) {
-      setVoiceStatusText(`Realtime 已保留 ${realtimeBoardReferencesRef.current.length} 个板书引用`);
+    const previousCount = realtimeBoardReferencesRef.current.length;
+    realtimeBoardReferencesRef.current = nextReferences;
+    if (voiceActive && nextReferences.length !== previousCount) {
+      setVoiceStatusText(
+        nextReferences.length
+          ? `Realtime 已保留 ${nextReferences.length} 个板书引用`
+          : "Realtime 已清空板书引用"
+      );
     }
-  }, [currentSelection, voiceActive]);
+  }, [currentSelection, currentSelections, voiceActive]);
 
   function currentTurnId() {
     if (!realtimeTurnIdRef.current) {
@@ -576,7 +582,10 @@ export function useRealtimeVoice({
       realtimeLessonIdRef.current = activeLesson.id;
       realtimeClientSessionIdRef.current = clientSessionId;
       realtimeLessonTitleRef.current = activeLesson.title;
-      realtimeBoardReferencesRef.current = addRealtimeBoardReference([], currentSelection, activeLesson.id);
+      realtimeBoardReferencesRef.current = currentSelections.reduce(
+        (references, selection) => addRealtimeBoardReference(references, selection, activeLesson.id),
+        [] as SelectionRef[]
+      );
 
       if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
         await startGoogleRealtimeSession(activeLesson, mediaStream, clientSessionId);

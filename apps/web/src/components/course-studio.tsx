@@ -10,6 +10,7 @@ import { CourseStudioChatSidebar } from "@/components/course-studio/chat-sidebar
 import { CourseStudioPageShell } from "@/components/course-studio/course-studio-page-shell";
 import type { FormulaInkEditorSubmitPayload } from "@/components/course-studio/word-board-editor";
 import {
+  appendComposerSelection,
   buildLessonMessagesFromHistory,
   createChatMessage,
   learningClarityFromCommit,
@@ -218,7 +219,12 @@ export function CourseStudio() {
   const currentRequirementCleared =
     !isPreviewMode && !persistedRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
-  const composerSelection = activeComposerState.composerSelection;
+  const composerSelections = activeComposerState.composerSelections?.length
+    ? activeComposerState.composerSelections
+    : activeComposerState.composerSelection
+      ? [activeComposerState.composerSelection]
+      : [];
+  const composerSelection = composerSelections[composerSelections.length - 1] ?? null;
   const composerAttachments = activeComposerState.composerAttachments;
   function exitAnyPreviewMode() {
     if (lessonPackage.isPlaybackActive) {
@@ -235,7 +241,7 @@ export function CourseStudio() {
     activeLesson,
     activeMessages,
     activeComposerState,
-    composerSelection,
+    composerSelections,
     currentBoardDocument: displayedDocument,
     selectedTextModel,
     textModelReady,
@@ -288,6 +294,7 @@ export function CourseStudio() {
       });
     },
     currentSelection: includeSelectionInPrompt ? composerSelection : null,
+    currentSelections: includeSelectionInPrompt ? composerSelections : [],
     onTranscriptUpdate: handleRealtimeTranscriptUpdate,
     onToolStatusUpdate: handleRealtimeToolStatusUpdate,
     onToolResult: handleRealtimeToolResult,
@@ -381,6 +388,7 @@ export function CourseStudio() {
       message: chatInput.trim(),
       interaction_mode: composerMode,
       selection: includeSelectionInPrompt ? composerSelection : null,
+      selections: includeSelectionInPrompt ? composerSelections : [],
       attachments: composerAttachments,
     };
     const canUseRealtimeText =
@@ -449,6 +457,7 @@ export function CourseStudio() {
       composerMode: "ask",
       includeSelectionInPrompt: true,
       composerSelection: null,
+      composerSelections: [],
     }));
   }
 
@@ -470,6 +479,10 @@ export function CourseStudio() {
       composerMode: nextMode,
       includeSelectionInPrompt: true,
       composerSelection: normalizedSelection,
+      composerSelections:
+        nextMode === "direct_edit"
+          ? [normalizedSelection]
+          : appendComposerSelection(current.composerSelections ?? [], normalizedSelection),
     }));
     setSelectionPopover(null);
     window.requestAnimationFrame(() => {
@@ -504,6 +517,7 @@ export function CourseStudio() {
       composerMode: "ask",
       includeSelectionInPrompt: true,
       composerSelection: sourceReference,
+      composerSelections: [sourceReference],
     }));
     window.requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -805,6 +819,7 @@ export function CourseStudio() {
           composerAttachments={composerAttachments}
           composerMode={composerMode}
           composerSelection={composerSelection}
+          composerSelections={composerSelections}
           includeSelectionInPrompt={includeSelectionInPrompt}
           onApplySelection={applySelection}
           onContinueTeaching={() => void handleContinueTeaching()}

@@ -1,5 +1,6 @@
 import type { CourseChatMessageView } from "@/components/chatbot";
 import { normalizePageSettings } from "@/components/course-studio/page-settings";
+import { sameSelection } from "@/components/course-studio/selection-utils";
 import type {
   AgentActivityEvent,
   BoardDocument,
@@ -23,6 +24,7 @@ export type LessonComposerState = {
   composerMode: ChatInteractionMode;
   includeSelectionInPrompt: boolean;
   composerSelection: SelectionRef | null;
+  composerSelections: SelectionRef[];
   composerAttachments: ChatAttachmentRef[];
 };
 export type LessonComposerStateMap = Record<string, LessonComposerState>;
@@ -32,8 +34,21 @@ export const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   composerMode: "ask",
   includeSelectionInPrompt: true,
   composerSelection: null,
+  composerSelections: [],
   composerAttachments: [],
 };
+
+export const MAX_COMPOSER_SELECTIONS = 8;
+
+export function appendComposerSelection(current: SelectionRef[], next: SelectionRef): SelectionRef[] {
+  if (next.kind !== "board") {
+    return [next];
+  }
+  if (current.some((item) => sameSelection(item, next)) || current.length >= MAX_COMPOSER_SELECTIONS) {
+    return current;
+  }
+  return [...current, next];
+}
 
 export const AUTO_SAVE_DELAY_MS = 1600;
 
@@ -70,7 +85,7 @@ export function createChatMessage(
 }
 
 export function createLessonComposerState(): LessonComposerState {
-  return { ...DEFAULT_LESSON_COMPOSER_STATE, composerAttachments: [] };
+  return { ...DEFAULT_LESSON_COMPOSER_STATE, composerSelections: [], composerAttachments: [] };
 }
 
 export function formatDate(value: string) {
