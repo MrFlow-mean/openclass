@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -214,6 +215,15 @@ def test_chatbot_tool_reuses_existing_workflow(monkeypatch, isolated_store) -> N
 
 def test_realtime_transcripts_persist_once_in_lesson_history(monkeypatch, isolated_store) -> None:
     lesson = _seed_workspace(isolated_store)
+    with sqlite3.connect(isolated_store.path) as connection:
+        connection.execute(
+            "UPDATE lessons SET board_content_html = ? WHERE id = ?",
+            ("legacy-board-html-sentinel", lesson.id),
+        )
+        raw_board_before = connection.execute(
+            "SELECT board_content_json, board_content_html, board_content_text FROM lessons WHERE id = ?",
+            (lesson.id,),
+        ).fetchone()
     monkeypatch.setattr(openai_realtime, "log_ai_interaction_message", lambda **_kwargs: None)
     occurred_at = datetime(2026, 7, 22, 5, 30, tzinfo=timezone.utc)
 
@@ -267,3 +277,18 @@ def test_realtime_transcripts_persist_once_in_lesson_history(monkeypatch, isolat
     assert commits[1].metadata["realtime_turn_id"] == "realtime-turn"
     assert commits[1].metadata["document_changed"] is False
     assert commits[1].snapshot == saved_lesson.board_document
+    with sqlite3.connect(isolated_store.path) as connection:
+        raw_board_after = connection.execute(
+            "SELECT board_content_json, board_content_html, board_content_text FROM lessons WHERE id = ?",
+            (lesson.id,),
+        ).fetchone()
+        realtime_snapshot_html = connection.execute(
+            """
+            SELECT snapshot_content_html FROM lesson_commits
+            WHERE lesson_id = ? AND json_extract(metadata_json, '$.kind') = 'realtime_transcript'
+            ORDER BY sort_order DESC LIMIT 1
+            """,
+            (lesson.id,),
+        ).fetchone()[0]
+    assert raw_board_after == raw_board_before
+    assert realtime_snapshot_html == "legacy-board-html-sentinel"

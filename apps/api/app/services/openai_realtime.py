@@ -10,10 +10,12 @@ import httpx
 
 from app.models import (
     AIModelSelection,
+    CommitRecord,
     RealtimeConnectRequest,
     RealtimeConnectResponse,
     RealtimeTranscriptLogRequest,
     new_id,
+    now_iso,
 )
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
@@ -23,7 +25,7 @@ from app.services.ai_model_catalog import (
     realtime_runtime_enabled,
 )
 from app.services.config import load_root_dotenv
-from app.services.history import commit_operations, current_head_commit
+from app.services.history import current_head_commit, snapshot_lesson_runtime
 from app.services.realtime_tool_bridge import realtime_tool_schemas
 
 
@@ -266,21 +268,31 @@ def persist_realtime_transcript_event(
             metadata["assistant_message"] = transcript
             metadata["assistant_message_source"] = "realtime"
 
-        commit_operations(
-            lesson,
-            [],
-            "Realtime conversation",
-            "Persisted Realtime conversation message",
-            new_document=lesson.board_document,
+        metadata.update(
+            {
+                "history_node_kind": "chat",
+                "history_node_title": transcript[:64],
+                "history_node_summary": transcript[:160],
+            }
+        )
+        commit = CommitRecord(
+            label="Realtime conversation",
+            message="Persisted Realtime conversation message",
+            branch_name=branch_name,
+            parent_ids=[expected_head_commit_id],
+            snapshot=lesson.board_document,
+            runtime_snapshot=snapshot_lesson_runtime(lesson),
             metadata=metadata,
         )
         if request.occurred_at:
-            lesson.history_graph.commits[-1].created_at = request.occurred_at.isoformat()
-        if workspace_state.save_lesson_for_user_if_head(
+            commit.created_at = request.occurred_at.isoformat()
+        if workspace_state.append_non_document_commit_for_user_if_head(
             user_id,
-            lesson,
+            lesson_id,
+            commit,
             expected_branch_name=branch_name,
             expected_head_commit_id=expected_head_commit_id,
+            lesson_updated_at=now_iso(),
         ):
             return True
 
