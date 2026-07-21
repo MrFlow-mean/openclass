@@ -1053,11 +1053,13 @@ test("collapses course package and standalone lesson lists independently", async
   await expect(page.getByLabel("展开单独课程")).toHaveAttribute("aria-expanded", "false");
 });
 
-test("exports and loads a RIDOC package from the standalone lesson menu", async ({ page }) => {
+test("exports and imports a RIDOC file as a standalone lesson", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `主页课程包入口 ${unique}`;
   await enterAsGuest(page);
-  await page.getByLabel("进入单独课程工作台").click();
+  await page.getByLabel("添加单独课程").click();
+  await expect(page.getByRole("menuitem", { name: "导入课程文件" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "新建课程" }).click();
   await createLessonFromEmptyStudio(page, lessonTitle);
   await writeEditorTextAndWaitForSave(page, `主页导出内容 ${unique}`);
   await page.goto("/home");
@@ -1088,7 +1090,7 @@ test("exports and loads a RIDOC package from the standalone lesson menu", async 
   });
   await importResponse;
 
-  await expect(page.locator("[data-package-selection-root]").filter({ hasText: lessonTitle }).first()).toBeVisible();
+  await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle })).toHaveCount(2);
 });
 
 test("localizes the empty course package page in English", async ({ page }) => {

@@ -108,18 +108,16 @@ def import_ridoc_archive(
             created_at=str(lesson_payload.get("created_at") or archive.manifest.get("exported_at") or ""),
             updated_at=str(archive.manifest.get("exported_at") or lesson_payload.get("updated_at") or ""),
         )
-        package = CoursePackage(
-            title=lesson.title,
-            summary=lesson.summary,
-            lessons=[lesson],
-            resources=[],
-            open_lesson_ids=[lesson.id],
-            active_lesson_id=lesson.id,
-            workspace_tab_order=[lesson.id],
-        )
-        workspace.packages.append(package)
-        workspace.active_package_id = package.id
-        return package
+        if not workspace.packages:
+            raise RidocFormatError("RIDOC lesson requires a standalone course pool.")
+
+        standalone = workspace.packages[0]
+        standalone.lessons.append(lesson)
+        standalone.open_lesson_ids.append(lesson.id)
+        standalone.workspace_tab_order.append(lesson.id)
+        standalone.active_lesson_id = lesson.id
+        workspace.active_package_id = standalone.id
+        return standalone
     except Exception:
         asset_store.remove_lesson_references(
             owner_user_id=owner_user_id,
@@ -293,4 +291,3 @@ def _mapped_commit_id(value: object, mapping: Mapping[str, str]) -> str:
 def _imported_slug(value: str, lesson_id: str) -> str:
     normalized = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-") or "imported-lesson"
     return f"{normalized}-{lesson_id[-8:]}"
-
