@@ -11,6 +11,7 @@ import { CourseStudioPageShell } from "@/components/course-studio/course-studio-
 import type { FormulaInkEditorSubmitPayload } from "@/components/course-studio/word-board-editor";
 import {
   buildLessonMessagesFromHistory,
+  createChatMessage,
   learningClarityFromCommit,
 } from "@/components/course-studio/history-utils";
 import {
@@ -28,11 +29,24 @@ import { useCourseWorkspace, type CoursePackageApplyOptions } from "@/hooks/cour
 import { useLessonChatAgent } from "@/hooks/course-studio/use-lesson-chat-agent";
 import { useLessonHistory } from "@/hooks/course-studio/use-lesson-history";
 import { useModelCatalog } from "@/hooks/course-studio/use-model-catalog";
-import { useRealtimeVoice } from "@/hooks/course-studio/use-realtime-voice";
+import {
+  useRealtimeVoice,
+  type RealtimeToolStatusUpdate,
+  type RealtimeTranscriptUpdate,
+} from "@/hooks/course-studio/use-realtime-voice";
 import { useWorkspaceActions } from "@/hooks/course-studio/use-workspace-actions";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
-import type { AIModelOption, ChatInteractionMode, CoursePackage, LearningClarificationStatus, SelectionRef } from "@/types";
+import type {
+  AIModelOption,
+  BoardFocusRef,
+  ChatInteractionMode,
+  ChatRequestPayload,
+  CoursePackage,
+  LearningClarificationStatus,
+  RealtimeToolCallResponse,
+  SelectionRef,
+} from "@/types";
 
 const CHAT_PANEL_WIDTH_STORAGE_KEY = "openclass:studio:chat-panel-width";
 const CHAT_PANEL_DEFAULT_WIDTH = 380;
@@ -85,6 +99,10 @@ export function CourseStudio() {
   const [selection, setSelection] = useState<SelectionRef | null>(null);
   const [geometryReference, setGeometryReference] = useState<SelectionRef | null>(null);
   const [selectionPopover, setSelectionPopover] = useState<SelectionPopoverPosition | null>(null);
+  const [realtimeTeachingFocusState, setRealtimeTeachingFocusState] = useState<{
+    lessonId: string;
+    focus: BoardFocusRef;
+  } | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [topCollapsed, setTopCollapsed] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
@@ -239,16 +257,119 @@ export function CourseStudio() {
         interaction_mode: "ask",
       });
     },
+    currentSelection: includeSelectionInPrompt ? composerSelection : null,
+    onTranscriptUpdate: handleRealtimeTranscriptUpdate,
+    onToolStatusUpdate: handleRealtimeToolStatusUpdate,
+    onToolResult: handleRealtimeToolResult,
   });
-  const { remoteAudioRef, voiceActive, voiceStatusText, handleVoiceToggle, stopRealtimeSession } = voice;
+  const {
+    remoteAudioRef,
+    voiceActive,
+    voiceStatusText,
+    handleVoiceToggle,
+    stopRealtimeSession,
+    sendRealtimeText,
+  } = voice;
   const chatSpeech = useChatSpeech({
     lessonId: activeLesson?.id ?? null,
     messages: activeMessages,
   });
 
+  const latestDisplayedMessage = displayedMessages[displayedMessages.length - 1];
   useEffect(() => {
     chatScrollEndRef.current?.scrollIntoView({ block: "end" });
-  }, [activeLesson?.id, displayedMessages.length, isChatBusy]);
+  }, [activeLesson?.id, displayedMessages.length, latestDisplayedMessage?.content, isChatBusy]);
+
+  const realtimeTeachingFocus =
+    realtimeTeachingFocusState && realtimeTeachingFocusState.lessonId === activeLesson?.id
+      ? realtimeTeachingFocusState.focus
+      : null;
+
+  function handleRealtimeTranscriptUpdate(update: RealtimeTranscriptUpdate) {
+    const messageId = `realtime:${update.turnId}:${update.role}`;
+    updateLessonMessages(update.lessonId, (current) => {
+      const existing = current.find((message) => message.id === messageId);
+      const status = update.role === "assistant" && !update.final ? "pending" : "ready";
+      if (existing) {
+        return current.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                content: update.text,
+                status,
+                statusLabel: status === "pending" ? message.statusLabel ?? "正在实时回复" : undefined,
+              }
+            : message
+        );
+      }
+      return [
+        ...current,
+        createChatMessage(update.role, update.text, status, messageId, null, null, {
+          editableContent: update.role === "user" ? update.text : undefined,
+          interactionMode: update.role === "user" ? "ask" : undefined,
+        }),
+      ];
+    });
+  }
+
+  function handleRealtimeToolStatusUpdate(update: RealtimeToolStatusUpdate) {
+    const messageId = `realtime:${update.turnId}:assistant`;
+    updateLessonMessages(update.lessonId, (current) => {
+      const existing = current.find((message) => message.id === messageId);
+      if (existing) {
+        return current.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                status: update.status === "error" ? "error" : "pending",
+                statusLabel: update.label,
+              }
+            : message
+        );
+      }
+      return [
+        ...current,
+        {
+          ...createChatMessage("assistant", "", update.status === "error" ? "error" : "pending", messageId),
+          statusLabel: update.label,
+        },
+      ];
+    });
+  }
+
+  function handleRealtimeToolResult(lessonId: string, result: RealtimeToolCallResponse) {
+    if (result.course_package) {
+      updateCoursePackage(result.course_package, { activeLessonId: lessonId });
+    }
+    if (result.resolved_focus?.source === "board") {
+      setRealtimeTeachingFocusState({ lessonId, focus: result.resolved_focus });
+    }
+  }
+
+  async function handleStudioSubmitChat(payloadOverride?: ChatRequestPayload) {
+    const realtimePayload = payloadOverride ?? {
+      message: chatInput.trim(),
+      interaction_mode: composerMode,
+      selection: includeSelectionInPrompt ? composerSelection : null,
+      attachments: composerAttachments,
+    };
+    const canUseRealtimeText =
+      voiceActive &&
+      realtimePayload.interaction_mode !== "direct_edit" &&
+      !realtimePayload.attachments?.length &&
+      !realtimePayload.formula_ink &&
+      !realtimePayload.board_generation_action &&
+      !realtimePayload.teaching_action;
+    if (canUseRealtimeText && sendRealtimeText(realtimePayload.message)) {
+      updateActiveLessonComposerState((current) => ({
+        ...current,
+        chatInput: "",
+        composerAttachments: [],
+      }));
+      return;
+    }
+    await handleSubmitChat(payloadOverride);
+  }
 
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
@@ -624,7 +745,7 @@ export function CourseStudio() {
           includeSelectionInPrompt={includeSelectionInPrompt}
           onApplySelection={applySelection}
           onContinueTeaching={() => void handleContinueTeaching()}
-          onSubmitChat={(payload) => handleSubmitChat(payload)}
+          onSubmitChat={(payload) => handleStudioSubmitChat(payload)}
           onStopChat={handleStopChat}
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
           onSelectTextModel={selectTextModel}
@@ -645,6 +766,7 @@ export function CourseStudio() {
           isDraftPreviewMode={isDraftPreviewMode}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
+          transientTeachingFocus={realtimeTeachingFocus}
           onExitPreviewMode={exitAnyPreviewMode}
           onDocumentChange={handleLocalDocumentChange}
           onStructureRemovalIntent={markStructureRemovalIntent}

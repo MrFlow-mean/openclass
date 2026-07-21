@@ -42,18 +42,19 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   ],
   realtime: [
     {
-      provider: "openai_codex",
-      model: "realtime-unavailable",
-      label: "Codex 实时语音不可用",
+      provider: "openai",
+      model: "gpt-realtime-2.1",
+      label: "OpenAI GPT Realtime 2.1",
       capability: "realtime",
       enabled: false,
       configured: false,
       default: true,
+      transport: "openai_webrtc",
     },
   ],
   defaults: {
     text: { provider: "openai_codex", model: "gpt-5.6-sol" },
-    realtime: { provider: "openai_codex", model: "realtime-unavailable" },
+    realtime: { provider: "openai", model: "gpt-realtime-2.1" },
   },
 };
 

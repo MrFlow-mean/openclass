@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from app.models import AIModelSelection, RealtimeConnectRequest, RealtimeConnectResponse, new_id
+from app.services import workspace_state
+from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
+from app.services.ai_model_catalog import (
+    OPENAI_DEFAULT_REALTIME_MODEL,
+    default_realtime_selection,
+    realtime_runtime_enabled,
+)
+from app.services.config import load_root_dotenv
+from app.services.realtime_tool_bridge import realtime_tool_schemas
+
+
+load_root_dotenv()
+
+OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
+
+
+class RealtimeServiceError(RuntimeError):
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class RealtimeSessionConfig:
+    provider: str
+    model: str
+    voice: str
+    tools_enabled: bool
+    client_session_id: str
+    session_payload: dict[str, Any]
+
+
+def _env_truthy(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_optional_secret(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized or normalized.lower() in {"none", "null", "disabled", "false", "0"}:
+        return None
+    if normalized.startswith(("your_", "你的_")):
+        return None
+    return normalized
+
+
+def _openai_api_key() -> str | None:
+    return _normalize_optional_secret(os.getenv("OPENAI_API_KEY"))
+
+
+def _openai_realtime_base_url() -> str:
+    return os.getenv("OPENAI_REALTIME_BASE_URL", os.getenv("OPENAI_BASE_URL", OPENAI_OFFICIAL_BASE_URL)).rstrip("/")
+
+
+def _realtime_reasoning_effort() -> str:
+    value = (os.getenv("OPENAI_REALTIME_REASONING_EFFORT") or "low").strip().lower()
+    return value if value in {"low", "medium", "high"} else "low"
+
+
+def _compact_text(value: str | None, *, limit: int = 500) -> str:
+    normalized = " ".join((value or "").split())
+    return normalized if len(normalized) <= limit else f"{normalized[: limit - 1]}..."
+
+
+def _hashed_user_id(user_id: str) -> str:
+    return hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+
+
+def _call_id_from_location(value: str | None) -> str | None:
+    return value.rstrip("/").split("/")[-1] if value else None
+
+
+def _realtime_instructions(*, lesson_title: str, latest_assistant_message: str | None) -> str:
+    return (
+        "You are the realtime voice and text form of the same OpenClass Chatbot shown in the left conversation panel.\n"
+        "Generate every learner-facing sentence from the current conversation and tool results; do not use scripted subject templates.\n"
+        "Never assume or invent board content. Before discussing, explaining, quoting, locating, or role-playing from the board, "
+        "call read_board_context and stay within the returned bounded content.\n"
+        "For a requested board location, use mode=target. For an active selection, use mode=current_selection. "
+        "Use mode=outline when the location is ambiguous, then read the chosen target.\n"
+        "When the learner defines an interaction rule, preserve that rule across turns. For alternating-role practice, produce only "
+        "the next required role turn unless correction or clarification is necessary. This is a general content-shape rule, not a subject rule.\n"
+        "Use run_chatbot_workflow for document edits, board generation, durable teaching progress, clarification workflows, or deeper orchestration.\n"
+        "Tool results are authoritative. Present them naturally without exposing internal tool names. Do not claim an edit or location succeeded "
+        "unless the corresponding tool result says it succeeded.\n"
+        "Keep spoken responses focused and conversational. The learner may interrupt at any time.\n"
+        f"Current lesson title: {lesson_title}\n"
+        f"Most recent visible Chatbot reply: {_compact_text(latest_assistant_message) or 'none'}"
+    )
+
+
+def _select_realtime_model(raw: AIModelSelection | None) -> AIModelSelection:
+    selected = raw or default_realtime_selection()
+    if selected.provider != "openai":
+        raise RealtimeServiceError(400, "当前实时语音入口只支持 OpenAI WebRTC 模型。")
+    return selected
+
+
+def build_openai_realtime_session_config(
+    *,
+    lesson_title: str,
+    request: RealtimeConnectRequest,
+) -> RealtimeSessionConfig:
+    selected = _select_realtime_model(request.realtime_model)
+    model = selected.model or os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
+    voice = (os.getenv("OPENAI_REALTIME_VOICE") or "marin").strip()
+    client_session_id = request.client_session_id or new_id("realtime")
+    tools_enabled = _env_truthy("OPENCLASS_REALTIME_TOOLS_ENABLED", default=True)
+    session_payload: dict[str, Any] = {
+        "type": "realtime",
+        "model": model,
+        "instructions": _realtime_instructions(
+            lesson_title=lesson_title,
+            latest_assistant_message=request.latest_assistant_message,
+        ),
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {
+                "transcription": {
+                    "model": os.getenv("OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"),
+                },
+                "noise_reduction": {"type": "near_field"},
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "create_response": tools_enabled,
+                    "interrupt_response": tools_enabled,
+                },
+            },
+            "output": {"voice": voice},
+        },
+        "reasoning": {"effort": _realtime_reasoning_effort()},
+    }
+    if tools_enabled:
+        session_payload["tools"] = realtime_tool_schemas()
+        session_payload["tool_choice"] = "auto"
+    return RealtimeSessionConfig(
+        provider="openai",
+        model=model,
+        voice=voice,
+        tools_enabled=tools_enabled,
+        client_session_id=client_session_id,
+        session_payload=session_payload,
+    )
+
+
+def connect_openai_realtime_session(
+    lesson_id: str,
+    request: RealtimeConnectRequest,
+    *,
+    user_id: str,
+) -> RealtimeConnectResponse:
+    if not realtime_runtime_enabled():
+        raise RealtimeServiceError(410, "实时语音后端未启用；请设置 OPENCLASS_REALTIME_ENABLED=true。")
+    api_key = _openai_api_key()
+    if not api_key:
+        raise RealtimeServiceError(503, "OpenAI Realtime 需要在后端配置 OPENAI_API_KEY。")
+    if not request.offer_sdp.strip():
+        raise RealtimeServiceError(400, "Missing WebRTC offer SDP.")
+
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    config = build_openai_realtime_session_config(lesson_title=lesson.title, request=request)
+    files = {
+        "sdp": (None, request.offer_sdp, "application/sdp"),
+        "session": (None, json.dumps(config.session_payload, ensure_ascii=False), "application/json"),
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "OpenAI-Safety-Identifier": _hashed_user_id(user_id),
+    }
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(f"{_openai_realtime_base_url()}/realtime/calls", headers=headers, files=files)
+    except httpx.HTTPError as exc:
+        raise RealtimeServiceError(502, f"OpenAI Realtime 连接失败：{exc}") from exc
+    if response.status_code >= 400:
+        raise RealtimeServiceError(response.status_code, response.text or "OpenAI Realtime 连接失败。")
+
+    call_id = _call_id_from_location(response.headers.get("Location"))
+    ai_usage_logger.log_event(
+        "openai_realtime_call_created",
+        lesson_id=lesson_id,
+        client_session_id=config.client_session_id,
+        model=config.model,
+        voice=config.voice,
+        call_id=call_id,
+        tools_enabled=config.tools_enabled,
+    )
+    return RealtimeConnectResponse(
+        answer_sdp=response.text,
+        provider=config.provider,
+        model=config.model,
+        voice=config.voice,
+        call_id=call_id,
+        tools_enabled=config.tools_enabled,
+        client_session_id=config.client_session_id,
+    )
+
+
+def log_realtime_transcript_event(lesson_id: str, request, *, user_id: str) -> dict[str, str]:
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    workspace_state.find_lesson_package(workspace, lesson_id)
+    direction = "inbound" if request.role == "user" else "outbound"
+    log_ai_interaction_message(
+        channel="realtime",
+        direction=direction,
+        role=request.role,
+        transport=request.transport_event_type,
+        content=request.transcript,
+        metadata={
+            "lesson_id": lesson_id,
+            "lesson_title": request.lesson_title,
+            "client_session_id": request.client_session_id,
+            "tool_name": request.tool_name,
+            "tool_call_id": request.tool_call_id,
+            "tool_status": request.tool_status,
+        },
+    )
+    return {"status": "ok"}

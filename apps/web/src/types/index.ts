@@ -865,7 +865,7 @@ export interface BoardFocusRef {
   lesson_id?: string | null;
   document_id?: string | null;
   segment_id?: string | null;
-  kind?: "heading" | "paragraph" | "list" | "table" | "code" | "image" | "other" | null;
+  kind?: "heading" | "paragraph" | "list" | "table" | "code" | "image" | "formula" | "other" | null;
   heading_path: string[];
   excerpt: string;
   before_text: string;
@@ -1028,6 +1028,7 @@ export interface RealtimeConnectPayload {
   latest_assistant_message?: string | null;
   client_session_id?: string | null;
   realtime_model?: AIModelSelection | null;
+  selection?: SelectionRef | null;
 }
 
 export interface RealtimeConnectResponse {
@@ -1063,6 +1064,23 @@ export interface RealtimeEventLogPayload {
   tool_name?: string | null;
   tool_call_id?: string | null;
   tool_status?: string | null;
+}
+
+export type RealtimeToolName = "read_board_context" | "run_chatbot_workflow";
+
+export interface RealtimeToolCallPayload {
+  client_session_id: string;
+  call_id: string;
+  name: RealtimeToolName;
+  arguments: Record<string, unknown>;
+  selection?: SelectionRef | null;
+}
+
+export interface RealtimeToolCallResponse {
+  status: "ok" | "error";
+  model_output: Record<string, unknown>;
+  resolved_focus?: BoardFocusRef | null;
+  course_package?: CoursePackage | null;
 }
 
 export interface DocumentSavePayload {

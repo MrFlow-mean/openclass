@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import AIModelCatalog, UserView
 from app.routers.auth import current_user
-from app.routers import auth, chat, codex_provider, documents, geometry, sources, speech, workspace
-from app.services.ai_model_catalog import build_model_catalog
+from app.routers import auth, chat, codex_provider, documents, geometry, realtime, sources, speech, workspace
+from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.deepseek_api import deepseek_provider_configured
 from app.services.workspace_state import ensure_data_dirs
@@ -38,6 +38,7 @@ app.include_router(codex_provider.router)
 app.include_router(sources.router)
 app.include_router(speech.router)
 app.include_router(geometry.router)
+app.include_router(realtime.router)
 
 
 @app.get("/health")
@@ -53,7 +54,10 @@ def health() -> dict[str, object]:
             "access": "shared_unmetered",
         },
         "workflow": {"status": "provider_neutral_board"},
-        "realtime": {"status": "disabled"},
+        "realtime": {
+            "status": "enabled" if realtime_runtime_enabled() else "disabled",
+            "provider": "openai",
+        },
     }
 
 

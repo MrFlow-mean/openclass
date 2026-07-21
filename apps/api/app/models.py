@@ -1558,6 +1558,7 @@ class RealtimeConnectRequest(BaseModel):
     latest_assistant_message: str | None = None
     client_session_id: str | None = None
     realtime_model: AIModelSelection | None = None
+    selection: SelectionRef | None = None
 
 
 class RealtimeConnectResponse(BaseModel):
@@ -1593,3 +1594,21 @@ class RealtimeTranscriptLogRequest(BaseModel):
     tool_name: str | None = None
     tool_call_id: str | None = None
     tool_status: str | None = None
+
+
+RealtimeToolName = Literal["read_board_context", "run_chatbot_workflow"]
+
+
+class RealtimeToolCallRequest(BaseModel):
+    client_session_id: str = Field(min_length=1, max_length=160)
+    call_id: str = Field(min_length=1, max_length=160)
+    name: RealtimeToolName
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    selection: SelectionRef | None = None
+
+
+class RealtimeToolCallResponse(BaseModel):
+    status: Literal["ok", "error"]
+    model_output: dict[str, Any] = Field(default_factory=dict)
+    resolved_focus: BoardFocusRef | None = None
+    course_package: CoursePackageView | None = None

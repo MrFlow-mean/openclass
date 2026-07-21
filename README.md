@@ -119,7 +119,7 @@ OPENAI_PM_MODEL=gpt-5.5
 OPENAI_BOARD_MODEL=gpt-5.5
 OPENAI_CHATBOT_MODEL=gpt-5.5
 OPENCLASS_REALTIME_ENABLED=false
-OPENCLASS_REALTIME_TOOLS_ENABLED=false
+OPENCLASS_REALTIME_TOOLS_ENABLED=true
 OPENAI_REALTIME_MODEL=gpt-realtime-2.1
 OPENAI_REALTIME_REASONING_EFFORT=low
 OPENAI_IMAGE_MODEL=gpt-image-2
@@ -133,7 +133,7 @@ VOLCENGINE_TTS_SPEAKER=zh_female_vv_uranus_bigtts
 
 默认的 `OPENCLASS_SOURCE_BACKEND=native` 使用 OpenClass 本地确定性解析能力建立资料结构；该路径不调用 Codex。需要接入 Open Notebook 时，可显式设置 `OPENCLASS_SOURCE_BACKEND=open_notebook`。
 
-Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，Realtime 会通过服务端 sideband（旁路控制通道）调用同一条 Chatbot workflow；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
+Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，浏览器通过 OpenAI WebRTC（网页实时通信）接收 function call（函数调用），再交给经过用户与 lesson 权限校验的 OpenClass 后端读取受限板书范围或调用同一条 Chatbot workflow，最后只把受控结果返回 Realtime；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 
 聊天回复的自动播报使用独立的 TTS（文字转语音）链路。默认 adapter（适配器）通过 `VOLCENGINE_TTS_API_KEY` 调用豆包语音 V3 HTTP Chunked API（第三版 HTTP 分块接口），不复用 Codex device login（设备登录）的额度或认证。模型版本、音色和语速分别由 `VOLCENGINE_TTS_RESOURCE_ID`、`VOLCENGINE_TTS_SPEAKER`、`VOLCENGINE_TTS_SPEECH_RATE` 配置；密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重播单条回复。
 

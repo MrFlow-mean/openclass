@@ -22,7 +22,8 @@ from app.services.deepseek_api import (
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
-OPENAI_CODEX_REALTIME_UNAVAILABLE_MODEL = "realtime-unavailable"
+OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
+OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
 
 
 def default_text_selection(
@@ -39,10 +40,28 @@ def default_text_selection(
     )
 
 
-def unavailable_realtime_selection() -> AIModelSelection:
+def default_realtime_selection() -> AIModelSelection:
     return AIModelSelection(
-        provider="openai_codex",
-        model=OPENAI_CODEX_REALTIME_UNAVAILABLE_MODEL,
+        provider="openai",
+        model=(os.getenv("OPENAI_REALTIME_MODEL") or OPENAI_DEFAULT_REALTIME_MODEL).strip(),
+    )
+
+
+def realtime_runtime_enabled() -> bool:
+    return (os.getenv("OPENCLASS_REALTIME_ENABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _configured_secret(name: str) -> bool:
+    value = (os.getenv(name) or "").strip()
+    return bool(
+        value
+        and value.lower() not in {"none", "null", "disabled", "false", "0"}
+        and not value.startswith(("your_", "你的_"))
     )
 
 
@@ -136,7 +155,15 @@ def _default_model_id(models: list[dict[str, Any]]) -> str:
 def build_model_catalog(user_id: str) -> AIModelCatalog:
     status = codex_provider_status(user_id, refresh=False)
     shared_deepseek = deepseek_config()
-    realtime_default = unavailable_realtime_selection()
+    realtime_default = default_realtime_selection()
+    realtime_configured = _configured_secret("OPENAI_API_KEY")
+    realtime_enabled = realtime_runtime_enabled() and realtime_configured
+    realtime_models = [
+        (OPENAI_DEFAULT_REALTIME_MODEL, "OpenAI GPT Realtime 2.1"),
+        (OPENAI_FAST_REALTIME_MODEL, "OpenAI GPT Realtime 2.1 Mini"),
+    ]
+    if not any(model == realtime_default.model for model, _label in realtime_models):
+        realtime_models.insert(0, (realtime_default.model, f"OpenAI {realtime_default.model}"))
     models = list(_codex_text_models(user_id))
     default_model_id = _default_model_id(models)
     if not any(item["model"] == default_model_id for item in models):
@@ -199,14 +226,16 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         text=text_options,
         realtime=[
             AIModelOption(
-                provider=realtime_default.provider,
-                model=realtime_default.model,
-                label="Codex 实时语音不可用",
+                provider="openai",
+                model=model,
+                label=label,
                 capability="realtime",
-                enabled=False,
-                configured=False,
-                default=True,
+                enabled=realtime_enabled,
+                configured=realtime_configured,
+                default=model == realtime_default.model,
+                transport="openai_webrtc",
             )
+            for model, label in realtime_models
         ],
         defaults={"text": text_default, "realtime": realtime_default},
     )

@@ -14,7 +14,108 @@ import {
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
-import type { AIModelOption, AIModelSelection, Lesson } from "@/types";
+import type {
+  AIModelOption,
+  AIModelSelection,
+  Lesson,
+  RealtimeToolCallResponse,
+  RealtimeToolName,
+  SelectionRef,
+} from "@/types";
+
+export type RealtimeTranscriptUpdate = {
+  lessonId: string;
+  turnId: string;
+  role: "user" | "assistant";
+  text: string;
+  final: boolean;
+};
+
+export type RealtimeToolStatusUpdate = {
+  lessonId: string;
+  turnId: string;
+  label: string;
+  status: "pending" | "completed" | "error";
+};
+
+type RealtimeFunctionCall = {
+  callId: string;
+  name: RealtimeToolName;
+  arguments: Record<string, unknown>;
+};
+
+type OpenAIRealtimeEvent = {
+  type?: string;
+  transcript?: string;
+  delta?: string;
+  item_id?: string;
+  response_id?: string;
+  name?: string;
+  call_id?: string;
+  arguments?: string;
+  item?: Record<string, unknown>;
+  response?: { output?: Array<Record<string, unknown>> };
+};
+
+function parseFunctionCall(item: Record<string, unknown> | undefined): RealtimeFunctionCall | null {
+  if (item?.type !== "function_call" || typeof item.name !== "string" || typeof item.call_id !== "string") {
+    return null;
+  }
+  try {
+    return {
+      callId: item.call_id,
+      name: item.name as RealtimeToolName,
+      arguments: JSON.parse(typeof item.arguments === "string" ? item.arguments : "{}") as Record<string, unknown>,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function realtimeFunctionCallsFromEvent(event: OpenAIRealtimeEvent): RealtimeFunctionCall[] {
+  if (
+    event.type === "response.function_call_arguments.done" &&
+    typeof event.name === "string" &&
+    typeof event.call_id === "string"
+  ) {
+    try {
+      return [{
+        callId: event.call_id,
+        name: event.name as RealtimeToolName,
+        arguments: JSON.parse(event.arguments || "{}") as Record<string, unknown>,
+      }];
+    } catch {
+      return [];
+    }
+  }
+  const direct = parseFunctionCall(event.item);
+  if (direct) {
+    return [direct];
+  }
+  return (event.response?.output ?? []).flatMap((item) => {
+    const call = parseFunctionCall(item);
+    return call ? [call] : [];
+  });
+}
+
+function sendOpenAIFunctionOutput(
+  dataChannel: RTCDataChannel,
+  callId: string,
+  output: Record<string, unknown>
+) {
+  if (dataChannel.readyState !== "open") {
+    return;
+  }
+  dataChannel.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(output),
+    },
+  }));
+  dataChannel.send(JSON.stringify({ type: "response.create" }));
+}
 
 type UseRealtimeVoiceOptions = {
   activeLesson: Lesson | null;
@@ -28,6 +129,10 @@ type UseRealtimeVoiceOptions = {
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
   chatRequestInFlightRef: MutableRefObject<boolean>;
   onSubmitTranscript: (message: string) => void;
+  currentSelection: SelectionRef | null;
+  onTranscriptUpdate: (update: RealtimeTranscriptUpdate) => void;
+  onToolStatusUpdate: (update: RealtimeToolStatusUpdate) => void;
+  onToolResult: (lessonId: string, result: RealtimeToolCallResponse) => void;
 };
 
 function createClientSessionId(prefix: string): string {
@@ -46,6 +151,10 @@ export function useRealtimeVoice({
   flushAutoSave,
   chatRequestInFlightRef,
   onSubmitTranscript,
+  currentSelection,
+  onTranscriptUpdate,
+  onToolStatusUpdate,
+  onToolResult,
 }: UseRealtimeVoiceOptions) {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimePeerRef = useRef<RTCPeerConnection | null>(null);
@@ -63,6 +172,10 @@ export function useRealtimeVoice({
   const openAIResponseInProgressRef = useRef(false);
   const openAIRealtimeToolsEnabledRef = useRef(false);
   const openAIAssistantTranscriptRef = useRef("");
+  const openAIInputTranscriptsRef = useRef(new Map<string, string>());
+  const openAIProcessedToolCallsRef = useRef(new Set<string>());
+  const realtimeTurnIdRef = useRef<string | null>(null);
+  const currentSelectionRef = useRef<SelectionRef | null>(currentSelection);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
@@ -75,6 +188,24 @@ export function useRealtimeVoice({
 
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接实时语音 Chatbot");
+
+  useEffect(() => {
+    currentSelectionRef.current = currentSelection;
+  }, [currentSelection]);
+
+  function currentTurnId() {
+    if (!realtimeTurnIdRef.current) {
+      realtimeTurnIdRef.current = createClientSessionId("turn");
+    }
+    return realtimeTurnIdRef.current;
+  }
+
+  function beginRealtimeTurn() {
+    const turnId = createClientSessionId("turn");
+    realtimeTurnIdRef.current = turnId;
+    openAIAssistantTranscriptRef.current = "";
+    return turnId;
+  }
 
   function stopGoogleQueuedPlayback() {
     googlePlaybackSourcesRef.current.forEach((source) => {
@@ -144,6 +275,9 @@ export function useRealtimeVoice({
     openAIResponseInProgressRef.current = false;
     openAIRealtimeToolsEnabledRef.current = false;
     openAIAssistantTranscriptRef.current = "";
+    openAIInputTranscriptsRef.current.clear();
+    openAIProcessedToolCallsRef.current.clear();
+    realtimeTurnIdRef.current = null;
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -199,6 +333,13 @@ export function useRealtimeVoice({
       return;
     }
     enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized);
+    onTranscriptUpdate({
+      lessonId,
+      turnId: currentTurnId(),
+      role: "user",
+      text: normalized,
+      final: true,
+    });
     if (openAIRealtimeToolsEnabledRef.current) {
       setVoiceStatusText("Realtime 正在通过后端 Chatbot 工具处理这句话");
       return;
@@ -219,6 +360,13 @@ export function useRealtimeVoice({
     }
     if (assistantTranscript) {
       enqueueRealtimeLogEvent(lessonId, "assistant", "google.output_transcription", assistantTranscript);
+      onTranscriptUpdate({
+        lessonId,
+        turnId: currentTurnId(),
+        role: "assistant",
+        text: assistantTranscript,
+        final: true,
+      });
       googleOutputTranscriptRef.current = "";
     }
   }
@@ -260,9 +408,11 @@ export function useRealtimeVoice({
     }
     const inputText = serverContent.inputTranscription?.text;
     if (inputText) {
+      currentTurnId();
       googleInputTranscriptRef.current += inputText;
     }
     if (serverContent.interrupted) {
+      beginRealtimeTurn();
       stopGoogleQueuedPlayback();
       googleOutputTranscriptRef.current = "";
       setVoiceStatusText("检测到插话，已停止上一段回答");
@@ -447,14 +597,9 @@ export function useRealtimeVoice({
       const dataChannel = peerConnection.createDataChannel("oai-events");
       realtimeChannelRef.current = dataChannel;
       dataChannel.onmessage = (messageEvent) => {
-        try {
-          const payload = JSON.parse(messageEvent.data) as {
-            type?: string;
-            transcript?: string;
-            delta?: string;
-            name?: string;
-            call_id?: string;
-          };
+        void (async () => {
+          try {
+            const payload = JSON.parse(messageEvent.data) as OpenAIRealtimeEvent;
           if (payload.type === "response.created") {
             openAIResponseInProgressRef.current = true;
           }
@@ -467,6 +612,7 @@ export function useRealtimeVoice({
             openAIResponseInProgressRef.current = false;
           }
           if (payload.type === "input_audio_buffer.speech_started") {
+            beginRealtimeTurn();
             if (openAIResponseInProgressRef.current && dataChannel.readyState === "open") {
               dataChannel.send(JSON.stringify({ type: "response.cancel" }));
               openAIResponseInProgressRef.current = false;
@@ -478,35 +624,109 @@ export function useRealtimeVoice({
           if (!lessonId || !payload.type) {
             return;
           }
-          if (payload.type.includes("function_call") && payload.name) {
-            enqueueRealtimeLogEvent(
+          const functionCalls = realtimeFunctionCallsFromEvent(payload);
+          for (const functionCall of functionCalls) {
+            if (openAIProcessedToolCallsRef.current.has(functionCall.callId)) {
+              continue;
+            }
+            openAIProcessedToolCallsRef.current.add(functionCall.callId);
+            const turnId = currentTurnId();
+            const toolLabel = functionCall.name === "read_board_context" ? "正在定位并读取板书" : "正在交给 Chatbot 工作流处理";
+            setVoiceStatusText(toolLabel);
+            onToolStatusUpdate({ lessonId, turnId, label: toolLabel, status: "pending" });
+            enqueueRealtimeLogEvent(lessonId, "tool", payload.type, `${functionCall.name} (${functionCall.callId})`);
+            const clientSessionId = realtimeClientSessionIdRef.current;
+            if (!clientSessionId) {
+              const message = "Realtime 客户端会话标识已失效";
+              onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              sendOpenAIFunctionOutput(dataChannel, functionCall.callId, { status: "error", message });
+              continue;
+            }
+            let toolResult: RealtimeToolCallResponse;
+            try {
+              toolResult = await api.callRealtimeTool(lessonId, {
+                client_session_id: clientSessionId,
+                call_id: functionCall.callId,
+                name: functionCall.name,
+                arguments: functionCall.arguments,
+                selection: currentSelectionRef.current,
+              });
+            } catch (toolError) {
+              const message = toolError instanceof Error ? toolError.message : "Realtime 工具执行失败";
+              onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
+              setVoiceStatusText(message);
+              sendOpenAIFunctionOutput(dataChannel, functionCall.callId, { status: "error", message });
+              continue;
+            }
+            onToolResult(lessonId, toolResult);
+            const modelStatus = toolResult.model_output.status;
+            const succeeded = toolResult.status === "ok" && modelStatus === "ok";
+            const completedLabel = functionCall.name === "read_board_context"
+              ? "板书上下文已就绪"
+              : "Chatbot 工作流已完成";
+            const failedLabel = toolResult.status === "ok" && modelStatus === "not_found"
+              ? "未定位到明确板书范围"
+              : "Realtime 工具执行失败";
+            onToolStatusUpdate({
               lessonId,
-              "tool",
-              payload.type,
-              `${payload.name}${payload.call_id ? ` (${payload.call_id})` : ""}`
-            );
+              turnId,
+              label: succeeded ? completedLabel : failedLabel,
+              status: succeeded ? "completed" : "error",
+            });
+            setVoiceStatusText(succeeded ? `${completedLabel}，Realtime 正在回答` : failedLabel);
+            sendOpenAIFunctionOutput(dataChannel, functionCall.callId, toolResult.model_output);
+          }
+          const inputItemId = payload.item_id ?? currentTurnId();
+          if (payload.type === "conversation.item.input_audio_transcription.delta" && payload.delta) {
+            const transcript = `${openAIInputTranscriptsRef.current.get(inputItemId) ?? ""}${payload.delta}`;
+            openAIInputTranscriptsRef.current.set(inputItemId, transcript);
+            onTranscriptUpdate({ lessonId, turnId: currentTurnId(), role: "user", text: transcript, final: false });
           }
           if (
-            payload.transcript &&
             (payload.type === "conversation.item.input_audio_transcription.completed" ||
               payload.type === "conversation.item.input_audio_transcription.done")
           ) {
-            handleRealtimeUserTranscript(lessonId, payload.transcript, payload.type);
+            const transcript = payload.transcript ?? openAIInputTranscriptsRef.current.get(inputItemId) ?? "";
+            openAIInputTranscriptsRef.current.delete(inputItemId);
+            handleRealtimeUserTranscript(lessonId, transcript, payload.type);
           }
           if (payload.type === "response.output_audio_transcript.delta" && payload.delta) {
             openAIAssistantTranscriptRef.current += payload.delta;
+            onTranscriptUpdate({
+              lessonId,
+              turnId: currentTurnId(),
+              role: "assistant",
+              text: openAIAssistantTranscriptRef.current,
+              final: false,
+            });
+          }
+          if (payload.type === "response.output_text.delta" && payload.delta) {
+            openAIAssistantTranscriptRef.current += payload.delta;
+            onTranscriptUpdate({ lessonId, turnId: currentTurnId(), role: "assistant", text: openAIAssistantTranscriptRef.current, final: false });
           }
           if (
             payload.type === "response.audio_transcript.done" ||
-            payload.type === "response.output_audio_transcript.done"
+            payload.type === "response.output_audio_transcript.done" ||
+            payload.type === "response.output_text.done"
           ) {
             const transcript = payload.transcript ?? openAIAssistantTranscriptRef.current;
             enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, transcript);
+            onTranscriptUpdate({ lessonId, turnId: currentTurnId(), role: "assistant", text: transcript, final: true });
             openAIAssistantTranscriptRef.current = "";
           }
-        } catch {
-          // ignore
-        }
+          } catch (toolError) {
+            const lessonId = realtimeLessonIdRef.current;
+            if (lessonId) {
+              onToolStatusUpdate({
+                lessonId,
+                turnId: currentTurnId(),
+                label: toolError instanceof Error ? toolError.message : "Realtime 工具执行失败",
+                status: "error",
+              });
+            }
+            setError(toolError instanceof Error ? toolError.message : "Realtime 工具执行失败");
+          }
+        })();
       };
 
       const offer = await peerConnection.createOffer();
@@ -517,6 +737,7 @@ export function useRealtimeVoice({
         latest_assistant_message: latestAssistantMessageContent,
         client_session_id: clientSessionId,
         realtime_model: selectedRealtimeModel,
+        selection: currentSelection,
       });
       if (realtimeResponse.client_session_id) {
         realtimeClientSessionIdRef.current = realtimeResponse.client_session_id;
@@ -537,6 +758,29 @@ export function useRealtimeVoice({
       stopRealtimeSession("语音连接失败");
       setError(realtimeConnectionErrorMessage(voiceError, selectedRealtimeModel));
     }
+  }
+
+  function sendRealtimeText(message: string) {
+    const normalized = message.trim();
+    const lessonId = realtimeLessonIdRef.current;
+    const dataChannel = realtimeChannelRef.current;
+    if (!normalized || !lessonId || !dataChannel || dataChannel.readyState !== "open") {
+      return false;
+    }
+    const turnId = beginRealtimeTurn();
+    onTranscriptUpdate({ lessonId, turnId, role: "user", text: normalized, final: true });
+    enqueueRealtimeLogEvent(lessonId, "user", "conversation.item.input_text", normalized);
+    dataChannel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: normalized }],
+      },
+    }));
+    dataChannel.send(JSON.stringify({ type: "response.create" }));
+    setVoiceStatusText("Realtime 正在处理文字消息");
+    return true;
   }
 
   const scheduleRealtimeLogFlushEffectEvent = useEffectEvent(() => {
@@ -591,5 +835,6 @@ export function useRealtimeVoice({
     handleVoiceToggle,
     stopRealtimeSession,
     speakControlledChatbotMessage,
+    sendRealtimeText,
   };
 }

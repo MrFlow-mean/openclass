@@ -75,10 +75,10 @@ def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> N
     ]
     assert catalog.defaults["text"].provider == "openai_codex"
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
-    assert catalog.defaults["realtime"].provider == "openai_codex"
-    assert catalog.defaults["realtime"].model == "realtime-unavailable"
-    assert len(catalog.realtime) == 1
-    assert catalog.realtime[0].model == "realtime-unavailable"
+    assert catalog.defaults["realtime"].provider == "openai"
+    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
+    assert len(catalog.realtime) == 2
+    assert catalog.realtime[0].model == "gpt-realtime-2.1"
     assert catalog.realtime[0].default is True
     assert catalog.realtime[0].enabled is False
     assert catalog.realtime[0].configured is False
@@ -182,9 +182,29 @@ def test_catalog_disables_codex_options_until_account_is_configured(monkeypatch)
     assert catalog.text
     assert {option.provider for option in catalog.text} == {"openai_codex", "deepseek"}
     assert all(not option.enabled and not option.configured for option in catalog.text)
-    assert len(catalog.realtime) == 1
-    assert catalog.realtime[0].model == "realtime-unavailable"
+    assert len(catalog.realtime) == 2
+    assert catalog.realtime[0].model == "gpt-realtime-2.1"
     assert catalog.realtime[0].enabled is False
+
+
+def test_catalog_enables_openai_realtime_with_backend_key_and_flag(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1-mini")
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "codex_provider_status",
+        lambda *_args, **_kwargs: _status(configured=False),
+    )
+    monkeypatch.setattr(ai_model_catalog, "list_codex_models", lambda _user_id: [])
+
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+
+    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1-mini"
+    assert all(option.provider == "openai" for option in catalog.realtime)
+    assert all(option.enabled and option.configured for option in catalog.realtime)
+    assert [option.model for option in catalog.realtime if option.default] == ["gpt-realtime-2.1-mini"]
+    assert all(option.transport == "openai_webrtc" for option in catalog.realtime)
 
 
 def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypatch) -> None:

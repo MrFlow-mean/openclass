@@ -17,6 +17,8 @@ import type {
   GoogleRealtimeSessionResponse,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
+  RealtimeToolCallPayload,
+  RealtimeToolCallResponse,
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
   AIModelSelection,
@@ -826,6 +828,12 @@ export const api = {
   },
   connectRealtime(lessonId: string, payload: RealtimeConnectPayload) {
     return request<RealtimeConnectResponse>(`/api/lessons/${lessonId}/realtime/connect`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  callRealtimeTool(lessonId: string, payload: RealtimeToolCallPayload) {
+    return request<RealtimeToolCallResponse>(`/api/lessons/${lessonId}/realtime/tools`, {
       method: "POST",
       body: JSON.stringify(payload),
     });

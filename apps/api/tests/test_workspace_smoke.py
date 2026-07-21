@@ -78,7 +78,10 @@ def _document_with_text(document: dict, text: str) -> dict:
     return next_document
 
 
-def test_health_reports_codex_only_backend(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_reports_provider_neutral_board_and_realtime_status(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(main_module, "codex_app_server_runtime_enabled", lambda: True)
     monkeypatch.setattr(main_module, "codex_app_server_available", lambda: True)
 
@@ -87,10 +90,12 @@ def test_health_reports_codex_only_backend(api_client: TestClient, monkeypatch: 
     assert response.status_code == 200
     assert response.json()["workflow"] == {"status": "provider_neutral_board"}
     assert response.json()["deepseek"]["access"] == "shared_unmetered"
-    assert response.json()["realtime"] == {"status": "disabled"}
+    assert response.json()["realtime"] == {"status": "disabled", "provider": "openai"}
     assert response.json()["codex"] == {"enabled": True, "available": True}
     assert "openai" not in response.json()
     assert not any(route.path.startswith("/api/realtime") for route in main_module.app.routes)
+    assert any(route.path == "/api/lessons/{lesson_id}/realtime/connect" for route in main_module.app.routes)
+    assert any(route.path == "/api/lessons/{lesson_id}/realtime/tools" for route in main_module.app.routes)
     assert not any("/research" in route.path for route in main_module.app.routes)
     evidence_routes = [route.path for route in main_module.app.routes if "/evidence/" in route.path]
     assert evidence_routes == []

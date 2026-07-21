@@ -17,6 +17,7 @@ type BoardEditorPanelProps = {
   isDraftPreviewMode: boolean;
   previewCommit: CommitRecord | null;
   toolbarCollapsed: boolean;
+  transientTeachingFocus?: BoardFocusRef | null;
   onExitPreviewMode: () => void;
   onDocumentChange: (document: BoardDocument) => void;
   onStructureRemovalIntent: () => void;
@@ -104,6 +105,7 @@ export function BoardEditorPanel({
   isDraftPreviewMode,
   previewCommit,
   toolbarCollapsed,
+  transientTeachingFocus,
   onExitPreviewMode,
   onDocumentChange,
   onStructureRemovalIntent,
@@ -116,7 +118,7 @@ export function BoardEditorPanel({
   onReferenceFormulaToGeometry,
   onFormulaInkSubmit,
 }: BoardEditorPanelProps) {
-  const teachingFocus = currentTeachingFocus(activeLesson, previewCommit);
+  const teachingFocus = transientTeachingFocus ?? currentTeachingFocus(activeLesson, previewCommit);
 
   return (
     <section className="relative z-10 flex min-w-0 flex-col overflow-hidden bg-white shadow-[0_0_20px_rgba(0,0,0,0.02)]">
