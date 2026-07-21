@@ -1,7 +1,6 @@
 import clsx from "clsx";
 import { Activity } from "lucide-react";
 
-import type { InterfaceLanguage } from "@/lib/profile-settings-state";
 import type { WorkspaceState } from "@/types";
 
 const CONTRIBUTION_WEEKS = 32;
@@ -17,7 +16,6 @@ type ActivityDay = {
 type ActivityWeek = {
   key: string;
   days: Array<ActivityDay | null>;
-  monthLabel: string | null;
 };
 
 export type LearningActivitySummary = {
@@ -33,13 +31,10 @@ type LearningActivityCalendarLabels = {
   dayTitle: (date: string, count: number) => string;
   lastActivePrefix: string;
   noActivityYet: string;
-  less: string;
-  more: string;
 };
 
 type LearningActivityCalendarProps = {
   workspace: WorkspaceState | null;
-  language: InterfaceLanguage;
   labels: LearningActivityCalendarLabels;
   formatRelativeDate: (date: Date) => string;
 };
@@ -74,7 +69,7 @@ function getActivityLevel(count: number, maxCount: number): ActivityDay["level"]
 
 function activityTone(level: ActivityDay["level"]) {
   return {
-    0: "bg-white ring-1 ring-inset ring-stone-200/80",
+    0: "bg-white",
     1: "bg-amber-100",
     2: "bg-amber-300",
     3: "bg-amber-500",
@@ -84,7 +79,6 @@ function activityTone(level: ActivityDay["level"]) {
 
 export function buildLearningActivitySummary(
   workspace: WorkspaceState | null,
-  language: InterfaceLanguage,
   now = new Date()
 ): LearningActivitySummary {
   const today = new Date(now);
@@ -147,18 +141,13 @@ export function buildLearningActivitySummary(
       : null
   );
 
-  const locale = language === "zh-CN" ? "zh-CN" : "en-US";
-  const monthFormatter = new Intl.DateTimeFormat(locale, { month: "short" });
   const weeks: ActivityWeek[] = Array.from({ length: CONTRIBUTION_WEEKS }, (_, index) => {
     const days = leveledDays.slice(index * DAYS_PER_WEEK, index * DAYS_PER_WEEK + DAYS_PER_WEEK);
     const datedDays = days.filter((day): day is ActivityDay => day !== null);
-    const monthBoundary = datedDays.find((day) => day.date.getDate() === 1);
-    const labelDay = monthBoundary ?? (index === 0 ? datedDays[0] : null);
 
     return {
       key: datedDays[0]?.key ?? `week-${index}`,
       days,
-      monthLabel: labelDay ? monthFormatter.format(labelDay.date) : null,
     };
   });
 
@@ -172,19 +161,10 @@ export function buildLearningActivitySummary(
 
 export function LearningActivityCalendar({
   workspace,
-  language,
   labels,
   formatRelativeDate,
 }: LearningActivityCalendarProps) {
-  const activity = buildLearningActivitySummary(workspace, language);
-  const locale = language === "zh-CN" ? "zh-CN" : "en-US";
-  const weekdayFormatter = new Intl.DateTimeFormat(locale, { weekday: "short" });
-  const referenceMonday = new Date(2026, 0, 5);
-  const weekdayLabels = Array.from({ length: DAYS_PER_WEEK }, (_, index) => {
-    const date = new Date(referenceMonday);
-    date.setDate(referenceMonday.getDate() + index);
-    return weekdayFormatter.format(date);
-  });
+  const activity = buildLearningActivitySummary(workspace);
 
   return (
     <section className="mb-12 rounded-[30px] border border-white/70 bg-white/80 p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur sm:p-7">
@@ -201,57 +181,38 @@ export function LearningActivityCalendar({
         </span>
       </div>
 
-      <div className="mt-6 overflow-x-auto pb-1">
-        <div className="min-w-[42rem]" aria-label={labels.subtitle} data-testid="learning-activity-calendar">
-          <div className="mb-2 grid grid-cols-[2.25rem_repeat(32,minmax(0,1fr))] items-end gap-x-1">
-            <span aria-hidden="true" />
-            {activity.weeks.map((week) => (
-              <span key={week.key} className="truncate text-[10px] text-stone-400">
-                {week.monthLabel}
-              </span>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-[2.25rem_repeat(32,minmax(0,1fr))] gap-x-1">
-            <div className="grid grid-rows-7 gap-y-1" aria-hidden="true">
-              {weekdayLabels.map((weekday, index) => (
-                <span key={weekday} className="flex h-3 items-center text-[10px] leading-none text-stone-400">
-                  {index % 2 === 1 ? weekday : ""}
-                </span>
-              ))}
+      <div className="mt-6 overflow-x-auto" aria-label={labels.subtitle} data-testid="learning-activity-calendar">
+        <div className="flex min-w-max gap-[4px]">
+          {activity.weeks.map((week) => (
+            <div key={week.key} className="flex flex-col gap-[4px]">
+              {week.days.map((day, index) =>
+                day ? (
+                  <time
+                    key={day.key}
+                    dateTime={day.key}
+                    title={labels.dayTitle(day.key, day.count)}
+                    aria-label={labels.dayTitle(day.key, day.count)}
+                    data-activity-count={day.count}
+                    className={clsx("h-3 w-3 rounded-[3px]", activityTone(day.level))}
+                  />
+                ) : (
+                  <span key={`${week.key}-future-${index}`} className="h-3 w-3" aria-hidden="true" />
+                )
+              )}
             </div>
-
-            {activity.weeks.map((week) => (
-              <div key={week.key} className="flex flex-col items-center gap-y-1">
-                {week.days.map((day, index) =>
-                  day ? (
-                    <time
-                      key={day.key}
-                      dateTime={day.key}
-                      title={labels.dayTitle(day.key, day.count)}
-                      aria-label={labels.dayTitle(day.key, day.count)}
-                      data-activity-count={day.count}
-                      className={clsx("h-3 w-3 rounded-[3px]", activityTone(day.level))}
-                    />
-                  ) : (
-                    <span key={`${week.key}-future-${index}`} className="h-3 w-3" aria-hidden="true" />
-                  )
-                )}
-              </div>
-            ))}
-          </div>
+          ))}
         </div>
       </div>
 
       <div className="mt-5 flex flex-col gap-3 text-xs text-stone-400 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-1.5" aria-label={`${labels.less} – ${labels.more}`}>
-          <span>{labels.less}</span>
-          <div className="h-3 w-3 rounded-[3px] bg-white ring-1 ring-inset ring-stone-200/80" />
+        <div className="flex items-center gap-1.5">
+          <span>Less</span>
+          <div className="h-3 w-3 rounded-[3px] bg-white" />
           <div className="h-3 w-3 rounded-[3px] bg-amber-100" />
           <div className="h-3 w-3 rounded-[3px] bg-amber-300" />
           <div className="h-3 w-3 rounded-[3px] bg-amber-500" />
           <div className="h-3 w-3 rounded-[3px] bg-orange-600" />
-          <span>{labels.more}</span>
+          <span>More</span>
         </div>
         <p>
           {labels.lastActivePrefix}

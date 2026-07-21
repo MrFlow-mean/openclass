@@ -1028,7 +1028,6 @@ export function LearningHome() {
               <>
             <LearningActivityCalendar
               workspace={workspaceState}
-              language={language}
               labels={{
                 title: h.activityTitle,
                 subtitle: h.activitySubtitle,
@@ -1036,8 +1035,6 @@ export function LearningHome() {
                 dayTitle: h.activityDayTitle,
                 lastActivePrefix: h.lastActivePrefix,
                 noActivityYet: h.noActivityYet,
-                less: h.activityLess,
-                more: h.activityMore,
               }}
               formatRelativeDate={homeRelFmt}
             />
