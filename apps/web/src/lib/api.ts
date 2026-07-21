@@ -555,6 +555,18 @@ export const api = {
       method: "POST",
     });
   },
+  retranscribeMediaSource(packageId: string, sourceId: string, model: AIModelSelection) {
+    return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}/retranscribe`, {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    });
+  },
+  retryMediaVisuals(packageId: string, sourceId: string, model: AIModelSelection) {
+    return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}/visuals/retry`, {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    });
+  },
   getPackageSourceContent(packageId: string, sourceId: string) {
     return request<SourceContentView>(`/api/packages/${packageId}/sources/${sourceId}/content`);
   },
@@ -585,6 +597,16 @@ export const api = {
     );
     if (!response.ok) {
       throw new Error(await responseErrorMessage(response, "板书图片读取失败"));
+    }
+    return response.blob();
+  },
+  async getSourceVisualContent(packageId: string, sourceId: string, visualId: string) {
+    const response = await fetch(
+      `${getApiBase()}/api/packages/${packageId}/sources/${sourceId}/visuals/${visualId}/content`,
+      { headers: authHeaders(), cache: "no-store" }
+    );
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "关键帧读取失败"));
     }
     return response.blob();
   },
@@ -624,6 +646,9 @@ export const api = {
       text?: string;
       title?: string;
       catalogModel?: AIModelSelection | null;
+      sourceKind?: "video" | null;
+      transcriptionModel?: AIModelSelection | null;
+      visionModel?: AIModelSelection | null;
     },
     options: { onUploadProgress?: (progress: number) => void } = {}
   ) {
@@ -642,6 +667,15 @@ export const api = {
     }
     if (payload.catalogModel) {
       formData.append("catalog_model", JSON.stringify(payload.catalogModel));
+    }
+    if (payload.sourceKind) {
+      formData.append("source_kind", payload.sourceKind);
+    }
+    if (payload.transcriptionModel) {
+      formData.append("transcription_model", JSON.stringify(payload.transcriptionModel));
+    }
+    if (payload.visionModel) {
+      formData.append("vision_model", JSON.stringify(payload.visionModel));
     }
     if (payload.file && typeof XMLHttpRequest !== "undefined") {
       return new Promise<SourceIngestionRecord>((resolve, reject) => {

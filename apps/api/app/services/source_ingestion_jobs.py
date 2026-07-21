@@ -38,7 +38,7 @@ class SourceIngestionCoordinator:
         self._write_locks_guard = threading.Lock()
 
     def processing_weight(self, *, size_bytes: int, source_type: str) -> int:
-        if size_bytes >= self.large_source_bytes or source_type in {"audio_file", "video_file"}:
+        if size_bytes >= self.large_source_bytes or source_type in {"audio_file", "video_file", "video_url"}:
             return self.processing_capacity
         return 1
 
@@ -135,6 +135,7 @@ class SourceIngestionJobStore:
                     error TEXT NOT NULL,
                     phase_history_json TEXT NOT NULL DEFAULT '[]',
                     agent_activity_json TEXT NOT NULL DEFAULT '[]',
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -152,6 +153,11 @@ class SourceIngestionJobStore:
                 conn.execute(
                     "ALTER TABLE source_ingestion_jobs "
                     "ADD COLUMN agent_activity_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "metrics_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE source_ingestion_jobs "
+                    "ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}'"
                 )
             self._initialized_paths.add(key)
 
@@ -171,14 +177,15 @@ class SourceIngestionJobStore:
                     INSERT INTO source_ingestion_jobs(
                         id, owner_user_id, package_id, source_ingestion_id, source_type, source_uri,
                         adapter, status, progress, error, phase_history_json, agent_activity_json,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metrics_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         status = excluded.status,
                         progress = excluded.progress,
                         error = excluded.error,
                         phase_history_json = excluded.phase_history_json,
                         agent_activity_json = excluded.agent_activity_json,
+                        metrics_json = excluded.metrics_json,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -197,6 +204,7 @@ class SourceIngestionJobStore:
                             [event.model_dump(mode="json") for event in job.agent_activity],
                             ensure_ascii=False,
                         ),
+                        json.dumps(job.metrics, ensure_ascii=False),
                         job.created_at,
                         job.updated_at,
                     ),
@@ -255,6 +263,10 @@ class SourceIngestionJobStore:
             activity = json.loads(row["agent_activity_json"] or "[]")
         except (json.JSONDecodeError, IndexError):
             activity = []
+        try:
+            metrics = json.loads(row["metrics_json"] or "{}")
+        except (json.JSONDecodeError, IndexError):
+            metrics = {}
         return SourceIngestionJob(
             id=row["id"],
             resource_id=row["source_ingestion_id"],
@@ -265,6 +277,7 @@ class SourceIngestionJobStore:
             progress=row["progress"],
             error=row["error"],
             phase_history=phases,
+            metrics=metrics,
             agent_activity=activity,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
