@@ -143,7 +143,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       deletePackageFail: z ? "删除课程包失败" : "Could not delete package",
       searchPlaceholder: z ? "搜索别人的开源课程、作者、主题或知识方向..." : "Search open courses, authors, topics...",
       activityTitle: z ? "学习活跃度" : "Learning activity",
-      activitySubtitle: z ? "过去 32 周内课程编辑、提交与资料接入的活动分布。" : "Edits, commits, and uploads over the past 32 weeks.",
+      activitySubtitle: z ? "过去 52 周内课程编辑、提交与资料接入的活动分布。" : "Edits, commits, and uploads over the past 52 weeks.",
       activityTotal: (count: number) =>
         z
           ? `${count.toLocaleString(intl(lang))} 次活动`

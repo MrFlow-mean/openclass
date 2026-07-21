@@ -3,7 +3,7 @@ import { Activity } from "lucide-react";
 
 import type { WorkspaceState } from "@/types";
 
-const CONTRIBUTION_WEEKS = 32;
+const CONTRIBUTION_WEEKS = 52;
 const DAYS_PER_WEEK = 7;
 
 type ActivityDay = {
@@ -182,7 +182,7 @@ export function LearningActivityCalendar({
       </div>
 
       <div className="mt-6 overflow-x-auto" aria-label={labels.subtitle} data-testid="learning-activity-calendar">
-        <div className="flex w-full min-w-[42rem] justify-between">
+        <div className="flex min-w-max gap-[4px]">
           {activity.weeks.map((week) => (
             <div key={week.key} className="flex flex-col gap-[4px]">
               {week.days.map((day, index) =>
