@@ -28,6 +28,8 @@ from app.services.chat_service import document_ai_edit_request
 from app.services.board_asset_store import get_board_asset_store
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
 from app.services.html_document_export import HtmlExportBudgetError, export_html
+from app.services.lesson_package_format import RIDOC_MEDIA_TYPE, RidocFormatError
+from app.services.lesson_package_export import export_lesson_ridoc
 from app.services.rich_document import (
     document_changed,
     export_docx,
@@ -394,9 +396,37 @@ def export_document_html(lesson_id: str, user: UserView = Depends(current_user))
     )
 
 
+@router.get("/api/lessons/{lesson_id}/document/export-ridoc")
+def export_lesson_package(
+    lesson_id: str,
+    source_mode: str = Query("evidence", pattern="^(evidence|references)$"),
+    user: UserView = Depends(current_user),
+) -> FileResponse:
+    workspace = load_workspace_for_user(user.id)
+    _, lesson = find_lesson_package(workspace, lesson_id)
+    target_path = _unique_export_path("ridoc")
+    try:
+        export_lesson_ridoc(
+            owner_user_id=user.id,
+            lesson=lesson,
+            target_path=target_path,
+            source_mode=source_mode,
+        )
+    except RidocFormatError as exc:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FileResponse(
+        target_path,
+        media_type=RIDOC_MEDIA_TYPE,
+        filename=f"{lesson.slug or lesson.id}.ridoc",
+        headers=_DOCX_NO_STORE_HEADERS,
+        background=BackgroundTask(target_path.unlink, missing_ok=True),
+    )
+
+
 def _unique_export_path(extension: str) -> Path:
     safe_extension = extension.lower().lstrip(".")
-    if safe_extension not in {"docx", "html"}:
+    if safe_extension not in {"docx", "html", "ridoc"}:
         raise ValueError("Unsupported document export extension.")
     return EXPORT_DIR / "requests" / f"{uuid.uuid4().hex}.{safe_extension}"
 

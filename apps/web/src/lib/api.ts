@@ -777,6 +777,33 @@ export const api = {
     }
     return response.blob();
   },
+  async exportRidoc(lessonId: string) {
+    const response = await fetch(
+      `${getApiBase()}/api/lessons/${lessonId}/document/export-ridoc?source_mode=evidence`,
+      {
+        headers: authHeaders(),
+        cache: "no-store",
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, `RIDOC export failed with ${response.status}`));
+    }
+    return response.blob();
+  },
+  async importRidoc(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${getApiBase()}/api/workspace/import-ridoc`, {
+      method: "POST",
+      body: formData,
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, `RIDOC import failed with ${response.status}`));
+    }
+    return response.json() as Promise<CoursePackage>;
+  },
   createBranch(lessonId: string, name: string, fromCommitId?: string | null) {
     return request<CoursePackage>(`/api/lessons/${lessonId}/branches`, {
       method: "POST",

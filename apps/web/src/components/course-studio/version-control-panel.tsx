@@ -24,6 +24,10 @@ import {
   type HistoryNodeKind,
 } from "@/components/course-studio/history-graph-utils";
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
+import {
+  LessonPackageControls,
+  type LessonPackageControlsProps,
+} from "@/components/course-studio/lesson-package-controls";
 import type { BoardDecision, CommitRecord, Lesson } from "@/types";
 
 type VersionControlPanelProps = {
@@ -41,6 +45,7 @@ type VersionControlPanelProps = {
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onMergeBranch: (branchName: string) => void | Promise<void>;
+  lessonPackageControls: LessonPackageControlsProps;
 };
 
 function FactorList({ title, factors }: { title: string; factors: LearningRequirementDisplayFactor[] }) {
@@ -285,6 +290,7 @@ export function VersionControlPanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
   onMergeBranch,
+  lessonPackageControls,
 }: VersionControlPanelProps) {
   const learningRequirementDisplay = activeRequirements
     ? buildLearningRequirementDisplay({ requirementSheet: activeRequirements })
@@ -293,7 +299,9 @@ export function VersionControlPanel({
 
   return (
     <div className="space-y-8">
-      <section>
+      <LessonPackageControls {...lessonPackageControls} />
+
+      <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">历史分支图</p>
@@ -352,7 +360,7 @@ export function VersionControlPanel({
         </div>
       </section>
 
-      <section>
+      <section className={clsx(lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60")}>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
         <div className="mt-4 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
           {rows.map((row) => (
@@ -370,7 +378,12 @@ export function VersionControlPanel({
         </div>
       </section>
 
-      <section className="border-t border-gray-200 pt-6">
+      <section
+        className={clsx(
+          "border-t border-gray-200 pt-6",
+          lessonPackageControls.isPlaybackActive && "pointer-events-none opacity-60"
+        )}
+      >
         <div className="flex items-center gap-2">
           <GitBranch className="h-4 w-4 text-gray-400" />
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前上下文</p>

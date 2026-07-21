@@ -29,6 +29,7 @@ import { useCourseWorkspace, type CoursePackageApplyOptions } from "@/hooks/cour
 import { useLessonChatAgent } from "@/hooks/course-studio/use-lesson-chat-agent";
 import { useLessonHistory } from "@/hooks/course-studio/use-lesson-history";
 import { useLessonMerge } from "@/hooks/course-studio/use-lesson-merge";
+import { useLessonPackage } from "@/hooks/course-studio/use-lesson-package";
 import { useModelCatalog } from "@/hooks/course-studio/use-model-catalog";
 import {
   useRealtimeVoice,
@@ -188,13 +189,28 @@ export function CourseStudio() {
     handleRestoreCommit,
   } = history;
 
+  const lessonPackage = useLessonPackage({
+    activeLesson,
+    mergeActive: lessonMerge.isActive,
+    flushAutoSave: boardDraft.flushAutoSave,
+    setPreviewCommitId: history.setPreviewCommitId,
+    setPreviewDocument: boardDraft.setPreviewDocument,
+    resetPreview: history.exitPreviewMode,
+    createBranchFromCommit: history.handleCreateBranchFromCommit,
+    applyCoursePackage: updateCoursePackage,
+    setError,
+    setBusyAction,
+  });
+
   const previewCommit = history.previewCommit;
   const activeHeadCommit = history.activeHeadCommit;
   const isPreviewMode = history.isPreviewMode;
   const isDraftPreviewMode = !isPreviewMode && boardDraft.isPreviewing;
   const displayedDocument = lessonMerge.draftDocument ?? boardDraft.displayedDocument;
-  const displayedMessages =
-    activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
+  const displayedMessageCommitId = lessonPackage.playbackMessageCommitId ?? previewCommit?.id ?? null;
+  const displayedMessages = activeLesson && displayedMessageCommitId
+    ? buildLessonMessagesFromHistory(activeLesson, displayedMessageCommitId)
+    : activeMessages;
   const persistedRequirements = lessonMerge.session?.draft_runtime.learning_requirements ?? activeLesson?.learning_requirements ?? null;
   const persistedBoardTask = lessonMerge.session?.draft_runtime.board_task_requirements ?? activeLesson?.board_task_requirements ?? null;
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
@@ -205,6 +221,10 @@ export function CourseStudio() {
   const composerSelection = activeComposerState.composerSelection;
   const composerAttachments = activeComposerState.composerAttachments;
   function exitAnyPreviewMode() {
+    if (lessonPackage.isPlaybackActive) {
+      lessonPackage.exitPlayback();
+      return;
+    }
     if (isDraftPreviewMode) {
       boardDraft.resetToLesson(activeLesson);
       return;
@@ -825,6 +845,8 @@ export function CourseStudio() {
           }}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}
+          onImportRidoc={(file) => void lessonPackage.importRidoc(file)}
+          onExportRidoc={() => void lessonPackage.exportRidoc()}
           onReferenceFormula={(formulaSelection) => focusComposerWithSelection("ask", formulaSelection)}
           onReferenceFormulaToGeometry={(formulaSelection) => openGeometryWithSelection(formulaSelection)}
           onFormulaInkSubmit={handleFormulaInkSubmit}
@@ -852,6 +874,23 @@ export function CourseStudio() {
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onMergeBranch={(branchName) => lessonMerge.startMerge(branchName)}
+          lessonPackageControls={{
+            currentStep: lessonPackage.currentStep,
+            stepIndex: lessonPackage.stepIndex,
+            stepCount: lessonPackage.steps.length,
+            isPlaying: lessonPackage.isPlaying,
+            isPlaybackActive: lessonPackage.isPlaybackActive,
+            speed: lessonPackage.speed,
+            operation: lessonPackage.operation,
+            onSpeedChange: lessonPackage.setSpeed,
+            onPlayToggle: lessonPackage.startOrTogglePlayback,
+            onPrevious: () => lessonPackage.movePlayback(-1),
+            onNext: () => lessonPackage.movePlayback(1),
+            onExit: lessonPackage.exitPlayback,
+            onFork: lessonPackage.forkFromCurrentStep,
+            onExport: lessonPackage.exportRidoc,
+            onImport: lessonPackage.importRidoc,
+          }}
           mergeSession={lessonMerge.session}
           mergeDraftDirty={lessonMerge.isDraftDirty}
           mergeAIProposing={lessonMerge.isAIProposing}
