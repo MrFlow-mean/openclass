@@ -154,6 +154,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
     ):
         previous_updated_at = lesson.updated_at
         lesson.board_document = request.document
+        _clear_transient_ai_state(lesson)
         commit_metadata: dict[str, object] = {
             "kind": "manual_document_save",
             **request.metadata,
@@ -193,7 +194,6 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 flatten_guard_evaluated=is_autosave,
             )
         )
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user_id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -274,13 +274,13 @@ def manual_commit(
     ):
         if request.document is not None:
             lesson.board_document = request.document
+        _clear_transient_ai_state(lesson)
         commit_document_snapshot(
             lesson,
             label=request.label,
             message=request.message,
             metadata={"kind": "manual_document_edit"},
         )
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -343,13 +343,13 @@ def import_document_docx(
         with destination.open("wb") as output:
             shutil.copyfileobj(file.file, output)
         lesson.board_document = import_docx(destination, title=lesson.board_document.title or lesson.title)
+        _clear_transient_ai_state(lesson)
         commit_document_snapshot(
             lesson,
             label="Import DOCX",
             message=f"Imported {safe_name} into the rich document editor",
             metadata={"kind": "import_docx", "filename": safe_name},
         )
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -430,7 +430,6 @@ def create_lesson_branch(
         from_commit_id=request.from_commit_id,
     ):
         create_branch(lesson, request.name, request.from_commit_id)
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -451,7 +450,6 @@ def checkout_lesson_branch(
         branch_name=request.name,
     ):
         switch_branch(lesson, request.name)
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -473,6 +471,5 @@ def restore_lesson_commit(
         restore_label=request.label,
     ):
         restore_commit(lesson, request.commit_id, request.label)
-        _clear_transient_ai_state(lesson)
         save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)

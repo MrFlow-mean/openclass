@@ -15,6 +15,7 @@ type BoardEditorPanelProps = {
   document: BoardDocument;
   isPreviewMode: boolean;
   isDraftPreviewMode: boolean;
+  isMergeMode: boolean;
   previewCommit: CommitRecord | null;
   toolbarCollapsed: boolean;
   transientTeachingFocus?: BoardFocusRef | null;
@@ -103,6 +104,7 @@ export function BoardEditorPanel({
   document,
   isPreviewMode,
   isDraftPreviewMode,
+  isMergeMode,
   previewCommit,
   toolbarCollapsed,
   transientTeachingFocus,
@@ -118,7 +120,9 @@ export function BoardEditorPanel({
   onReferenceFormulaToGeometry,
   onFormulaInkSubmit,
 }: BoardEditorPanelProps) {
-  const teachingFocus = transientTeachingFocus ?? currentTeachingFocus(activeLesson, previewCommit);
+  const teachingFocus = isMergeMode
+    ? null
+    : transientTeachingFocus ?? currentTeachingFocus(activeLesson, previewCommit);
 
   return (
     <section className="relative z-10 flex min-w-0 flex-col overflow-hidden bg-white shadow-[0_0_20px_rgba(0,0,0,0.02)]">
@@ -144,6 +148,11 @@ export function BoardEditorPanel({
           >
             回到当前版本
           </button>
+        </div>
+      ) : null}
+      {isMergeMode ? (
+        <div className="shrink-0 border-b border-blue-200 bg-blue-50 px-5 py-3 text-sm text-blue-800">
+          正在编辑合并草案。此处修改只自动保存到合并会话，不会产生普通提交。
         </div>
       ) : null}
 

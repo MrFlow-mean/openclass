@@ -11,6 +11,7 @@ from app.models import (
     CoursePackageView,
     DocumentSegmentSearchResult,
     Lesson,
+    LessonMergeSession,
     LessonView,
     ResourceLibraryItem,
     WorkspaceState,
@@ -103,6 +104,57 @@ def save_lesson_for_user_if_head(
         expected_branch_name=expected_branch_name,
         expected_head_commit_id=expected_head_commit_id,
     )
+
+
+def load_merge_session_for_user(user_id: str, session_id: str) -> LessonMergeSession | None:
+    return get_store().load_merge_session_for_user(user_id, session_id)
+
+
+def load_active_merge_session_for_user(
+    user_id: str,
+    lesson_id: str,
+) -> LessonMergeSession | None:
+    return get_store().load_active_merge_session_for_user(user_id, lesson_id)
+
+
+def save_merge_session_for_user(session: LessonMergeSession) -> None:
+    get_store().save_merge_session_for_user(session)
+
+
+def save_merge_session_for_user_if_version(
+    session: LessonMergeSession,
+    *,
+    expected_version: int,
+) -> None:
+    saved = get_store().save_merge_session_for_user_if_version(
+        session,
+        expected_version=expected_version,
+    )
+    if not saved:
+        raise HTTPException(
+            status_code=409,
+            detail="合并草案已在其他窗口中更新，请刷新后继续",
+        )
+
+
+def save_workspace_and_merge_session_for_user_if_revision(
+    user_id: str,
+    workspace: WorkspaceState,
+    session: LessonMergeSession,
+    *,
+    expected_revision: int,
+) -> None:
+    saved = get_store().save_workspace_and_merge_session_for_user_if_revision(
+        user_id,
+        workspace,
+        session,
+        expected_revision=expected_revision,
+    )
+    if not saved:
+        raise HTTPException(
+            status_code=409,
+            detail="工作区或合并草案已更新，请刷新后重试",
+        )
 
 
 def search_document_segments_for_user(

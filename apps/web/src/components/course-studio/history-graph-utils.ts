@@ -1,7 +1,7 @@
 import { compactText, metadataBool, metadataText } from "@/components/course-studio/history-utils";
 import type { CommitRecord, Lesson } from "@/types";
 
-export type HistoryNodeKind = "chat" | "document" | "restore" | "system";
+export type HistoryNodeKind = "chat" | "document" | "restore" | "merge" | "system";
 
 export type HistoryGraphLane = {
   branchName: string;
@@ -62,12 +62,15 @@ function commitKind(commit: CommitRecord) {
 
 export function historyNodeKind(commit: CommitRecord): HistoryNodeKind {
   const explicit = commit.metadata?.history_node_kind;
-  if (explicit === "chat" || explicit === "document" || explicit === "restore" || explicit === "system") {
+  if (explicit === "chat" || explicit === "document" || explicit === "restore" || explicit === "merge" || explicit === "system") {
     return explicit;
   }
   const kind = commitKind(commit);
   if (kind === "restore_snapshot") {
     return "restore";
+  }
+  if (kind === "branch_merge") {
+    return "merge";
   }
   if (kind === "initial_document") {
     return "system";
@@ -123,6 +126,9 @@ export function historyNodeKindLabel(kind: HistoryNodeKind) {
   if (kind === "restore") {
     return "Restore";
   }
+  if (kind === "merge") {
+    return "Merge";
+  }
   return "System";
 }
 
@@ -158,6 +164,7 @@ export function buildHistoryGraphRows(
   };
   const laneByBranchName = new Map(lanes.map((lane) => [lane.branchName, lane]));
   const commitIndexById = new Map(lesson.history_graph.commits.map((commit, index) => [commit.id, index]));
+  const commitById = new Map(lesson.history_graph.commits.map((commit) => [commit.id, commit]));
   const branchRanges = new Map<string, { first: number; last: number }>();
 
   branches.forEach((branch) => {
@@ -189,7 +196,7 @@ export function buildHistoryGraphRows(
         return Boolean(range && index >= range.first && index <= range.last);
       })
       .map((candidate) => candidate.index);
-    const connectors = branches
+    const branchConnectors = branches
       .filter((branch) => branch.base_commit_id === commit.id && branch.name !== commit.branch_name)
       .flatMap((branch) => {
         const toLane = laneByBranchName.get(branch.name);
@@ -204,6 +211,17 @@ export function buildHistoryGraphRows(
           },
         ];
       });
+    const sourceParent = commit.parent_ids[1] ? commitById.get(commit.parent_ids[1]) : null;
+    const sourceLane = sourceParent ? laneByBranchName.get(sourceParent.branch_name) : null;
+    const connectors = [
+      ...branchConnectors,
+      ...(sourceLane && sourceLane.index !== lane.index
+        ? [{ fromLane: sourceLane.index, toLane: lane.index, color: sourceLane.color }]
+        : []),
+    ];
+    if (sourceLane && !continuationLaneIndexes.includes(sourceLane.index)) {
+      continuationLaneIndexes.push(sourceLane.index);
+    }
 
     return {
       commit,

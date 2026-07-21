@@ -60,6 +60,18 @@ AgentActivityStage = Literal[
     "final",
 ]
 AgentActivityStatus = Literal["pending", "running", "completed", "blocked", "failed", "skipped"]
+LessonMergeMode = Literal["manual", "ai"]
+LessonMergeStatus = Literal[
+    "draft",
+    "ai_running",
+    "ready",
+    "stale",
+    "committed",
+    "abandoned",
+    "failed",
+]
+LessonMergeConflictKind = Literal["board", "learning_requirement", "board_task", "source_reference"]
+LessonMergeResolutionKind = Literal["unresolved", "target", "source", "both", "custom", "clear", "ai"]
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
 LearningTeachingType = Literal["knowledge_point", "skill_practice"]
 GuidedRequirementDiscoveryStrategy = Literal[
@@ -523,6 +535,7 @@ class CommitRecord(BaseModel):
     parent_ids: list[str] = Field(default_factory=list)
     operations: list[PatchOperation] = Field(default_factory=list)
     snapshot: BoardDocument
+    runtime_snapshot: "LessonRuntimeSnapshot | None" = Field(default=None, exclude=True)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -554,6 +567,127 @@ class Lesson(BaseModel):
     history_graph: LessonHistoryGraph
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
+
+
+class LessonRuntimeSnapshot(BaseModel):
+    learning_requirements: LearningRequirementSheet | None = None
+    board_task_requirements: BoardTaskRequirementSheet | None = None
+    board_teaching_guide: "BoardTeachingGuide | None" = None
+    board_teaching_progress: "BoardTeachingProgress | None" = None
+
+
+class LessonMergeConflict(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("mergeconflict"))
+    kind: LessonMergeConflictKind
+    path: str = ""
+    title: str = ""
+    base_value: Any = None
+    target_value: Any = None
+    source_value: Any = None
+    resolution: LessonMergeResolutionKind = "unresolved"
+    custom_value: Any = None
+    resolved: bool = False
+
+
+class MergeRuntimeDraft(BaseModel):
+    learning_requirements: LearningRequirementSheet | None = None
+    board_task_requirements: BoardTaskRequirementSheet | None = None
+    board_teaching_restart_heading_path: list[str] = Field(default_factory=list)
+    invalidated_teaching_state: bool = False
+
+
+class LessonMergeSession(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("mergesession"))
+    owner_user_id: str = Field(exclude=True)
+    lesson_id: str
+    target_branch_name: str
+    source_branch_name: str
+    base_commit_id: str
+    target_head_commit_id: str
+    source_head_commit_id: str
+    mode: LessonMergeMode = "manual"
+    status: LessonMergeStatus = "draft"
+    version: int = Field(default=1, ge=1)
+    conflicts: list[LessonMergeConflict] = Field(default_factory=list)
+    merge_blueprint: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    draft_document: BoardDocument
+    draft_runtime: MergeRuntimeDraft = Field(default_factory=MergeRuntimeDraft)
+    ai_model: AIModelSelection | None = None
+    agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
+    audit: dict[str, Any] = Field(default_factory=dict)
+    supersedes_session_id: str | None = None
+    committed_commit_id: str | None = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class LessonMergeConflictView(BaseModel):
+    id: str
+    kind: LessonMergeConflictKind
+    path: str = ""
+    title: str = ""
+    base_value: Any = None
+    target_value: Any = None
+    source_value: Any = None
+    resolution: LessonMergeResolutionKind = "unresolved"
+    custom_value: Any = None
+    resolved: bool = False
+
+
+class LessonMergeSessionView(BaseModel):
+    id: str
+    lesson_id: str
+    target_branch_name: str
+    source_branch_name: str
+    base_commit_id: str
+    target_head_commit_id: str
+    source_head_commit_id: str
+    mode: LessonMergeMode
+    status: LessonMergeStatus
+    version: int
+    conflicts: list[LessonMergeConflictView] = Field(default_factory=list)
+    draft_document: BoardDocument
+    draft_runtime: MergeRuntimeDraft = Field(default_factory=MergeRuntimeDraft)
+    ai_model: AIModelSelection | None = None
+    agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
+    audit: dict[str, Any] = Field(default_factory=dict)
+    supersedes_session_id: str | None = None
+    committed_commit_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class CreateLessonMergeSessionRequest(BaseModel):
+    source_branch_name: str = Field(min_length=1, max_length=128)
+    mode: LessonMergeMode = "manual"
+    text_model: AIModelSelection | None = None
+
+
+class LessonMergeConflictResolution(BaseModel):
+    conflict_id: str
+    resolution: LessonMergeResolutionKind
+    custom_value: Any = None
+
+
+class UpdateLessonMergeSessionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    draft_document: BoardDocument | None = None
+    draft_runtime: MergeRuntimeDraft | None = None
+    resolutions: list[LessonMergeConflictResolution] = Field(default_factory=list)
+
+
+class SubmitLessonMergeSessionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class AIProposalLessonMergeSessionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class RecomputeLessonMergeSessionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    mode: LessonMergeMode | None = None
+    text_model: AIModelSelection | None = None
 
 
 class CourseGraphEdge(BaseModel):

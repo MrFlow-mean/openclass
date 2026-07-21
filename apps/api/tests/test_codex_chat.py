@@ -3172,7 +3172,7 @@ def test_codex_app_server_command_uses_exact_board_permission_profile(
     assert "features.hooks=false" in rendered
     assert "features.plugins=false" in rendered
     assert "features.computer_use=false" in rendered
-    assert 'SHELL="/bin/sh"' in rendered
+    assert f"SHELL={json.dumps(codex_app_server._codex_shell_path())}" in rendered
     assert "--strict-config" in command
     assert "danger-full-access" not in rendered
 
