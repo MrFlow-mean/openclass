@@ -31,6 +31,7 @@ import {
   Share2,
   Star,
   Trash2,
+  WalletCards,
 } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
@@ -1794,6 +1795,16 @@ export function LearningHome() {
     return (
       <div className="flex flex-col items-end gap-4">
         <div className="flex flex-wrap items-start justify-end gap-3">
+          <Link
+            href="/wallet"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(16,185,129,0.10)] transition hover:-translate-y-0.5 hover:bg-emerald-600 hover:text-white sm:flex"
+            aria-label="打开积分与充值"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 transition group-hover:bg-white">
+              <WalletCards className="h-4 w-4" />
+            </span>
+            <span>充值</span>
+          </Link>
           <Link
             href="/trending"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
