@@ -1714,6 +1714,73 @@ def test_stale_directory_task_cannot_recreate_an_already_deleted_source(
     ) is None
 
 
+def test_retry_directory_source_uses_the_current_catalog_model(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "openclass.sqlite3"
+    source_store = SourceEvidenceStore(database)
+    structure_store = SourceStructureStore(database)
+    observed_selections: list[AIModelSelection] = []
+
+    class RecordingNormalizer:
+        def normalize(self, *, record, candidates, selection):
+            observed_selections.append(selection)
+            return DirectoryNormalizationResult(
+                candidates=tuple(candidates),
+                turn_count=1 if candidates else 0,
+                metadata={"test_adapter": "recording"},
+            )
+
+    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
+    service = SourceIngestionService(
+        source_backend="native",
+        store=source_store,
+        job_store=SourceIngestionJobStore(database),
+        structure_store=structure_store,
+        directory_processor=SourceDirectoryProcessor(
+            store=structure_store,
+            normalizer_factory=lambda _record: RecordingNormalizer(),
+        ),
+    )
+    package = CoursePackage(id="course_directory", title="Directory", summary="", lessons=[])
+    queued = service.queue_file_source(
+        owner_user_id="user_directory",
+        package=package,
+        file_name="source.md",
+        content=b"# One\nBody",
+        mime_type="text/markdown",
+        catalog_model=_model(),
+    )
+    source_store.save_source(
+        queued.model_copy(
+            update={
+                "status": "failed",
+                "error": "Sign in with ChatGPT/Codex to use subscription models.",
+            }
+        )
+    )
+
+    retried = service.retry_source(
+        owner_user_id="user_directory",
+        package_id=package.id,
+        source_id=queued.id,
+        catalog_model=_deepseek_model(),
+    )
+
+    assert retried is not None
+    assert retried.status == "ready"
+    assert retried.metadata["catalog_model"] == _deepseek_model().model_dump(mode="json")
+    assert observed_selections == [_deepseek_model()]
+    structure = structure_store.get_structure(
+        owner_user_id="user_directory",
+        package_id=package.id,
+        source_id=queued.id,
+    )
+    assert structure is not None
+    assert structure.catalog_model == "deepseek-chat"
+
+
 @pytest.mark.parametrize(
     ("operation", "legacy_source"),
     [
