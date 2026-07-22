@@ -907,6 +907,10 @@ export function CourseStudio() {
           textModel={selectedTextModel}
           catalogModelOptions={modelCatalog.text}
           defaultCatalogModel={modelCatalog.defaults.text}
+          selectedTextModel={selectedTextModel}
+          selectedTextOption={selectedTextOption}
+          textModelOptions={modelCatalog.text}
+          onSelectTextModel={selectTextModel}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsLoading={chatSpeech.isSpeechLoading}
           speechIsPlaying={chatSpeech.isSpeechPlaying}
