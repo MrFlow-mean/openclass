@@ -5,7 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown, LogOut, ShieldCheck, UserRound } from "lucide-react";
+import { ChevronDown, LogOut, ShieldCheck, UserRound, WalletCards } from "lucide-react";
 
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 
@@ -181,6 +181,17 @@ export function AccountMenu({
               >
                 <ShieldCheck className="h-4 w-4 text-stone-400" />
                 {m.adminLink}
+              </Link>
+            ) : null}
+            {!isGuest ? (
+              <Link
+                href="/wallet"
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
+                role="menuitem"
+                onClick={() => setOpen(false)}
+              >
+                <WalletCards className="h-4 w-4 text-stone-400" />
+                积分与充值
               </Link>
             ) : null}
             <button

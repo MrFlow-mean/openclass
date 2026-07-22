@@ -32,6 +32,7 @@ import {
   Share2,
   Star,
   Trash2,
+  WalletCards,
   Upload,
 } from "lucide-react";
 
@@ -1351,7 +1352,7 @@ export function LearningHome() {
         </div>
       ) : null}
 
-      <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[27rem] xl:right-8 xl:top-6">
+      <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[42rem] xl:right-8 xl:top-6">
         {renderNotificationPanel()}
       </div>
 
@@ -1774,7 +1775,17 @@ export function LearningHome() {
   function renderNotificationPanel() {
     return (
       <div className="flex flex-col items-end gap-4">
-        <div className="flex flex-wrap items-start justify-end gap-3">
+        <div className="flex flex-nowrap items-center justify-end gap-3 whitespace-nowrap">
+          <Link
+            href="/wallet"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(16,185,129,0.10)] transition hover:-translate-y-0.5 hover:bg-emerald-600 hover:text-white sm:flex"
+            aria-label="打开积分与充值"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 transition group-hover:bg-white">
+              <WalletCards className="h-4 w-4" />
+            </span>
+            <span>充值</span>
+          </Link>
           <Link
             href="/trending"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
@@ -1815,11 +1826,11 @@ export function LearningHome() {
             </span>
             <span>动态</span>
           </Link>
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setNotificationOpen((current) => !current)}
-              className="relative rounded-full border border-stone-200 bg-white p-3 text-stone-700 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
+              className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-700 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
               aria-label={h.notificationToggleAria}
               title={h.notificationToggleAria}
             >
@@ -1833,7 +1844,7 @@ export function LearningHome() {
             <button
               type="button"
               onClick={handleToggleInterfaceLanguage}
-              className="group flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-2.5 text-[11px] font-semibold text-stone-600 shadow-[0_8px_18px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+              className="group flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-[11px] font-semibold text-stone-600 shadow-[0_8px_18px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
               aria-label={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
               title={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
             >
@@ -1849,7 +1860,7 @@ export function LearningHome() {
         </div>
 
         {notificationOpen ? (
-          <div className="w-full rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
+          <div className="w-full max-w-[27rem] rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
               <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">消息推送</h4>
               <span className="rounded-full bg-rose-500 px-2 py-1 text-[10px] font-semibold text-white">

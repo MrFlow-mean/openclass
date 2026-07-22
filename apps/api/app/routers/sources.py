@@ -40,6 +40,18 @@ class SourceContentUpdateRequest(BaseModel):
     content: str
 
 
+class SourceRetryRequest(BaseModel):
+    catalog_model: AIModelSelection | None = None
+
+
+def _validate_catalog_model(selection: AIModelSelection | None) -> AIModelSelection | None:
+    if selection is None:
+        return None
+    if selection.provider not in {"openai_codex", "deepseek"} or not selection.model.strip():
+        raise HTTPException(status_code=400, detail="Catalog extraction requires a supported text model.")
+    return selection
+
+
 def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
     if raw is None or not raw.strip():
         return None
@@ -47,9 +59,7 @@ def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
         selection = AIModelSelection.model_validate(json.loads(raw))
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail="catalog_model must be a valid model selection.") from exc
-    if selection.provider != "openai_codex" or not selection.model.strip():
-        raise HTTPException(status_code=400, detail="Catalog extraction requires an OpenAI Codex text model.")
-    return selection
+    return _validate_catalog_model(selection)
 
 
 @router.get("/api/packages/{package_id}/sources", response_model=list[SourceIngestionRecord])
@@ -148,6 +158,7 @@ def update_package_source(
 def retry_package_source(
     package_id: str,
     source_id: str,
+    request: SourceRetryRequest | None = None,
     user: UserView = Depends(current_user),
 ) -> SourceIngestionRecord:
     workspace = workspace_state.load_workspace_for_user(user.id)
@@ -157,6 +168,7 @@ def retry_package_source(
             owner_user_id=user.id,
             package_id=package_id,
             source_id=source_id,
+            catalog_model=_validate_catalog_model(request.catalog_model if request else None),
         )
     except SourceIngestionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
