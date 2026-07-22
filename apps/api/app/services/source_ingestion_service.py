@@ -720,6 +720,7 @@ class SourceIngestionService:
         owner_user_id: str,
         package_id: str,
         source_id: str,
+        catalog_model: AIModelSelection | None = None,
     ) -> SourceIngestionRecord | None:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
@@ -736,10 +737,15 @@ class SourceIngestionService:
                 )
                 if current is None:
                     return None
-                return self._retry_source_unlocked(current)
-        return self._retry_source_unlocked(record)
+                return self._retry_source_unlocked(current, catalog_model=catalog_model)
+        return self._retry_source_unlocked(record, catalog_model=catalog_model)
 
-    def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+    def _retry_source_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        catalog_model: AIModelSelection | None,
+    ) -> SourceIngestionRecord | None:
         record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
@@ -748,6 +754,15 @@ class SourceIngestionService:
         use_directory_catalog = _uses_directory_catalog(retrying)
         if use_directory_catalog:
             retrying = _as_directory_catalog_record(retrying)
+            if catalog_model is not None:
+                retrying = retrying.model_copy(
+                    update={
+                        "metadata": {
+                            **retrying.metadata,
+                            "catalog_model": catalog_model.model_dump(mode="json"),
+                        }
+                    }
+                )
         elif self.source_backend == "native":
             retrying = _detach_open_notebook_state(retrying)
         self.store.save_source(retrying)
