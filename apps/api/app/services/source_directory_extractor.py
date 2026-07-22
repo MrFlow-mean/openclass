@@ -22,6 +22,7 @@ from app.services.pdf_toc_parser import (
     is_toc_heading,
     normalize_toc_text,
     parse_structural_heading,
+    probe_pdf_toc_from_leading_pages,
 )
 from app.services.source_archive import SafeSourceArchive
 from app.services.source_ooxml_navigation import (
@@ -258,6 +259,34 @@ def _extract_pdf(
                 page_end_limit=toc_outline_page_end,
             )
             ocr_pages.update(toc_ocr_pages)
+        else:
+            probed_toc = probe_pdf_toc_from_leading_pages(
+                path,
+                page_count=page_count,
+                max_probe_pages=probe_end,
+            )
+            if probed_toc.nodes:
+                toc_start = probed_toc.toc_page_start
+                toc_end = probed_toc.toc_page_end
+                toc_nodes = [
+                    _PdfTocCandidate(
+                        title=_clean_title(node.title),
+                        number=node.number or _heading_number_and_level(node.title)[0],
+                        level=max(1, node.level),
+                        printed_page=node.printed_page if node.printed_page > 0 else None,
+                        toc_page=node.toc_page,
+                        confidence=node.confidence,
+                        source="pdf_toc_ocr_probe",
+                    )
+                    for node in probed_toc.nodes
+                    if _clean_title(node.title)
+                ]
+                ocr_pages.update(
+                    range(
+                        toc_start or 1,
+                        (toc_end or toc_start or 1) + 1,
+                    )
+                )
 
         _report(progress_callback, "mapping_directory_to_pages", 48)
         # TOC page numbers are print coordinates. The only safe way to publish

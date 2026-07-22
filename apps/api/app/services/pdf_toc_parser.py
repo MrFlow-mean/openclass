@@ -11,6 +11,7 @@ from typing import Any
 from app.services.image_ocr import OCRLineLayout, OCRPageLayout, extract_pdf_pages_layout
 
 MAX_OCR_TOC_PAGES = 24
+OCR_TOC_PROBE_BATCH_PAGES = 8
 ROW_Y_TOLERANCE = 0.006
 COLUMN_START_GAP = 0.20
 COLUMN_GUTTER_PADDING = 0.015
@@ -318,6 +319,57 @@ def extract_pdf_toc_from_range(
     )
 
 
+def probe_pdf_toc_from_leading_pages(
+    path: Path,
+    *,
+    page_count: int,
+    max_probe_pages: int,
+) -> PdfTocExtraction:
+    """Locate a scanned TOC by its repeated title-to-page layout.
+
+    This is used only when native outlines, text-layer TOC headings, and the
+    lightweight heading-region OCR probe found nothing. Requiring multiple
+    structural rows with printed page numbers keeps ordinary body pages out of
+    the directory path without relying on a language- or subject-specific title.
+    """
+
+    probe_end = min(page_count, max(1, max_probe_pages))
+    for batch_start in range(1, probe_end + 1, OCR_TOC_PROBE_BATCH_PAGES):
+        batch_end = min(probe_end, batch_start + OCR_TOC_PROBE_BATCH_PAGES - 1)
+        extraction = extract_pdf_toc_from_range(
+            path,
+            page_start=batch_start,
+            page_end=batch_end,
+        )
+        nodes_by_page: dict[int, list[PdfTocNode]] = {}
+        for node in extraction.nodes:
+            if node.printed_page < 1:
+                continue
+            nodes_by_page.setdefault(node.toc_page, []).append(node)
+        candidate_pages = sorted(
+            page_no
+            for page_no, nodes in nodes_by_page.items()
+            if len(nodes) >= 2
+            and sum(parse_structural_heading(node.title) is not None for node in nodes) >= 2
+        )
+        if not candidate_pages:
+            continue
+        start_page = candidate_pages[0]
+        retained_pages = [start_page]
+        for page_no in candidate_pages[1:]:
+            if page_no > retained_pages[-1] + 1:
+                break
+            retained_pages.append(page_no)
+        retained = [node for node in extraction.nodes if node.toc_page in retained_pages]
+        return PdfTocExtraction(
+            nodes=retained,
+            toc_page_start=start_page,
+            toc_page_end=retained_pages[-1],
+            warnings=list(extraction.warnings),
+        )
+    return PdfTocExtraction()
+
+
 def _toc_page_range(outline: list[PdfOutlineAnchor], *, page_count: int) -> tuple[int, int] | None:
     ordered = sorted((anchor for anchor in outline if anchor.page_no > 0), key=lambda anchor: anchor.page_no)
     for index, anchor in enumerate(ordered):
@@ -450,6 +502,8 @@ def _parse_layout_row(lines: list[OCRLineLayout], *, toc_page: int) -> _RawTocRo
     title = _clean_title(" ".join(title_parts))
     if len(title) < 2 or len(title) > 180 or _printed_page_number(title) is not None:
         return None
+    if printed_page is None:
+        title, printed_page = _split_embedded_printed_page(title)
     if printed_page is None and parse_structural_heading(title) is None:
         return None
     x = min((line.x for line in retained_title_lines), default=0.0)
@@ -598,6 +652,20 @@ def _printed_page_number(value: str) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _split_embedded_printed_page(value: str) -> tuple[str, int | None]:
+    cleaned = normalize_toc_text(value).strip()
+    match = re.match(
+        r"^(?P<title>.*\D)(?:\s*[/\\|·•⋯…:：'\"‘’“”_-]+\s*|\s{2,})(?P<page>[0-9]{1,4})\s*$",
+        cleaned,
+    )
+    if match is None:
+        return value, None
+    title = _clean_title(match.group("title"))
+    if len(title) < 2:
+        return value, None
+    return title, int(match.group("page"))
 
 
 def _clean_title_part(value: str) -> str:

@@ -470,6 +470,43 @@ def test_toc_layout_requests_trailing_column_pass_and_parses_leading_leaders(
     ]
 
 
+def test_toc_layout_splits_embedded_printed_page_from_scanned_title(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import pdf_toc_parser
+    from app.services.image_ocr import OCRLineLayout, OCRPageLayout
+
+    monkeypatch.setattr(
+        pdf_toc_parser,
+        "extract_pdf_pages_layout",
+        lambda *_args, **_kwargs: [
+            OCRPageLayout(
+                page_no=11,
+                lines=[
+                    OCRLineLayout(
+                        "Section 2 General methods /48",
+                        x=0.12,
+                        y=0.65,
+                        width=0.45,
+                        height=0.018,
+                    )
+                ],
+            )
+        ],
+    )
+
+    extraction = pdf_toc_parser.extract_pdf_toc_from_range(
+        tmp_path / "embedded-page.pdf",
+        page_start=11,
+        page_end=11,
+    )
+
+    assert [(node.title, node.printed_page) for node in extraction.nodes] == [
+        ("Section 2 General methods", 48)
+    ]
+
+
 def test_pdf_layout_ocr_trailing_column_mode_is_explicit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -501,6 +538,91 @@ def test_pdf_layout_ocr_trailing_column_mode_is_explicit(
 
     assert calls[0][-1] == "1"
     assert calls[1][-1] == "trailing-column-lines"
+
+
+def test_tesseract_tsv_preserves_distant_page_number_as_separate_layout_line() -> None:
+    from app.services import image_ocr
+
+    payload = "\n".join(
+        [
+            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+            "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1200\t-1\t",
+            "5\t1\t1\t1\t1\t1\t100\t180\t110\t40\t95\tChapter",
+            "5\t1\t1\t1\t1\t2\t225\t180\t70\t40\t94\tOne",
+            "5\t1\t1\t1\t1\t3\t820\t180\t35\t40\t96\t12",
+        ]
+    )
+
+    page = image_ocr._parse_tesseract_tsv(payload, page_no=7)
+
+    assert page.page_no == 7
+    assert [line.text for line in page.lines] == ["Chapter One", "12"]
+    assert page.lines[0].x == pytest.approx(0.1)
+    assert page.lines[1].x == pytest.approx(0.82)
+
+
+def test_pdf_layout_ocr_falls_back_to_tesseract_when_vision_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import image_ocr
+    from app.services.image_ocr import OCRLineLayout, OCRPageLayout
+
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"scan")
+    expected = [OCRPageLayout(page_no=3, lines=[OCRLineLayout("Chapter 1", x=0.1, y=0.9)])]
+    monkeypatch.setattr(image_ocr, "_run_vision_ocr_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        image_ocr,
+        "_extract_pdf_pages_layout_with_tesseract",
+        lambda *_args, **_kwargs: expected,
+    )
+
+    layouts = image_ocr.extract_pdf_pages_layout(
+        path,
+        page_start=3,
+        page_end=3,
+    )
+
+    assert layouts == expected
+
+
+def test_scanned_toc_probe_uses_repeated_structural_rows_in_leading_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import pdf_toc_parser
+    from app.services.pdf_toc_parser import PdfTocExtraction, PdfTocNode
+
+    calls: list[tuple[int, int]] = []
+
+    def fake_extract(_path: Path, *, page_start: int, page_end: int) -> PdfTocExtraction:
+        calls.append((page_start, page_end))
+        if page_start < 9:
+            return PdfTocExtraction(toc_page_start=page_start, toc_page_end=page_end)
+        return PdfTocExtraction(
+            nodes=[
+                PdfTocNode(title="Chapter 1 Foundations", printed_page=1, toc_page=11),
+                PdfTocNode(title="Section 1 Concepts", printed_page=3, toc_page=11),
+                PdfTocNode(title="Chapter 2 Practice", printed_page=9, toc_page=12),
+                PdfTocNode(title="Section 2 Review", printed_page=12, toc_page=12),
+            ],
+            toc_page_start=page_start,
+            toc_page_end=page_end,
+        )
+
+    monkeypatch.setattr(pdf_toc_parser, "extract_pdf_toc_from_range", fake_extract)
+
+    extraction = pdf_toc_parser.probe_pdf_toc_from_leading_pages(
+        tmp_path / "scan.pdf",
+        page_count=200,
+        max_probe_pages=48,
+    )
+
+    assert calls == [(1, 8), (9, 16)]
+    assert extraction.toc_page_start == 11
+    assert extraction.toc_page_end == 12
+    assert len(extraction.nodes) == 4
 
 
 def test_semantic_outline_titles_may_contain_question_marks(tmp_path: Path) -> None:
