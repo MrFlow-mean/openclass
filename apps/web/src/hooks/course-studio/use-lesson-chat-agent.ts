@@ -35,7 +35,7 @@ type UseLessonChatAgentOptions = {
   activeLesson: Lesson | null;
   activeMessages: ChatMessage[];
   activeComposerState: LessonComposerState;
-  composerSelection: SelectionRef | null;
+  composerSelections: SelectionRef[];
   currentBoardDocument: BoardDocument | null;
   selectedTextModel: AIModelSelection;
   textModelReady: boolean;
@@ -87,7 +87,7 @@ export function useLessonChatAgent({
   activeLesson,
   activeMessages,
   activeComposerState,
-  composerSelection,
+  composerSelections,
   currentBoardDocument,
   selectedTextModel,
   textModelReady,
@@ -716,15 +716,23 @@ export function useLessonChatAgent({
     }
     const submittedInput = chatInput;
     const submittedAttachments = composerAttachments;
+    const includedSelections = includeSelectionInPrompt ? composerSelections : [];
     const payload =
       payloadOverride ??
       ({
-        message: chatInput.trim() || (composerAttachments.length ? "请查看我添加的附件。" : ""),
-        selection: includeSelectionInPrompt && composerSelection ? composerSelection : null,
+        message:
+          chatInput.trim() ||
+          (composerAttachments.length
+            ? "请查看我添加的附件。"
+            : includedSelections.length
+              ? "请结合我引用的内容回答。"
+              : ""),
+        selection: includedSelections[includedSelections.length - 1] ?? null,
+        selections: includedSelections,
         attachments: composerAttachments,
         interaction_mode: composerMode,
       } satisfies ChatRequestPayload);
-    const submittedSelection = payload.selection ?? null;
+    const submittedSelection = payload.selection ?? payload.selections?.at(-1) ?? null;
     const payloadMessage = payload.message.trim();
     if (!payloadMessage) {
       return;

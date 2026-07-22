@@ -283,6 +283,7 @@ type CourseStudioChatSidebarProps = {
   composerAttachments: ChatAttachmentRef[];
   composerMode: ChatInteractionMode;
   composerSelection: SelectionRef | null;
+  composerSelections: SelectionRef[];
   includeSelectionInPrompt: boolean;
   onApplySelection: (selection: SelectionRef, popoverPosition: ReturnType<typeof popoverPositionFromDomSelection>) => void;
   onContinueTeaching: () => void;
@@ -334,6 +335,7 @@ export function CourseStudioChatSidebar({
   composerAttachments,
   composerMode,
   composerSelection,
+  composerSelections,
   includeSelectionInPrompt,
   onApplySelection,
   onContinueTeaching,
@@ -555,30 +557,57 @@ export function CourseStudioChatSidebar({
               : "border-gray-200 focus-within:border-black focus-within:ring-black"
           )}
         >
-          {composerSelection ? (
-            <div className="mx-2.5 mt-2.5 flex items-center justify-between gap-2 rounded-xl bg-gray-50 px-2.5 py-1.5">
-              <div className="flex min-w-0 items-center gap-2">
-                {composerMode === "direct_edit" ? (
-                  <PencilLine className="h-4 w-4 shrink-0 text-amber-600" />
-                ) : (
-                  <TextQuote className="h-4 w-4 shrink-0 text-gray-500" />
-                )}
-                <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700">
-                  {composerSelectionLabel(composerSelection)}
-                </span>
-                <p className="min-w-0 truncate text-xs leading-5 text-gray-700">
-                  “{composerSelection.excerpt.replace(/\s+/g, " ").slice(0, 160)}”
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onClearSelection}
-                aria-label="移除引用"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-black"
-                title="移除引用"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+          {composerSelections.length ? (
+            <div className="mx-2.5 mt-2.5 space-y-1.5">
+              {composerSelections.length > 1 ? (
+                <div className="flex items-center justify-between px-1 text-[10px] text-gray-500">
+                  <span>已保留 {composerSelections.length} 个引用</span>
+                  <button type="button" onClick={onClearSelection} className="hover:text-black">
+                    清空全部
+                  </button>
+                </div>
+              ) : null}
+              {composerSelections.map((selection, index) => (
+                <div
+                  key={`${selection.document_id ?? selection.source_ingestion_id ?? selection.kind}:${selection.segment_id ?? selection.text_hash ?? selection.excerpt}:${index}`}
+                  className="flex items-center justify-between gap-2 rounded-xl bg-gray-50 px-2.5 py-1.5"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    {composerMode === "direct_edit" ? (
+                      <PencilLine className="h-4 w-4 shrink-0 text-amber-600" />
+                    ) : (
+                      <TextQuote className="h-4 w-4 shrink-0 text-gray-500" />
+                    )}
+                    <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700">
+                      引用 {index + 1} · {composerSelectionLabel(selection)}
+                    </span>
+                    <p className="min-w-0 truncate text-xs leading-5 text-gray-700">
+                      “{selection.excerpt.replace(/\s+/g, " ").slice(0, 160)}”
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateComposerState((current) => {
+                        const nextSelections = (current.composerSelections ?? []).filter(
+                          (_item, itemIndex) => itemIndex !== index
+                        );
+                        return {
+                          ...current,
+                          composerSelections: nextSelections,
+                          composerSelection: nextSelections[nextSelections.length - 1] ?? null,
+                          includeSelectionInPrompt: nextSelections.length ? current.includeSelectionInPrompt : true,
+                        };
+                      })
+                    }
+                    aria-label={`移除引用 ${index + 1}`}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-black"
+                    title="移除这个引用"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
           ) : null}
 
@@ -619,7 +648,7 @@ export function CourseStudioChatSidebar({
                   isChatBusy ||
                   !textModelReady ||
                   !attachmentsReady ||
-                  (!chatInput.trim() && !composerAttachments.length)
+                  (!chatInput.trim() && !composerAttachments.length && !composerSelections.length)
                 ) {
                   return;
                 }
@@ -681,11 +710,16 @@ export function CourseStudioChatSidebar({
                   aria-label="Agent Edit Mode"
                   disabled={interactionLocked}
                   onClick={() => {
-                    onUpdateComposerState((current) => ({
-                      ...current,
-                      composerMode: "direct_edit",
-                      includeSelectionInPrompt: true,
-                    }));
+                    onUpdateComposerState((current) => {
+                      const editSelection = (current.composerSelections ?? []).at(-1) ?? current.composerSelection;
+                      return {
+                        ...current,
+                        composerMode: "direct_edit",
+                        includeSelectionInPrompt: true,
+                        composerSelection: editSelection ?? null,
+                        composerSelections: editSelection ? [editSelection] : [],
+                      };
+                    });
                   }}
                   className={clsx(
                     "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
@@ -696,7 +730,7 @@ export function CourseStudioChatSidebar({
                   <BrainCircuit className="h-3.5 w-3.5" />
                 </button>
               </div>
-              {composerSelection ? (
+              {composerSelection && composerSelections.length ? (
                 <button
                   type="button"
                   onClick={() =>
@@ -713,7 +747,11 @@ export function CourseStudioChatSidebar({
                   )}
                 >
                   <TextQuote className="h-3.5 w-3.5" />
-                  {composerSelectionToggleLabel(composerSelection, includeSelectionInPrompt)}
+                  {composerSelections.length > 1
+                    ? includeSelectionInPrompt
+                      ? `包含 ${composerSelections.length} 个引用`
+                      : `忽略 ${composerSelections.length} 个引用`
+                    : composerSelectionToggleLabel(composerSelection, includeSelectionInPrompt)}
                 </button>
               ) : null}
             </div>
@@ -732,7 +770,10 @@ export function CourseStudioChatSidebar({
               title={isChatBusy ? "停止回复" : "发送消息"}
               disabled={
                 !isChatBusy &&
-                (interactionLocked || (!chatInput.trim() && !composerAttachments.length) || !textModelReady || !attachmentsReady)
+                (interactionLocked ||
+                  (!chatInput.trim() && !composerAttachments.length && !composerSelections.length) ||
+                  !textModelReady ||
+                  !attachmentsReady)
               }
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
