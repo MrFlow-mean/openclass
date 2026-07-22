@@ -1720,7 +1720,10 @@ class GoogleRealtimeSessionResponse(BaseModel):
 
 
 class RealtimeTranscriptLogRequest(BaseModel):
+    client_event_id: str | None = Field(default=None, min_length=1, max_length=200)
     client_session_id: str | None = None
+    turn_id: str | None = Field(default=None, max_length=200)
+    occurred_at: datetime | None = None
     lesson_title: str | None = None
     role: RealtimeTranscriptRole
     transport_event_type: str
@@ -1735,6 +1738,7 @@ RealtimeToolName = Literal["read_board_context", "run_chatbot_workflow"]
 
 class RealtimeToolCallRequest(BaseModel):
     client_session_id: str = Field(min_length=1, max_length=160)
+    turn_id: str | None = Field(default=None, max_length=200)
     call_id: str = Field(min_length=1, max_length=160)
     name: RealtimeToolName
     arguments: dict[str, Any] = Field(default_factory=dict)

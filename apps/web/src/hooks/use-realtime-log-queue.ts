@@ -13,6 +13,11 @@ type UseRealtimeLogQueueOptions = {
   getLessonTitle: () => string | null;
 };
 
+type RealtimeLogEventIdentity = {
+  clientEventId?: string;
+  turnId?: string | null;
+};
+
 export function useRealtimeLogQueue({
   getClientSessionId,
   getLessonTitle,
@@ -58,7 +63,8 @@ export function useRealtimeLogQueue({
       lessonId: string,
       role: RealtimeEventLogPayload["role"],
       transportEventType: string,
-      transcript: string
+      transcript: string,
+      identity: RealtimeLogEventIdentity = {}
     ) => {
       const normalized = transcript.trim();
       if (!normalized) {
@@ -67,7 +73,10 @@ export function useRealtimeLogQueue({
       queueRef.current.push({
         lessonId,
         payload: {
+          client_event_id: identity.clientEventId ?? `realtime-event:${crypto.randomUUID()}`,
           client_session_id: getClientSessionId(),
+          turn_id: identity.turnId ?? null,
+          occurred_at: new Date().toISOString(),
           lesson_title: getLessonTitle(),
           role,
           transport_event_type: transportEventType,

@@ -173,6 +173,105 @@ class SqliteCourseStore:
                     conn.rollback()
                     raise
 
+    def append_non_document_commit_for_user_if_head(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+        commit: CommitRecord,
+        *,
+        expected_branch_name: str,
+        expected_head_commit_id: str,
+        lesson_updated_at: str,
+    ) -> bool:
+        """Append a history-only commit without rewriting the live board document."""
+        if commit.operations:
+            raise ValueError("A non-document commit cannot contain document operations")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT lessons.current_branch, lessons.board_document_id,
+                               lessons.board_document_title, lessons.board_content_json,
+                               lessons.board_content_html, lessons.board_content_text,
+                               lessons.board_page_settings_json, lesson_branches.head_commit_id
+                        FROM lessons
+                        JOIN course_packages ON course_packages.id = lessons.package_id
+                        LEFT JOIN lesson_branches
+                          ON lesson_branches.lesson_id = lessons.id
+                         AND lesson_branches.name = lessons.current_branch
+                        WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                        """,
+                        (lesson_id, owner_user_id),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["current_branch"] != expected_branch_name
+                        or row["head_commit_id"] != expected_head_commit_id
+                    ):
+                        conn.rollback()
+                        return False
+                    next_sort_order = int(
+                        conn.execute(
+                            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM lesson_commits WHERE lesson_id = ?",
+                            (lesson_id,),
+                        ).fetchone()[0]
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO lesson_commits(
+                            id, lesson_id, sort_order, label, message, branch_name, created_at,
+                            operations_json, snapshot_document_id, snapshot_title, snapshot_content_json,
+                            snapshot_content_html, snapshot_content_text, snapshot_page_settings_json,
+                            runtime_snapshot_json, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            commit.id,
+                            lesson_id,
+                            next_sort_order,
+                            commit.label,
+                            commit.message,
+                            commit.branch_name,
+                            commit.created_at,
+                            "[]",
+                            row["board_document_id"],
+                            row["board_document_title"],
+                            row["board_content_json"],
+                            row["board_content_html"],
+                            row["board_content_text"],
+                            row["board_page_settings_json"],
+                            _dumps_optional(commit.runtime_snapshot),
+                            _dumps(commit.metadata),
+                        ),
+                    )
+                    for parent_index, parent_id in enumerate(commit.parent_ids):
+                        conn.execute(
+                            """
+                            INSERT INTO lesson_commit_parents(commit_id, parent_id, sort_order)
+                            VALUES (?, ?, ?)
+                            """,
+                            (commit.id, parent_id, parent_index),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE lesson_branches SET head_commit_id = ?
+                        WHERE lesson_id = ? AND name = ?
+                        """,
+                        (commit.id, lesson_id, expected_branch_name),
+                    )
+                    conn.execute(
+                        "UPDATE lessons SET updated_at = ? WHERE id = ?",
+                        (lesson_updated_at, lesson_id),
+                    )
+                    self._advance_workspace_revision(conn, owner_user_id)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
     def load_merge_session_for_user(
         self,
         owner_user_id: str,
