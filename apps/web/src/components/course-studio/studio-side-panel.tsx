@@ -7,6 +7,7 @@ import { GeometryGenerationPanel } from "@/components/course-studio/geometry-gen
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import { LessonMergePanel } from "@/components/course-studio/lesson-merge-panel";
 import { VoiceControlPanel } from "@/components/course-studio/voice-control-panel";
+import { ModelSelectionPanel } from "@/components/course-studio/model-selection-panel";
 import type { LessonPackageControlsProps } from "@/components/course-studio/lesson-package-controls";
 import { useGeometryWorkspace } from "@/hooks/course-studio/use-geometry-workspace";
 import { useSourceCatalogCache } from "@/hooks/course-studio/use-source-catalog-cache";
@@ -22,7 +23,7 @@ import type {
   SelectionRef,
 } from "@/types";
 
-export type CourseStudioSidebarTab = "geometry" | "history" | "sources" | "voice";
+export type CourseStudioSidebarTab = "geometry" | "history" | "models" | "sources" | "voice";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -63,6 +64,10 @@ type CourseStudioSidePanelProps = {
   textModel: AIModelSelection | null;
   catalogModelOptions: AIModelOption[];
   defaultCatalogModel: AIModelSelection;
+  selectedTextModel: AIModelSelection;
+  selectedTextOption: AIModelOption | null;
+  textModelOptions: AIModelOption[];
+  onSelectTextModel: (selection: AIModelSelection) => void;
   speechAutoEnabled: boolean;
   speechIsLoading: boolean;
   speechIsPlaying: boolean;
@@ -126,6 +131,10 @@ export function CourseStudioSidePanel({
   textModel,
   catalogModelOptions,
   defaultCatalogModel,
+  selectedTextModel,
+  selectedTextOption,
+  textModelOptions,
+  onSelectTextModel,
   speechAutoEnabled,
   speechIsLoading,
   speechIsPlaying,
@@ -194,19 +203,20 @@ export function CourseStudioSidePanel({
         </button>
       </div>
 
-      <div className="flex border-b border-gray-200 bg-white">
+      <div className="flex overflow-x-auto border-b border-gray-200 bg-white">
         {[
           { value: "sources", label: "Sources" },
           { value: "history", label: "History" },
           { value: "voice", label: "Voice" },
           { value: "geometry", label: "Geometry" },
+          { value: "models", label: "Models" },
         ].map((tab) => (
           <button
             key={tab.value}
             type="button"
             onClick={() => onSidebarTabChange(tab.value as CourseStudioSidebarTab)}
             className={clsx(
-              "flex-1 py-3 text-[10px] font-bold uppercase tracking-wider transition-colors",
+              "min-w-20 flex-1 py-3 text-[10px] font-bold uppercase tracking-wider transition-colors",
               sidebarTab === tab.value
                 ? "border-b-2 border-black text-black"
                 : "text-gray-400 hover:text-black"
@@ -218,7 +228,14 @@ export function CourseStudioSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
-        {sidebarTab === "geometry" ? (
+        {sidebarTab === "models" ? (
+          <ModelSelectionPanel
+            options={textModelOptions}
+            selectedModel={selectedTextModel}
+            selectedOption={selectedTextOption}
+            onSelect={onSelectTextModel}
+          />
+        ) : sidebarTab === "geometry" ? (
           <GeometryGenerationPanel
             packageId={packageId}
             selection={geometryWorkspace.selection}
