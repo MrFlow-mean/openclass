@@ -1201,7 +1201,7 @@ class SourceIngestionService:
         )
         activity_by_id: dict[str, AgentActivityEvent] = {}
         activity_order: list[str] = []
-        codex_progress_tracker: SourceCodexProgressTracker | None = None
+        source_codex_progress_tracker: SourceCodexProgressTracker | None = None
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -1216,12 +1216,12 @@ class SourceIngestionService:
                 phase=phase,
             )
 
-        def report_codex_activity(event: AgentActivityEvent) -> None:
+        def report_model_activity(event: AgentActivityEvent) -> None:
             nonlocal saved, indexing_job
             progress = indexing_job.progress
             phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
-            if codex_progress_tracker is not None:
-                observation = codex_progress_tracker.observe(event)
+            if source_codex_progress_tracker is not None:
+                observation = source_codex_progress_tracker.observe(event)
                 event = observation.event
                 progress = observation.progress
                 phase = observation.phase
@@ -1259,18 +1259,19 @@ class SourceIngestionService:
                 local_path = source_local_path(saved)
                 if local_path is None:
                     raise SourceIngestionError("Source file is unavailable for directory cataloging.")
-                codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 raw_catalog_model = saved.metadata.get("catalog_model")
                 try:
                     catalog_model = AIModelSelection.model_validate(raw_catalog_model)
                 except Exception as exc:
                     raise SourceIngestionError("The selected catalog model is invalid.") from exc
+                if catalog_model.provider == "openai_codex":
+                    source_codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 structure = self.directory_processor.process(
                     record=saved,
                     path=local_path,
                     catalog_model=catalog_model,
                     progress_callback=report_progress,
-                    activity_callback=report_codex_activity,
+                    activity_callback=report_model_activity,
                 )
             else:
                 structure = (

@@ -266,6 +266,53 @@ class BoardAssetStore:
                 ).fetchall()
         return [_reference_from_row(row) for row in rows]
 
+    def remove_lesson_references(self, *, owner_user_id: str, lesson_id: str) -> None:
+        with self._lock:
+            orphaned_records: list[BoardAssetRecord] = []
+            with self._connect() as conn:
+                with conn:
+                    asset_ids = [
+                        str(row["asset_id"])
+                        for row in conn.execute(
+                            """
+                            SELECT DISTINCT asset_id FROM board_asset_refs
+                            WHERE owner_user_id = ? AND lesson_id = ?
+                            """,
+                            (owner_user_id, lesson_id),
+                        ).fetchall()
+                    ]
+                    conn.execute(
+                        "DELETE FROM board_asset_refs WHERE owner_user_id = ? AND lesson_id = ?",
+                        (owner_user_id, lesson_id),
+                    )
+                    for asset_id in asset_ids:
+                        still_referenced = conn.execute(
+                            "SELECT 1 FROM board_asset_refs WHERE asset_id = ? LIMIT 1",
+                            (asset_id,),
+                        ).fetchone()
+                        if still_referenced is not None:
+                            continue
+                        row = conn.execute(
+                            """
+                            SELECT id, owner_user_id, content_hash, mime_type,
+                                   size_bytes, storage_key, file_name, created_at
+                            FROM board_assets WHERE id = ? AND owner_user_id = ?
+                            """,
+                            (asset_id, owner_user_id),
+                        ).fetchone()
+                        if row is None:
+                            continue
+                        orphaned_records.append(_record_from_row(row))
+                        conn.execute(
+                            "DELETE FROM board_assets WHERE id = ? AND owner_user_id = ?",
+                            (asset_id, owner_user_id),
+                        )
+            for record in orphaned_records:
+                try:
+                    self.resolve_path(record).unlink(missing_ok=True)
+                except (BoardAssetError, OSError):
+                    continue
+
     def get(self, asset_id: str, owner_user_id: str) -> BoardAssetRecord | None:
         with self._lock:
             with self._connect() as conn:

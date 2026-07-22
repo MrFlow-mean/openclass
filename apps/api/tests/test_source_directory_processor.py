@@ -78,6 +78,10 @@ def _model() -> AIModelSelection:
     return AIModelSelection(provider="openai_codex", model="catalog-test-model")
 
 
+def _deepseek_model() -> AIModelSelection:
+    return AIModelSelection(provider="deepseek", model="deepseek-chat")
+
+
 def _write_reordered_pptx(path: Path) -> None:
     presentation = """<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -1239,6 +1243,58 @@ def test_processor_publishes_catalog_without_chunks_or_visuals(tmp_path: Path) -
     assert run == ("succeeded", 1, 3)
 
 
+def test_production_processor_uses_selected_non_codex_model_with_bounded_directory_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    path = tmp_path / "source.md"
+    path.write_text("# First\nBody\n## Child\nMore body", encoding="utf-8")
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+
+    def fake_parse(self, **kwargs):
+        packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
+        return (
+            DirectoryBatchDecision(
+                batch_hash=packet["batch_hash"],
+                decisions=[
+                    DirectoryNodeDecision(
+                        local_key=node["local_key"],
+                        keep=True,
+                        title=node["title"],
+                        number=node["number"],
+                        level=node["level"],
+                    )
+                    for node in packet["nodes"]
+                ],
+            ),
+            [],
+        )
+
+    monkeypatch.setattr(
+        "app.services.ai_execution_adapter.DeepSeekTextClient.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr(
+        "app.services.source_directory_processor.generate_codex_direct_catalog",
+        lambda **_kwargs: pytest.fail("A non-Codex model must not enter the isolated Codex file path"),
+    )
+
+    structure = SourceDirectoryProcessor(store=store).process(
+        record=_record(path),
+        path=path,
+        catalog_model=_deepseek_model(),
+    )
+    catalog = store.get_catalog_view(source=_record(path))
+
+    assert structure.status == "ready"
+    assert structure.catalog_model == "deepseek-chat"
+    assert structure.metadata["catalog_model_selection"]["provider"] == "deepseek"
+    assert structure.metadata["catalog_authority"] == "host_directory_evidence_with_selected_model"
+    assert [chapter.title for chapter in catalog.chapters] == ["First", "Child"]
+    assert all(chapter.mapping_status == "verified" for chapter in catalog.chapters)
+
+
 def test_processor_rejects_stale_metadata_fingerprint_before_extraction(tmp_path: Path) -> None:
     path = tmp_path / "source.md"
     path.write_text("# One\nBody", encoding="utf-8")
@@ -1828,7 +1884,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
         )
 
     monkeypatch.setattr(
-        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
+        "app.services.ai_execution_adapter.CodexAppServerTextClient.parse",
         fake_parse,
     )
     candidates = [
@@ -1905,7 +1961,7 @@ def test_codex_normalizer_preserves_native_epub_levels_across_batches(monkeypatc
         )
 
     monkeypatch.setattr(
-        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
+        "app.services.ai_execution_adapter.CodexAppServerTextClient.parse",
         fake_parse,
     )
     monkeypatch.setattr("app.services.source_directory_processor.MAX_CODEX_BATCH_NODES", 2)

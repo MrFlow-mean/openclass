@@ -179,10 +179,71 @@ export interface CommitRecord {
   operations: Array<Record<string, unknown>>;
   snapshot: BoardDocument;
   metadata?: Record<string, unknown> & {
-    history_node_kind?: "chat" | "document" | "restore" | "system";
+    history_node_kind?: "chat" | "document" | "restore" | "merge" | "system";
     history_node_title?: string;
     history_node_summary?: string;
   };
+}
+
+export type LessonMergeMode = "manual" | "ai";
+export type LessonMergeStatus =
+  | "draft"
+  | "ai_running"
+  | "ready"
+  | "stale"
+  | "committed"
+  | "abandoned"
+  | "failed";
+export type LessonMergeResolution =
+  | "unresolved"
+  | "target"
+  | "source"
+  | "both"
+  | "custom"
+  | "clear"
+  | "ai";
+
+export interface LessonMergeConflictView {
+  id: string;
+  kind: "board" | "learning_requirement" | "board_task" | "source_reference";
+  path: string;
+  title: string;
+  base_value: unknown;
+  target_value: unknown;
+  source_value: unknown;
+  resolution: LessonMergeResolution;
+  custom_value: unknown;
+  resolved: boolean;
+}
+
+export interface MergeRuntimeDraftView {
+  learning_requirements?: LearningRequirementSheet | null;
+  board_task_requirements?: BoardTaskRequirementSheet | null;
+  board_teaching_restart_heading_path: string[];
+  invalidated_teaching_state: boolean;
+}
+
+export interface LessonMergeSessionView {
+  id: string;
+  lesson_id: string;
+  target_branch_name: string;
+  source_branch_name: string;
+  base_commit_id: string;
+  target_head_commit_id: string;
+  source_head_commit_id: string;
+  mode: LessonMergeMode;
+  status: LessonMergeStatus;
+  version: number;
+  conflicts: LessonMergeConflictView[];
+  draft_document: BoardDocument;
+  draft_runtime: MergeRuntimeDraftView;
+  ai_model?: AIModelSelection | null;
+  agent_activity: AgentActivityEvent[];
+  audit: Record<string, unknown>;
+  supersedes_session_id?: string | null;
+  committed_commit_id?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface BranchRef {

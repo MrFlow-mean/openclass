@@ -5,12 +5,23 @@ import type { HTMLAttributes } from "react";
 import { SourceImportPanel } from "@/components/course-studio/source-import-panel";
 import { GeometryGenerationPanel } from "@/components/course-studio/geometry-generation-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
+import { LessonMergePanel } from "@/components/course-studio/lesson-merge-panel";
 import { VoiceControlPanel } from "@/components/course-studio/voice-control-panel";
 import { ModelSelectionPanel } from "@/components/course-studio/model-selection-panel";
+import type { LessonPackageControlsProps } from "@/components/course-studio/lesson-package-controls";
 import { useGeometryWorkspace } from "@/hooks/course-studio/use-geometry-workspace";
 import { useSourceCatalogCache } from "@/hooks/course-studio/use-source-catalog-cache";
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
-import type { AIModelOption, AIModelSelection, BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
+import type {
+  AIModelOption,
+  AIModelSelection,
+  BoardDecision,
+  CommitRecord,
+  Lesson,
+  LessonMergeResolution,
+  LessonMergeSessionView,
+  SelectionRef,
+} from "@/types";
 
 export type CourseStudioSidebarTab = "geometry" | "history" | "models" | "sources" | "voice";
 
@@ -35,6 +46,17 @@ type CourseStudioSidePanelProps = {
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  onMergeBranch: (branchName: string) => void | Promise<void>;
+  lessonPackageControls: LessonPackageControlsProps;
+  mergeSession: LessonMergeSessionView | null;
+  mergeDraftDirty: boolean;
+  mergeAIProposing: boolean;
+  onResolveMergeConflict: (conflictId: string, resolution: LessonMergeResolution, customValue?: unknown) => void | Promise<void>;
+  onProposeMergeWithAI: () => void | Promise<void>;
+  onCancelMergeAI: () => void;
+  onRecomputeMerge: () => void | Promise<void>;
+  onAbandonMerge: () => void | Promise<void>;
+  onSubmitMerge: () => void | Promise<void>;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
   geometryReference: SelectionRef | null;
@@ -91,6 +113,17 @@ export function CourseStudioSidePanel({
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
+  onMergeBranch,
+  lessonPackageControls,
+  mergeSession,
+  mergeDraftDirty,
+  mergeAIProposing,
+  onResolveMergeConflict,
+  onProposeMergeWithAI,
+  onCancelMergeAI,
+  onRecomputeMerge,
+  onAbandonMerge,
+  onSubmitMerge,
   onError,
   onSourceReference,
   geometryReference,
@@ -227,6 +260,18 @@ export function CourseStudioSidePanel({
             onError={onError}
             onSourceReference={onSourceReference}
           />
+        ) : sidebarTab === "history" && mergeSession ? (
+          <LessonMergePanel
+            session={mergeSession}
+            isDraftDirty={mergeDraftDirty}
+            isAIProposing={mergeAIProposing}
+            onResolveConflict={onResolveMergeConflict}
+            onProposeWithAI={onProposeMergeWithAI}
+            onCancelAI={onCancelMergeAI}
+            onRecompute={onRecomputeMerge}
+            onAbandon={onAbandonMerge}
+            onSubmit={onSubmitMerge}
+          />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}
@@ -242,6 +287,8 @@ export function CourseStudioSidePanel({
             onRestoreCommit={onRestoreCommit}
             onCreateBranchFromCommit={onCreateBranchFromCommit}
             onSwitchBranch={onSwitchBranch}
+            onMergeBranch={onMergeBranch}
+            lessonPackageControls={lessonPackageControls}
           />
         ) : sidebarTab === "voice" ? (
           <VoiceControlPanel

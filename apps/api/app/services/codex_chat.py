@@ -577,6 +577,8 @@ def _thread_reference_for_current_branch(lesson) -> tuple[str | None, str | None
         if commit is None:
             continue
         metadata = commit.metadata if isinstance(commit.metadata, dict) else {}
+        if metadata.get("reset_codex_thread") is True:
+            return None, None
         if metadata.get("kind") == "restore_snapshot":
             continue
         thread_id = metadata.get("codex_thread_id")
@@ -589,6 +591,67 @@ def _thread_reference_for_current_branch(lesson) -> tuple[str | None, str | None
         if commit.branch_name == branch_name:
             pending.extend(commit.parent_ids)
     return None, None
+
+
+def _safe_merge_context_value(value: Any) -> Any:
+    blocked_keys = {
+        "local_source_path",
+        "original_source_path",
+        "parser_artifacts_path",
+        "expanded_text",
+        "context_text",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _safe_merge_context_value(item)
+            for key, item in value.items()
+            if key not in blocked_keys
+        }
+    if isinstance(value, list):
+        return [_safe_merge_context_value(item) for item in value]
+    return value
+
+
+def _merge_handoff_context(lesson) -> str:
+    head = current_head_commit(lesson)
+    metadata = head.metadata if isinstance(head.metadata, dict) else {}
+    if metadata.get("reset_codex_thread") is not True:
+        return ""
+    target_head_id = metadata.get("merge_target_head_commit_id")
+    source_head_id = metadata.get("merge_source_head_commit_id")
+    if not isinstance(target_head_id, str) or not isinstance(source_head_id, str):
+        return ""
+    from app.services.lesson_merge import branch_history_summary
+
+    runtime = {
+        "learning_requirements": (
+            lesson.learning_requirements.model_dump(mode="json")
+            if lesson.learning_requirements is not None
+            else None
+        ),
+        "board_task_requirements": (
+            lesson.board_task_requirements.model_dump(mode="json")
+            if lesson.board_task_requirements is not None
+            else None
+        ),
+    }
+    payload = {
+        "merge_commit_id": head.id,
+        "target_branch": metadata.get("merge_target_branch"),
+        "source_branch": metadata.get("merge_source_branch"),
+        "target_history": branch_history_summary(lesson, target_head_id),
+        "source_history": branch_history_summary(lesson, source_head_id),
+        "merged_runtime": _safe_merge_context_value(runtime),
+        "chronology_rule": (
+            "The target and source histories are independent labeled lineages. "
+            "Do not present them as one alternating conversation."
+        ),
+    }
+    return "Merged lesson handoff context:\n" + json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _conversation_context(conversation: list[ConversationTurn]) -> str:
@@ -1529,6 +1592,7 @@ def _process_deepseek_existing_board_turn(
         for part in (
             source_context.prompt_context if source_context is not None else "",
             attachment_context,
+            _merge_handoff_context(initial_lesson),
         )
         if part
     )
@@ -1766,6 +1830,7 @@ def process_codex_chat_on_lesson(
                     item
                     for item in (
                         _conversation_context(request.conversation),
+                        _merge_handoff_context(initial_lesson),
                         prepared_attachments.prompt_context,
                     )
                     if item
@@ -1950,6 +2015,7 @@ def process_codex_chat_on_lesson(
                 for item in (
                     source_context.prompt_context if source_context is not None else "",
                     prepared_attachments.prompt_context,
+                    _merge_handoff_context(initial_lesson),
                 )
                 if item
             )

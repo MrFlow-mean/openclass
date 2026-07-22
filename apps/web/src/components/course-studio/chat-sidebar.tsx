@@ -260,6 +260,7 @@ type CourseStudioChatSidebarProps = {
   previewCommit: CommitRecord | null;
   displayedMessages: ChatMessage[];
   isPreviewMode: boolean;
+  interactionLocked?: boolean;
   isChatBusy: boolean;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
@@ -310,6 +311,7 @@ export function CourseStudioChatSidebar({
   previewCommit,
   displayedMessages,
   isPreviewMode,
+  interactionLocked = false,
   isChatBusy,
   clarificationQuestions,
   activeBoardTask,
@@ -427,6 +429,7 @@ export function CourseStudioChatSidebar({
                   message={message}
                   onStartEdit={
                     !isPreviewMode &&
+                    !interactionLocked &&
                     !isChatBusy &&
                     message.role === "user" &&
                     Boolean(message.commitId && message.parentCommitIds?.[0])
@@ -444,6 +447,7 @@ export function CourseStudioChatSidebar({
                   isEditDisabled={!editingMessageContent.trim() || isChatBusy}
                   onContinueTeaching={
                     !isPreviewMode &&
+                    !interactionLocked &&
                     index === displayedMessages.length - 1 &&
                     message.role === "assistant" &&
                     message.teachingProgress?.has_next_section
@@ -452,6 +456,7 @@ export function CourseStudioChatSidebar({
                   }
                   onFollowUpSuggestion={
                     !isPreviewMode &&
+                    !interactionLocked &&
                     !isChatBusy &&
                     textModelReady &&
                     index === displayedMessages.length - 1 &&
@@ -479,7 +484,7 @@ export function CourseStudioChatSidebar({
             <div ref={chatScrollEndRef} aria-hidden="true" />
           </div>
 
-          {!isPreviewMode && clarificationQuestions.length ? (
+          {!isPreviewMode && !interactionLocked && clarificationQuestions.length ? (
             <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
               <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">需求澄清</p>
               <p className="mt-2 text-xs leading-6 text-sky-900">
@@ -527,11 +532,13 @@ export function CourseStudioChatSidebar({
           <button
             type="button"
             onClick={() => void onVoiceToggle()}
+            disabled={interactionLocked}
             aria-label={voiceStatusText}
             title={voiceStatusText}
             className={clsx(
               "flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-all hover:scale-105 hover:shadow-md",
-              voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : "bg-[#1a1a1a]"
+              voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : "bg-[#1a1a1a]",
+              interactionLocked && "cursor-not-allowed opacity-40"
             )}
           >
             <AudioLines className="h-4.5 w-4.5" />
@@ -577,7 +584,7 @@ export function CourseStudioChatSidebar({
 
           <ChatAttachmentChips
             attachments={composerAttachments}
-            disabled={isChatBusy}
+            disabled={isChatBusy || interactionLocked}
             onRemove={(sourceId) =>
               onUpdateComposerState((current) => ({
                 ...current,
@@ -593,10 +600,11 @@ export function CourseStudioChatSidebar({
             value={chatInput}
             rows={1}
             onFocus={() => {
-              if (isPreviewMode) {
+              if (isPreviewMode && !interactionLocked) {
                 onExitPreviewMode();
               }
             }}
+            readOnly={interactionLocked}
             onChange={(event) =>
               onUpdateComposerState((current) => ({
                 ...current,
@@ -607,6 +615,7 @@ export function CourseStudioChatSidebar({
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 if (
+                  interactionLocked ||
                   isChatBusy ||
                   !textModelReady ||
                   !attachmentsReady ||
@@ -619,7 +628,9 @@ export function CourseStudioChatSidebar({
               }
             }}
             placeholder={
-              isPreviewMode
+              interactionLocked
+                ? "合并期间对话已暂停，提交或放弃合并后可继续"
+                : isPreviewMode
                   ? "点击输入会回到当前版本并继续对话"
                   : composerMode === "direct_edit"
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
@@ -636,7 +647,7 @@ export function CourseStudioChatSidebar({
               <ChatAttachmentMenu
                 packageId={packageId}
                 attachments={composerAttachments}
-                disabled={isChatBusy || isPreviewMode}
+                disabled={isChatBusy || isPreviewMode || interactionLocked}
                 menuAboveRef={modelControlsRef}
                 onChange={(attachments) =>
                   onUpdateComposerState((current) => ({
@@ -650,6 +661,7 @@ export function CourseStudioChatSidebar({
                 <button
                   type="button"
                   aria-label="Ask Mode"
+                  disabled={interactionLocked}
                   onClick={() =>
                     onUpdateComposerState((current) => ({
                       ...current,
@@ -667,6 +679,7 @@ export function CourseStudioChatSidebar({
                 <button
                   type="button"
                   aria-label="Agent Edit Mode"
+                  disabled={interactionLocked}
                   onClick={() => {
                     onUpdateComposerState((current) => ({
                       ...current,
@@ -711,13 +724,15 @@ export function CourseStudioChatSidebar({
                   onStopChat();
                   return;
                 }
-                void onSubmitChat();
+                if (!interactionLocked) {
+                  void onSubmitChat();
+                }
               }}
               aria-label={isChatBusy ? "停止回复" : "发送消息"}
               title={isChatBusy ? "停止回复" : "发送消息"}
               disabled={
                 !isChatBusy &&
-                ((!chatInput.trim() && !composerAttachments.length) || !textModelReady || !attachmentsReady)
+                (interactionLocked || (!chatInput.trim() && !composerAttachments.length) || !textModelReady || !attachmentsReady)
               }
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
