@@ -14,6 +14,10 @@ import {
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
+import {
+  addRealtimeBoardReference,
+  mergeRealtimeBoardReferenceResults,
+} from "@/lib/realtime-board-references";
 import type {
   AIModelOption,
   AIModelSelection,
@@ -176,6 +180,7 @@ export function useRealtimeVoice({
   const openAIAssistantMessageIdRef = useRef<string | null>(null);
   const openAIInputTranscriptsRef = useRef(new Map<string, string>());
   const openAIProcessedToolCallsRef = useRef(new Set<string>());
+  const realtimeBoardReferencesRef = useRef<SelectionRef[]>([]);
   const realtimeTurnIdRef = useRef<string | null>(null);
   const currentSelectionRef = useRef<SelectionRef | null>(currentSelection);
   const realtimeLessonIdRef = useRef<string | null>(null);
@@ -193,7 +198,20 @@ export function useRealtimeVoice({
 
   useEffect(() => {
     currentSelectionRef.current = currentSelection;
-  }, [currentSelection]);
+    const lessonId = realtimeLessonIdRef.current;
+    if (!lessonId) {
+      return;
+    }
+    const previousCount = realtimeBoardReferencesRef.current.length;
+    realtimeBoardReferencesRef.current = addRealtimeBoardReference(
+      realtimeBoardReferencesRef.current,
+      currentSelection,
+      lessonId
+    );
+    if (voiceActive && realtimeBoardReferencesRef.current.length > previousCount) {
+      setVoiceStatusText(`Realtime 已保留 ${realtimeBoardReferencesRef.current.length} 个板书引用`);
+    }
+  }, [currentSelection, voiceActive]);
 
   function currentTurnId() {
     if (!realtimeTurnIdRef.current) {
@@ -288,6 +306,7 @@ export function useRealtimeVoice({
     openAIAssistantMessageIdRef.current = null;
     openAIInputTranscriptsRef.current.clear();
     openAIProcessedToolCallsRef.current.clear();
+    realtimeBoardReferencesRef.current = [];
     realtimeTurnIdRef.current = null;
 
     if (realtimePeerRef.current) {
@@ -582,6 +601,7 @@ export function useRealtimeVoice({
       realtimeLessonIdRef.current = activeLesson.id;
       realtimeClientSessionIdRef.current = clientSessionId;
       realtimeLessonTitleRef.current = activeLesson.title;
+      realtimeBoardReferencesRef.current = addRealtimeBoardReference([], currentSelection, activeLesson.id);
 
       if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
         await startGoogleRealtimeSession(activeLesson, mediaStream, clientSessionId);
@@ -672,13 +692,32 @@ export function useRealtimeVoice({
             }
             let toolResult: RealtimeToolCallResponse;
             try {
-              toolResult = await api.callRealtimeTool(lessonId, {
-                client_session_id: clientSessionId,
-                call_id: functionCall.callId,
-                name: functionCall.name,
-                arguments: functionCall.arguments,
-                selection: currentSelectionRef.current,
-              });
+              const useAccumulatedReferences =
+                functionCall.name === "read_board_context" &&
+                functionCall.arguments.mode === "current_selection" &&
+                realtimeBoardReferencesRef.current.length > 1;
+              if (useAccumulatedReferences) {
+                const referenceResults = await Promise.all(
+                  realtimeBoardReferencesRef.current.map((selection, index) =>
+                    api.callRealtimeTool(lessonId, {
+                      client_session_id: clientSessionId,
+                      call_id: `${functionCall.callId}_reference_${index + 1}`,
+                      name: functionCall.name,
+                      arguments: functionCall.arguments,
+                      selection,
+                    })
+                  )
+                );
+                toolResult = mergeRealtimeBoardReferenceResults(referenceResults);
+              } else {
+                toolResult = await api.callRealtimeTool(lessonId, {
+                  client_session_id: clientSessionId,
+                  call_id: functionCall.callId,
+                  name: functionCall.name,
+                  arguments: functionCall.arguments,
+                  selection: currentSelectionRef.current,
+                });
+              }
             } catch (toolError) {
               const message = toolError instanceof Error ? toolError.message : "Realtime 工具执行失败";
               onToolStatusUpdate({ lessonId, turnId, label: message, status: "error" });
@@ -689,8 +728,11 @@ export function useRealtimeVoice({
             onToolResult(lessonId, toolResult);
             const modelStatus = toolResult.model_output.status;
             const succeeded = toolResult.status === "ok" && modelStatus === "ok";
+            const referenceCount = Number(toolResult.model_output.reference_count ?? 0);
             const completedLabel = functionCall.name === "read_board_context"
-              ? "板书上下文已就绪"
+              ? referenceCount > 1
+                ? `${referenceCount} 个板书引用已就绪`
+                : "板书上下文已就绪"
               : "Chatbot 工作流已完成";
             const failedLabel = toolResult.status === "ok" && modelStatus === "not_found"
               ? "未定位到明确板书范围"

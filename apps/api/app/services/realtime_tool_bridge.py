@@ -16,7 +16,9 @@ def realtime_tool_schemas() -> list[dict[str, Any]]:
             "description": (
                 "Read a bounded, authorized range from the current OpenClass board. "
                 "Call this before discussing, explaining, quoting, or role-playing from board content. "
-                "Use mode=current_selection for the learner's selected text, mode=outline to inspect headings, "
+                "Use mode=current_selection for the learner's active board references; the client may return an "
+                "ordered references array when the learner accumulated more than one selection. Use every item "
+                "in that array without replacing an earlier reference with a later one. Use mode=outline to inspect headings, "
                 "or mode=target with a location, heading, example, phrase, or section description."
             ),
             "parameters": {
