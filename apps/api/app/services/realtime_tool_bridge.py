@@ -83,6 +83,12 @@ def execute_realtime_tool(
                 lesson_id,
                 ChatRequest(message=message, selection=request.selection),
                 user_id=user_id,
+                commit_metadata={
+                    "chat_visibility": "hidden",
+                    "interaction_channel": "realtime_tool",
+                    "realtime_client_session_id": request.client_session_id,
+                    "realtime_turn_id": request.turn_id or "",
+                },
             )
             focus = _latest_resolved_focus(chat_response.course_package, lesson_id)
             response = RealtimeToolCallResponse(

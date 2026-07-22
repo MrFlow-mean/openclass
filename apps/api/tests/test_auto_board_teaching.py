@@ -9,7 +9,12 @@ import pytest
 
 from app.models import BoardExplanationDirective, ChatRequest
 from app.services import codex_chat, workspace_state
-from app.services.auto_board_teaching import _build_teaching_guide
+from app.services.auto_board_teaching import (
+    CHATBOT_EXPLANATION_INSTRUCTIONS,
+    _build_teaching_guide,
+    continue_board_teaching,
+    start_auto_board_teaching,
+)
 from app.services.board_teaching_turn_decision import BoardTeachingTurnDecision
 from app.services.codex_app_server import CodexTurnResult
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -202,4 +207,66 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
     assert [commit.metadata["user_message"] for commit in teaching_commits] == [
         "讲解第三部分",
         "继续",
+    ]
+
+
+def test_chatbot_explanation_prompt_uses_a_warm_teacher_opening_without_a_template() -> None:
+    assert "warmth, energy, and attentiveness of an excellent teacher" in (
+        CHATBOT_EXPLANATION_INSTRUCTIONS
+    )
+    assert "never reuse a fixed opening template" in CHATBOT_EXPLANATION_INSTRUCTIONS
+    assert "For later units" in CHATBOT_EXPLANATION_INSTRUCTIONS
+    assert "Never open with a scope disclaimer" in CHATBOT_EXPLANATION_INSTRUCTIONS
+    assert "not the complete content" in CHATBOT_EXPLANATION_INSTRUCTIONS
+    assert "法语" not in CHATBOT_EXPLANATION_INSTRUCTIONS
+
+
+def test_teaching_context_marks_only_the_first_unit_as_the_opening(
+    teaching_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(teaching_store)
+
+    class RecordingAdapter:
+        def __init__(self) -> None:
+            self.teaching_contexts: list[dict[str, object]] = []
+
+        def parse_structured(self, **kwargs):
+            payload = json.loads(kwargs["user_prompt"])
+            excerpt = payload["target_excerpt"]
+            parsed = BoardExplanationDirective(
+                status="approved",
+                target_summary=excerpt.splitlines()[0].lstrip("# "),
+                target_excerpt=excerpt,
+                teaching_instruction="Explain only this title scope.",
+                constraints=["Do not include the next title."],
+            )
+            return SimpleNamespace(output_parsed=parsed, activity=[])
+
+        def explain_from_directive(self, **kwargs):
+            payload = json.loads(kwargs["user_prompt"])
+            self.teaching_contexts.append(payload["teaching_context"])
+            parsed = kwargs["schema"](
+                chatbot_message="A teacher-like explanation.",
+                follow_up_suggestions=["Continue"],
+            )
+            return SimpleNamespace(output_parsed=parsed, activity=[])
+
+    adapter = RecordingAdapter()
+    started = start_auto_board_teaching(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson.id,
+        adapter=adapter,
+    )
+    continued = continue_board_teaching(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson.id,
+        adapter=adapter,
+        restart=False,
+    )
+
+    assert started.status == "succeeded"
+    assert continued.status == "succeeded"
+    assert adapter.teaching_contexts == [
+        {"is_opening_unit": True, "has_next_unit": True},
+        {"is_opening_unit": False, "has_next_unit": True},
     ]

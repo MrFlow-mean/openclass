@@ -17,8 +17,9 @@ def process_chat_on_lesson(
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    commit_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
-    with bind_commit_metadata(_chat_edit_metadata(request)):
+    with bind_commit_metadata({**(commit_metadata or {}), **_chat_edit_metadata(request)}):
         return process_codex_chat_on_lesson(
             lesson_id,
             request,

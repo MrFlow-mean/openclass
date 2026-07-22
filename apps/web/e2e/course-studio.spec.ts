@@ -721,16 +721,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 5\.6 Luna，推理强度 中，速度 标准/
   );
-  await page.getByTestId("source-catalog-model-reasoning-row").click();
-  await expect(page.getByTestId("source-catalog-model-reasoning-menu")).toBeVisible();
-  await expect(
-    page
-      .getByTestId("source-catalog-model-reasoning-menu")
-      .getByRole("button", { name: "推理强度 高" })
-  ).toHaveCount(0);
-  await page.getByTestId("source-catalog-model-reasoning-row").click();
-  await expect(page.getByTestId("source-catalog-model-speed-row")).toBeDisabled();
-  await expect(page.getByTestId("source-catalog-model-speed-row")).toContainText("仅标准");
+  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toHaveCount(0);
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
   await catalogModelButton.click();
 
   await page.getByTestId("source-file-input").setInputFiles({
@@ -772,7 +764,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 Default only test model，推理强度 默认，速度 标准/
   );
-  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toBeDisabled();
+  await expect(page.getByTestId("source-catalog-model-reasoning-row")).toHaveCount(0);
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
   await page.getByTestId("source-catalog-model-reset-button").click();
   await expect(catalogModelButton).toHaveAccessibleName(
     /目录提取模型设置，当前 5\.6 Sol，推理强度 轻度，速度 标准/
@@ -1085,11 +1078,13 @@ test("collapses course package and standalone lesson lists independently", async
   await expect(page.getByLabel("展开单独课程")).toHaveAttribute("aria-expanded", "false");
 });
 
-test("exports and loads a RIDOC package from the standalone lesson menu", async ({ page }) => {
+test("exports and imports a RIDOC file as a standalone lesson", async ({ page }) => {
   const unique = Date.now();
   const lessonTitle = `主页课程包入口 ${unique}`;
   await enterAsGuest(page);
-  await page.getByLabel("进入单独课程工作台").click();
+  await page.getByLabel("添加单独课程").click();
+  await expect(page.getByRole("menuitem", { name: "导入课程文件" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "新建课程" }).click();
   await createLessonFromEmptyStudio(page, lessonTitle);
   await writeEditorTextAndWaitForSave(page, `主页导出内容 ${unique}`);
   await page.goto("/home");
@@ -1106,12 +1101,12 @@ test("exports and loads a RIDOC package from the standalone lesson menu", async 
     ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
 
-  await lessonCard.getByLabel("打开课程操作菜单").click();
+  await page.getByLabel("添加单独课程").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "加载导出的课程包", exact: true }).click();
+  await page.getByRole("menuitem", { name: "导入课程文件", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),
@@ -1120,7 +1115,7 @@ test("exports and loads a RIDOC package from the standalone lesson menu", async 
   });
   await importResponse;
 
-  await expect(page.locator("[data-package-selection-root]").filter({ hasText: lessonTitle }).first()).toBeVisible();
+  await expect(page.locator("[data-lesson-selection-root]").filter({ hasText: lessonTitle })).toHaveCount(2);
 });
 
 test("localizes the empty course package page in English", async ({ page }) => {
@@ -1281,7 +1276,11 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   const firstVersion = `RIDOC 历史版本一 ${unique}`;
   const secondVersion = `RIDOC 历史版本二 ${unique}`;
   await enterAsGuest(page);
-  await createPackageFromHome(page, `RIDOC 测试课程包 ${unique}`);
+  await page.getByLabel(/进入单独课程工作台|添加单独课程/).click();
+  const createLessonMenuItem = page.getByRole("menuitem", { name: "新建课程" });
+  if (await createLessonMenuItem.isVisible()) {
+    await createLessonMenuItem.click();
+  }
   await createLessonFromEmptyStudio(page, `RIDOC 测试页面 ${unique}`);
   await writeEditorTextAndWaitForSave(page, firstVersion);
   await writeEditorTextAndWaitForSave(page, secondVersion);
@@ -1296,11 +1295,13 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
     ridocChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
 
+  await page.goto("/home");
+  await page.getByLabel("添加单独课程").click();
   const importResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/workspace/import-ridoc") && response.request().method() === "POST"
   );
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "加载课程包", exact: true }).click();
+  await page.getByRole("menuitem", { name: "导入课程文件", exact: true }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: download.suggestedFilename(),
@@ -1309,8 +1310,14 @@ test("exports, imports, replays, and forks a RIDOC lesson package", async ({ pag
   });
   await importResponse;
 
+  const lessonCards = page
+    .locator("[data-lesson-selection-root]")
+    .filter({ hasText: `RIDOC 测试页面 ${unique}` });
+  await expect(lessonCards).toHaveCount(2);
+  await lessonCards.last().click();
   await expect(page.locator(".ProseMirror").first()).toContainText(secondVersion);
-  await openHistoryPanel(page);
+  await page.getByTitle("展开右侧栏").dispatchEvent("click");
+  await expect(page.getByText("修订记录")).toBeVisible();
   await expect(page.getByText("RIDOC 课程包")).toBeVisible();
   await page.getByRole("button", { name: "播放课程" }).click();
   await page.getByRole("button", { name: "暂停播放" }).click();
@@ -1484,6 +1491,7 @@ test("scrolls to and highlights the Board AI-authorized section being explained"
 
   await page.reload();
 
+  await expect(page.locator("article").filter({ hasText: `正在讲解 ${targetHeading}` })).toBeVisible();
   const teachingFocus = page.locator('[data-teaching-focus="true"]');
   const highlightedHeading = teachingFocus.filter({ hasText: targetHeading });
   const highlightedSentence = teachingFocus.filter({ hasText: targetSentence });
@@ -1502,6 +1510,116 @@ test("scrolls to and highlights the Board AI-authorized section being explained"
   await expect.poll(() => boardScroll.evaluate((element) => element.scrollTop)).toBeLessThan(10);
   await expect(highlightedHeading).toBeAttached();
   await expect(highlightedSentence).toBeAttached();
+});
+
+test("restores future and legacy persisted chat shapes after refresh", async ({ page }) => {
+  const unique = Date.now();
+  const visibleFutureUser = `未来流程用户消息 ${unique}`;
+  const visibleFutureAssistant = `未来流程 AI 回复 ${unique}`;
+  const visibleLegacyAssistant = `旧课程 AI 回复 ${unique}`;
+  const visibleRealtimeUser = `Realtime 用户消息 ${unique}`;
+  const visibleRealtimeAssistant = `Realtime AI 回复 ${unique}`;
+  const hiddenRealtimeToolUser = `Realtime 内部工具用户消息 ${unique}`;
+  const hiddenRealtimeToolAssistant = `Realtime 内部工具 AI 回复 ${unique}`;
+  const hiddenReadyAssistant = `内部 ready 回复 ${unique}`;
+  const hiddenFrozenAssistant = `内部 frozen 回复 ${unique}`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `聊天刷新兼容课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `聊天刷新兼容页面 ${unique}`);
+
+  let injectedPackage: Record<string, unknown> | null = null;
+  await page.route("**/api/course-package", async (route) => {
+    if (!injectedPackage) {
+      const authHeader = route.request().headers().authorization;
+      const upstream = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      });
+      const nextPackage = (await upstream.json()) as Record<string, unknown>;
+      const lesson = (nextPackage.lessons as Array<Record<string, unknown>>)[0];
+      const historyGraph = lesson.history_graph as {
+        commits: Array<Record<string, unknown>>;
+        current_branch: string;
+        branches: Record<string, { head_commit_id: string | null }>;
+      };
+      const branch = historyGraph.branches[historyGraph.current_branch];
+      const appendCommit = (suffix: string, metadata: Record<string, unknown>) => {
+        const commitId = `commit_${suffix}_${unique}`;
+        historyGraph.commits.push({
+          id: commitId,
+          label: suffix,
+          message: suffix,
+          branch_name: historyGraph.current_branch,
+          created_at: new Date().toISOString(),
+          parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+          operations: [],
+          snapshot: lesson.board_document,
+          metadata,
+        });
+        branch.head_commit_id = commitId;
+      };
+
+      appendCommit("internal_ready", {
+        kind: "future_requirement_lifecycle",
+        history_node_kind: "chat",
+        requirement_phase: "ready",
+        assistant_message: hiddenReadyAssistant,
+      });
+      appendCommit("future_chat", {
+        kind: "future_workflow_step",
+        history_node_kind: "chat",
+        user_message: visibleFutureUser,
+        assistant_message: visibleFutureAssistant,
+      });
+      appendCommit("legacy_chat", {
+        kind: "legacy_unknown_workflow_step",
+        assistant_message: visibleLegacyAssistant,
+      });
+      appendCommit("realtime_user", {
+        kind: "realtime_transcript",
+        history_node_kind: "chat",
+        interaction_channel: "realtime",
+        realtime_client_event_id: `realtime_user_${unique}`,
+        user_message: visibleRealtimeUser,
+      });
+      appendCommit("realtime_assistant", {
+        kind: "realtime_transcript",
+        history_node_kind: "chat",
+        interaction_channel: "realtime",
+        realtime_client_event_id: `realtime_assistant_${unique}`,
+        assistant_message_source: "realtime",
+        assistant_message: visibleRealtimeAssistant,
+      });
+      appendCommit("hidden_realtime_tool", {
+        kind: "chat_flow",
+        history_node_kind: "chat",
+        chat_visibility: "hidden",
+        interaction_channel: "realtime_tool",
+        user_message: hiddenRealtimeToolUser,
+        assistant_message: hiddenRealtimeToolAssistant,
+      });
+      appendCommit("internal_frozen", {
+        kind: "future_requirement_lifecycle",
+        history_node_kind: "chat",
+        requirement_phase: "frozen",
+        assistant_message: hiddenFrozenAssistant,
+      });
+      injectedPackage = nextPackage;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(injectedPackage) });
+  });
+
+  await page.reload();
+
+  await expect(page.locator("article").filter({ hasText: visibleFutureUser })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleFutureAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleLegacyAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleRealtimeUser })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: visibleRealtimeAssistant })).toBeVisible();
+  await expect(page.locator("article").filter({ hasText: hiddenRealtimeToolUser })).toHaveCount(0);
+  await expect(page.locator("article").filter({ hasText: hiddenRealtimeToolAssistant })).toHaveCount(0);
+  await expect(page.locator("article").filter({ hasText: hiddenReadyAssistant })).toHaveCount(0);
+  await expect(page.locator("article").filter({ hasText: hiddenFrozenAssistant })).toHaveCount(0);
 });
 
 test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {

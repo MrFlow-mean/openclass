@@ -120,6 +120,9 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       collapseStandaloneLessons: z ? "收起单独课程" : "Collapse standalone lessons",
       expandStandaloneLessons: z ? "展开单独课程" : "Expand standalone lessons",
       standaloneWorkspaceAria: z ? "进入单独课程工作台" : "Open standalone workspace",
+      standaloneCreateMenuAria: z ? "添加单独课程" : "Add standalone lesson",
+      importCourseFile: z ? "导入课程文件" : "Import course file",
+      createCourse: z ? "新建课程" : "Create course",
       packageSelectedExpanded: z ? "已选中，右侧正在展示包内单课；再点可取消选中。" : "Selected — lessons shown on the right; click again to collapse.",
       packageSelectedCollapsed: z ? "已选中，再点可展开包内单课列表。" : "Selected — click again to expand lessons.",
       emptyPackage: z ? "空课程包，点一下先选中它。" : "Empty package — click to select.",
@@ -145,7 +148,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       deletePackageFail: z ? "删除课程包失败" : "Could not delete package",
       searchPlaceholder: z ? "搜索别人的开源课程、作者、主题或知识方向..." : "Search open courses, authors, topics...",
       activityTitle: z ? "学习活跃度" : "Learning activity",
-      activitySubtitle: z ? "过去 32 周内课程编辑、提交与资料接入的活动分布。" : "Edits, commits, and uploads over the past 32 weeks.",
+      activitySubtitle: z ? "过去 52 周内课程编辑、提交与资料接入的活动分布。" : "Edits, commits, and uploads over the past 52 weeks.",
       activityTotal: (count: number) =>
         z
           ? `${count.toLocaleString(intl(lang))} 次活动`
@@ -191,7 +194,6 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         : "This package is empty. Move a lesson into it, or open Studio to create the first page.",
       moveToPackage: z ? "移动到课程包" : "Move to package",
       exportLessonPackage: z ? "导出课程包" : "Export lesson package",
-      loadExportedLessonPackage: z ? "加载导出的课程包" : "Load exported lesson package",
       delete: z ? "删除" : "Delete",
       noMovablePackages: z ? "暂无可移动课程包" : "No packages to move into",
       moreUpdatesAria: z ? "更多更新操作" : "More updates",
