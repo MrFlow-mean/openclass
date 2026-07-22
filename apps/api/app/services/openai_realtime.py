@@ -8,7 +8,15 @@ from typing import Any
 
 import httpx
 
-from app.models import AIModelSelection, RealtimeConnectRequest, RealtimeConnectResponse, new_id
+from app.models import (
+    AIModelSelection,
+    CommitRecord,
+    RealtimeConnectRequest,
+    RealtimeConnectResponse,
+    RealtimeTranscriptLogRequest,
+    new_id,
+    now_iso,
+)
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
 from app.services.ai_model_catalog import (
@@ -17,6 +25,7 @@ from app.services.ai_model_catalog import (
     realtime_runtime_enabled,
 )
 from app.services.config import load_root_dotenv
+from app.services.history import current_head_commit, snapshot_lesson_runtime
 from app.services.realtime_tool_bridge import realtime_tool_schemas
 
 
@@ -213,23 +222,112 @@ def connect_openai_realtime_session(
     )
 
 
-def log_realtime_transcript_event(lesson_id: str, request, *, user_id: str) -> dict[str, str]:
+def persist_realtime_transcript_event(
+    lesson_id: str,
+    request: RealtimeTranscriptLogRequest,
+    *,
+    user_id: str,
+) -> bool:
+    """Persist one learner-visible Realtime message exactly once.
+
+    Returns True when a new history commit is saved, and False when the same
+    client event was already persisted.
+    """
+    if request.role == "tool":
+        return False
+    transcript = request.transcript.strip()
+    if not transcript:
+        return False
+    client_event_id = request.client_event_id or new_id("realtime_event")
+
+    for _attempt in range(4):
+        workspace = workspace_state.load_workspace_for_user(user_id)
+        _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+        if any(
+            commit.metadata.get("realtime_client_event_id") == client_event_id
+            for commit in lesson.history_graph.commits
+        ):
+            return False
+
+        branch_name = lesson.history_graph.current_branch
+        expected_head_commit_id = current_head_commit(lesson).id
+        is_user = request.role == "user"
+        metadata: dict[str, object] = {
+            "kind": "realtime_transcript",
+            "document_changed": False,
+            "interaction_channel": "realtime",
+            "realtime_role": request.role,
+            "realtime_client_event_id": client_event_id,
+            "realtime_client_session_id": request.client_session_id or "",
+            "realtime_turn_id": request.turn_id or "",
+            "realtime_transport_event_type": request.transport_event_type,
+            "realtime_occurred_at": request.occurred_at.isoformat() if request.occurred_at else "",
+        }
+        if is_user:
+            metadata["user_message"] = transcript
+            metadata["interaction_mode"] = "ask"
+        else:
+            metadata["assistant_message"] = transcript
+            metadata["assistant_message_source"] = "realtime"
+
+        metadata.update(
+            {
+                "history_node_kind": "chat",
+                "history_node_title": transcript[:64],
+                "history_node_summary": transcript[:160],
+            }
+        )
+        commit = CommitRecord(
+            label="Realtime conversation",
+            message="Persisted Realtime conversation message",
+            branch_name=branch_name,
+            parent_ids=[expected_head_commit_id],
+            snapshot=lesson.board_document,
+            runtime_snapshot=snapshot_lesson_runtime(lesson),
+            metadata=metadata,
+        )
+        if request.occurred_at:
+            commit.created_at = request.occurred_at.isoformat()
+        if workspace_state.append_non_document_commit_for_user_if_head(
+            user_id,
+            lesson_id,
+            commit,
+            expected_branch_name=branch_name,
+            expected_head_commit_id=expected_head_commit_id,
+            lesson_updated_at=now_iso(),
+        ):
+            return True
+
+    raise RealtimeServiceError(409, "实时对话保存时课程已连续更新，请重试。")
+
+
+def log_realtime_transcript_event(
+    lesson_id: str,
+    request: RealtimeTranscriptLogRequest,
+    *,
+    user_id: str,
+) -> dict[str, str]:
     workspace = workspace_state.load_workspace_for_user(user_id)
     workspace_state.find_lesson_package(workspace, lesson_id)
+    persisted = persist_realtime_transcript_event(lesson_id, request, user_id=user_id)
     direction = "inbound" if request.role == "user" else "outbound"
-    log_ai_interaction_message(
-        channel="realtime",
-        direction=direction,
-        role=request.role,
-        transport=request.transport_event_type,
-        content=request.transcript,
-        metadata={
-            "lesson_id": lesson_id,
-            "lesson_title": request.lesson_title,
-            "client_session_id": request.client_session_id,
-            "tool_name": request.tool_name,
-            "tool_call_id": request.tool_call_id,
-            "tool_status": request.tool_status,
-        },
-    )
-    return {"status": "ok"}
+    if request.role == "tool" or persisted:
+        log_ai_interaction_message(
+            channel="realtime",
+            direction=direction,
+            role=request.role,
+            transport=request.transport_event_type,
+            content=request.transcript,
+            metadata={
+                "lesson_id": lesson_id,
+                "lesson_title": request.lesson_title,
+                "client_session_id": request.client_session_id,
+                "turn_id": request.turn_id,
+                "tool_name": request.tool_name,
+                "tool_call_id": request.tool_call_id,
+                "tool_status": request.tool_status,
+            },
+        )
+    if request.role == "tool":
+        return {"status": "logged"}
+    return {"status": "persisted" if persisted else "duplicate"}

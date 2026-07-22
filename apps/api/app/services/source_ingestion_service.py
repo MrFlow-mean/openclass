@@ -720,6 +720,7 @@ class SourceIngestionService:
         owner_user_id: str,
         package_id: str,
         source_id: str,
+        catalog_model: AIModelSelection | None = None,
     ) -> SourceIngestionRecord | None:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
@@ -736,10 +737,15 @@ class SourceIngestionService:
                 )
                 if current is None:
                     return None
-                return self._retry_source_unlocked(current)
-        return self._retry_source_unlocked(record)
+                return self._retry_source_unlocked(current, catalog_model=catalog_model)
+        return self._retry_source_unlocked(record, catalog_model=catalog_model)
 
-    def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
+    def _retry_source_unlocked(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        catalog_model: AIModelSelection | None,
+    ) -> SourceIngestionRecord | None:
         record = _repair_local_source_storage(record)
         local_path = source_local_path(record)
         if local_path is None:
@@ -748,6 +754,15 @@ class SourceIngestionService:
         use_directory_catalog = _uses_directory_catalog(retrying)
         if use_directory_catalog:
             retrying = _as_directory_catalog_record(retrying)
+            if catalog_model is not None:
+                retrying = retrying.model_copy(
+                    update={
+                        "metadata": {
+                            **retrying.metadata,
+                            "catalog_model": catalog_model.model_dump(mode="json"),
+                        }
+                    }
+                )
         elif self.source_backend == "native":
             retrying = _detach_open_notebook_state(retrying)
         self.store.save_source(retrying)
@@ -1201,7 +1216,7 @@ class SourceIngestionService:
         )
         activity_by_id: dict[str, AgentActivityEvent] = {}
         activity_order: list[str] = []
-        codex_progress_tracker: SourceCodexProgressTracker | None = None
+        source_codex_progress_tracker: SourceCodexProgressTracker | None = None
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -1216,12 +1231,12 @@ class SourceIngestionService:
                 phase=phase,
             )
 
-        def report_codex_activity(event: AgentActivityEvent) -> None:
+        def report_model_activity(event: AgentActivityEvent) -> None:
             nonlocal saved, indexing_job
             progress = indexing_job.progress
             phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
-            if codex_progress_tracker is not None:
-                observation = codex_progress_tracker.observe(event)
+            if source_codex_progress_tracker is not None:
+                observation = source_codex_progress_tracker.observe(event)
                 event = observation.event
                 progress = observation.progress
                 phase = observation.phase
@@ -1259,18 +1274,19 @@ class SourceIngestionService:
                 local_path = source_local_path(saved)
                 if local_path is None:
                     raise SourceIngestionError("Source file is unavailable for directory cataloging.")
-                codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 raw_catalog_model = saved.metadata.get("catalog_model")
                 try:
                     catalog_model = AIModelSelection.model_validate(raw_catalog_model)
                 except Exception as exc:
                     raise SourceIngestionError("The selected catalog model is invalid.") from exc
+                if catalog_model.provider == "openai_codex":
+                    source_codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 structure = self.directory_processor.process(
                     record=saved,
                     path=local_path,
                     catalog_model=catalog_model,
                     progress_callback=report_progress,
-                    activity_callback=report_codex_activity,
+                    activity_callback=report_model_activity,
                 )
             else:
                 structure = (

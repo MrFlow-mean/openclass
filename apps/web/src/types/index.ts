@@ -1118,7 +1118,10 @@ export interface GoogleRealtimeSessionResponse {
 }
 
 export interface RealtimeEventLogPayload {
+  client_event_id: string;
   client_session_id?: string | null;
+  turn_id?: string | null;
+  occurred_at: string;
   lesson_title?: string | null;
   role: "user" | "assistant" | "tool";
   transport_event_type: string;
@@ -1132,6 +1135,7 @@ export type RealtimeToolName = "read_board_context" | "run_chatbot_workflow";
 
 export interface RealtimeToolCallPayload {
   client_session_id: string;
+  turn_id?: string | null;
   call_id: string;
   name: RealtimeToolName;
   arguments: Record<string, unknown>;

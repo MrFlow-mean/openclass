@@ -61,8 +61,10 @@ def _export_lesson(api_client: TestClient) -> tuple[dict, bytes]:
     return original, exported.content
 
 
-def test_import_ridoc_creates_independent_course_and_can_continue(api_client: TestClient) -> None:
+def test_import_ridoc_creates_standalone_lesson_and_can_continue(api_client: TestClient) -> None:
     original, content = _export_lesson(api_client)
+    workspace_before = api_client.get("/api/workspace").json()
+    standalone_before = workspace_before["packages"][0]
 
     imported = api_client.post(
         "/api/workspace/import-ridoc",
@@ -71,8 +73,12 @@ def test_import_ridoc_creates_independent_course_and_can_continue(api_client: Te
 
     assert imported.status_code == 200
     package = imported.json()
-    lesson = package["lessons"][0]
-    assert len(package["lessons"]) == 1
+    lesson = next(item for item in package["lessons"] if item["id"] != original["id"])
+    workspace_after = api_client.get("/api/workspace").json()
+    assert len(workspace_after["packages"]) == len(workspace_before["packages"])
+    assert package["id"] == standalone_before["id"]
+    assert package["is_standalone"] is True
+    assert len(package["lessons"]) == len(standalone_before["lessons"]) + 1
     assert package["active_lesson_id"] == lesson["id"]
     assert lesson["id"] != original["id"]
     assert set(lesson["history_graph"]["branches"]) == {"main", "alternate"}
@@ -93,7 +99,7 @@ def test_import_ridoc_creates_independent_course_and_can_continue(api_client: Te
         json={"document": document, "label": "Continue", "message": "Continue", "metadata": {}},
     )
     assert continued.status_code == 200
-    continued_lesson = continued.json()["lessons"][0]
+    continued_lesson = next(item for item in continued.json()["lessons"] if item["id"] == lesson["id"])
     assert len(continued_lesson["history_graph"]["commits"]) == len(imported_commit_ids) + 1
     assert imported_commit_ids.issubset({commit["id"] for commit in continued_lesson["history_graph"]["commits"]})
 
