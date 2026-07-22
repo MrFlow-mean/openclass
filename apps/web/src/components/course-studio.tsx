@@ -323,12 +323,15 @@ export function CourseStudio() {
       : null;
 
   function handleRealtimeTranscriptUpdate(update: RealtimeTranscriptUpdate) {
-    const messageId = `realtime:${update.turnId}:${update.role}`;
+    const messageId = update.messageId;
     updateLessonMessages(update.lessonId, (current) => {
-      const existing = current.find((message) => message.id === messageId);
+      const withoutToolStatus = update.role === "assistant" && update.final
+        ? current.filter((message) => message.id !== `realtime:${update.turnId}:tool-status`)
+        : current;
+      const existing = withoutToolStatus.find((message) => message.id === messageId);
       const status = update.role === "assistant" && !update.final ? "pending" : "ready";
       if (existing) {
-        return current.map((message) =>
+        return withoutToolStatus.map((message) =>
           message.id === messageId
             ? {
                 ...message,
@@ -340,7 +343,7 @@ export function CourseStudio() {
         );
       }
       return [
-        ...current,
+        ...withoutToolStatus,
         createChatMessage(update.role, update.text, status, messageId, null, null, {
           editableContent: update.role === "user" ? update.text : undefined,
           interactionMode: update.role === "user" ? "ask" : undefined,
@@ -350,7 +353,7 @@ export function CourseStudio() {
   }
 
   function handleRealtimeToolStatusUpdate(update: RealtimeToolStatusUpdate) {
-    const messageId = `realtime:${update.turnId}:assistant`;
+    const messageId = `realtime:${update.turnId}:tool-status`;
     updateLessonMessages(update.lessonId, (current) => {
       const existing = current.find((message) => message.id === messageId);
       if (existing) {
@@ -920,10 +923,12 @@ export function CourseStudio() {
           geometryReference={geometryReference}
           onGeometryReferenceClear={() => setGeometryReference(null)}
           textModel={selectedTextModel}
-          catalogModelOptions={modelCatalog.text.filter(
-            (option) => option.provider === "openai_codex"
-          )}
+          catalogModelOptions={modelCatalog.text}
           defaultCatalogModel={modelCatalog.defaults.text}
+          selectedTextModel={selectedTextModel}
+          selectedTextOption={selectedTextOption}
+          textModelOptions={modelCatalog.text}
+          onSelectTextModel={selectTextModel}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsLoading={chatSpeech.isSpeechLoading}
           speechIsPlaying={chatSpeech.isSpeechPlaying}

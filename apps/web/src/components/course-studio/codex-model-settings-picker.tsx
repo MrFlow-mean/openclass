@@ -69,14 +69,12 @@ function SettingsRow({
   label,
   value,
   active,
-  disabled = false,
   testId,
   onClick,
 }: {
   label: string;
   value: string;
   active: boolean;
-  disabled?: boolean;
   testId?: string;
   onClick: () => void;
 }) {
@@ -85,12 +83,10 @@ function SettingsRow({
       type="button"
       data-testid={testId}
       aria-expanded={active}
-      disabled={disabled}
       onClick={onClick}
       className={clsx(
         "flex h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-sm transition-colors",
-        active ? "bg-gray-100" : "hover:bg-gray-50",
-        disabled && "cursor-not-allowed opacity-45"
+        active ? "bg-gray-100" : "hover:bg-gray-50"
       )}
     >
       <span className="font-semibold text-gray-950">{label}</span>
@@ -173,6 +169,7 @@ export function CodexModelSettingsPicker({
   const serviceTiers = selectedOption?.service_tiers ?? [];
   const selectedServiceTier =
     serviceTiers.find((option) => option.id === normalizedSelection.service_tier) ?? null;
+  const hasSelectableReasoning = reasoningOptions.length > 1;
   const hasSelectableSpeed = serviceTiers.length > 0;
   const modelLabel = shortModelLabel(selectedOption, normalizedSelection);
   const effortLabel = reasoningEffortLabel(normalizedSelection.reasoning_effort);
@@ -340,22 +337,24 @@ export function CodexModelSettingsPicker({
                 testId={`${testIdPrefix}-model-row`}
                 onClick={() => setActiveMenu((current) => (current === "model" ? null : "model"))}
               />
-              <SettingsRow
-                label="推理强度"
-                value={effortLabel}
-                active={activeMenu === "reasoning"}
-                disabled={!reasoningOptions.length}
-                testId={`${testIdPrefix}-reasoning-row`}
-                onClick={() => setActiveMenu((current) => (current === "reasoning" ? null : "reasoning"))}
-              />
-              <SettingsRow
-                label="速度"
-                value={hasSelectableSpeed ? speedLabel : "仅标准"}
-                active={activeMenu === "speed"}
-                disabled={!hasSelectableSpeed}
-                testId={`${testIdPrefix}-speed-row`}
-                onClick={() => setActiveMenu((current) => (current === "speed" ? null : "speed"))}
-              />
+              {hasSelectableReasoning ? (
+                <SettingsRow
+                  label="推理强度"
+                  value={effortLabel}
+                  active={activeMenu === "reasoning"}
+                  testId={`${testIdPrefix}-reasoning-row`}
+                  onClick={() => setActiveMenu((current) => (current === "reasoning" ? null : "reasoning"))}
+                />
+              ) : null}
+              {hasSelectableSpeed ? (
+                <SettingsRow
+                  label="速度"
+                  value={speedLabel}
+                  active={activeMenu === "speed"}
+                  testId={`${testIdPrefix}-speed-row`}
+                  onClick={() => setActiveMenu((current) => (current === "speed" ? null : "speed"))}
+                />
+              ) : null}
               <div className="my-1 h-px bg-gray-100" />
               <button
                 type="button"

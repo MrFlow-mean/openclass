@@ -32,6 +32,7 @@ import {
   Share2,
   Star,
   Trash2,
+  WalletCards,
   Upload,
 } from "lucide-react";
 
@@ -42,6 +43,7 @@ import {
   HomeLessonBatchToolbar,
 } from "@/components/home-lesson-batch-controls";
 import { InlineNameForm } from "@/components/inline-name-form";
+import { LearningActivityCalendar } from "@/components/learning-activity-calendar";
 import { RecentFeedCard } from "@/components/recent-feed-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
@@ -78,15 +80,7 @@ import {
 } from "@/lib/recent-feed";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
-const CONTRIBUTION_WEEKS = 32;
 const GITHUB_REPOSITORY_URL = "https://github.com/MrFlow-mean/openclass";
-
-type ActivityDay = {
-  key: string;
-  date: Date;
-  count: number;
-  level: 0 | 1 | 2 | 3 | 4;
-};
 
 type SearchFacet = { kind: "all" } | { kind: "category" | "language"; value: string };
 
@@ -145,100 +139,6 @@ function matchesQuery(query: string, ...values: Array<string | null | undefined>
   }
 
   return values.some((value) => value?.toLowerCase().includes(query));
-}
-
-function dayKey(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function getActivityLevel(count: number, maxCount: number): ActivityDay["level"] {
-  if (count <= 0) {
-    return 0;
-  }
-
-  if (maxCount <= 1) {
-    return count > 0 ? 4 : 0;
-  }
-
-  const ratio = count / maxCount;
-
-  if (ratio >= 0.75) {
-    return 4;
-  }
-  if (ratio >= 0.5) {
-    return 3;
-  }
-  if (ratio >= 0.25) {
-    return 2;
-  }
-  return 1;
-}
-
-function buildActivitySummary(coursePackage: CoursePackage | null) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const activityByDay = new Map<string, number>();
-  const track = (value?: string | null) => {
-    if (!value) {
-      return;
-    }
-
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return;
-    }
-
-    const key = dayKey(date);
-    activityByDay.set(key, (activityByDay.get(key) ?? 0) + 1);
-  };
-
-  coursePackage?.lessons.forEach((lesson) => {
-    track(lesson.created_at);
-    track(lesson.updated_at);
-    lesson.history_graph.commits.forEach((commit) => {
-      track(commit.created_at);
-    });
-  });
-  const days: ActivityDay[] = [];
-  const totalDays = CONTRIBUTION_WEEKS * 7;
-  for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
-    const date = new Date(today);
-    date.setDate(today.getDate() - offset);
-    const count = activityByDay.get(dayKey(date)) ?? 0;
-    days.push({
-      key: dayKey(date),
-      date,
-      count,
-      level: 0,
-    });
-  }
-
-  const maxCount = days.reduce((max, day) => Math.max(max, day.count), 0);
-  const leveledDays = days.map((day) => ({
-    ...day,
-    level: getActivityLevel(day.count, maxCount),
-  }));
-
-  const weeks = Array.from({ length: CONTRIBUTION_WEEKS }, (_, index) =>
-    leveledDays.slice(index * 7, index * 7 + 7)
-  );
-
-  return {
-    total: days.reduce((sum, day) => sum + day.count, 0),
-    recentActiveDay: [...leveledDays].reverse().find((day) => day.count > 0) ?? null,
-    weeks,
-  };
-}
-
-function activityTone(level: ActivityDay["level"]) {
-  return {
-    0: "bg-white",
-    1: "bg-amber-100",
-    2: "bg-amber-300",
-    3: "bg-amber-500",
-    4: "bg-orange-600",
-  }[level];
 }
 
 function followedUpdateTone(kind: FollowedCourseUpdate["updateKind"]) {
@@ -314,6 +214,7 @@ export function LearningHome() {
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
   const [isCreatingPackageInline, setIsCreatingPackageInline] = useState(false);
+  const [standaloneCreateMenuOpen, setStandaloneCreateMenuOpen] = useState(false);
   const ridocFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -387,6 +288,9 @@ export function LearningHome() {
       if (!(target instanceof HTMLElement)) {
         return;
       }
+      if (!target.closest("[data-standalone-create-menu-root]")) {
+        setStandaloneCreateMenuOpen(false);
+      }
       if (target.closest("[data-lesson-menu-root]")) {
         return;
       }
@@ -408,6 +312,7 @@ export function LearningHome() {
       setLessonMenuState(null);
       setLessonMoveMenuState(null);
       setIsCreatingPackageInline(false);
+      setStandaloneCreateMenuOpen(false);
       setSelectedPackageId(null);
       setSelectedLessonId(null);
       setPackageLessonsExpanded(false);
@@ -422,14 +327,11 @@ export function LearningHome() {
   }, []);
 
   const packages = workspaceState?.packages ?? [];
-  const workspaceActivePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
   const standalonePackage = packages.find((packageItem) => packageItem.is_standalone) ?? packages[0] ?? null;
   const coursePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
   const selectedCoursePackage = selectedPackageId
     ? coursePackages.find((item) => item.id === selectedPackageId) ?? null
     : null;
-  const coursePackage =
-    selectedCoursePackage ?? coursePackages.find((item) => item.id === workspaceActivePackageId) ?? coursePackages[0] ?? null;
   const movablePackages = coursePackages;
   const feedLessons = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
@@ -498,7 +400,6 @@ export function LearningHome() {
   }, [matchingOpenCourses, openCourseFacet, openCourseSort]);
   const collectedOpenCourseCount = collectedCourseIds.size;
 
-  const activity = buildActivitySummary(coursePackage);
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const feedItems = buildRecentFeed(feedLessons);
@@ -528,6 +429,7 @@ export function LearningHome() {
   }
 
   async function handleOpenStandaloneWorkspace() {
+    setStandaloneCreateMenuOpen(false);
     if (!standalonePackage) {
       router.push("/studio");
       return;
@@ -606,6 +508,7 @@ export function LearningHome() {
 
   async function handleLoadLessonPackage(file: File) {
     setBusyKey("ridoc:import");
+    setStandaloneCreateMenuOpen(false);
     setLessonMenuState(null);
     setLessonMoveMenuState(null);
     try {
@@ -991,19 +894,59 @@ export function LearningHome() {
                     }}
                     onCancel={lessonBatch.cancel}
                   />
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenStandaloneWorkspace()}
-                    disabled={standalonePackage ? busyKey === `package:${standalonePackage.id}` : false}
-                    className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
-                    aria-label={h.standaloneWorkspaceAria}
-                  >
-                    {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Plus className="h-4 w-4" />
-                    )}
-                  </button>
+                  <div className="relative" data-standalone-create-menu-root>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLessonMenuState(null);
+                        setLessonMoveMenuState(null);
+                        setStandaloneCreateMenuOpen((current) => !current);
+                      }}
+                      disabled={busyKey !== null}
+                      className={clsx(
+                        "rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950",
+                        standaloneCreateMenuOpen && "bg-stone-200/60 text-stone-950"
+                      )}
+                      aria-label={h.standaloneCreateMenuAria}
+                      aria-haspopup="menu"
+                      aria-expanded={standaloneCreateMenuOpen}
+                    >
+                      {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Plus className="h-4 w-4" />
+                      )}
+                    </button>
+
+                    {standaloneCreateMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute right-0 top-full z-[130] mt-2 w-44 rounded-[18px] border border-stone-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setStandaloneCreateMenuOpen(false);
+                            ridocFileInputRef.current?.click();
+                          }}
+                          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50"
+                        >
+                          <Upload className="h-4 w-4" />
+                          {h.importCourseFile}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => void handleOpenStandaloneWorkspace()}
+                          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50"
+                        >
+                          <Plus className="h-4 w-4" />
+                          {h.createCourse}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
@@ -1176,54 +1119,18 @@ export function LearningHome() {
               renderOpenCourseSearchResults()
             ) : (
               <>
-            <section className="mb-12 rounded-[30px] border border-white/70 bg-white/80 p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur sm:p-7">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="flex items-center gap-2 text-base font-semibold text-stone-950">
-                    <Activity className="h-4 w-4" />
-                    {h.activityTitle}
-                  </h3>
-                  <p className="mt-1 text-sm text-stone-500">{h.activitySubtitle}</p>
-                </div>
-                <span className="text-xs font-medium text-stone-500">
-                  {h.activityTotal(activity.total)}
-                </span>
-              </div>
-
-              <div className="mt-6 overflow-x-auto">
-                <div className="flex min-w-max gap-[4px]">
-                  {activity.weeks.map((week, index) => (
-                    <div key={index} className="flex flex-col gap-[4px]">
-                      {week.map((day) => (
-                        <div
-                          key={day.key}
-                          className={clsx("h-3 w-3 rounded-[3px]", activityTone(day.level))}
-                          title={h.activityDayTitle(day.key, day.count)}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mt-5 flex flex-col gap-3 text-xs text-stone-400 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span>Less</span>
-                  <div className="h-3 w-3 rounded-[3px] bg-white" />
-                  <div className="h-3 w-3 rounded-[3px] bg-amber-100" />
-                  <div className="h-3 w-3 rounded-[3px] bg-amber-300" />
-                  <div className="h-3 w-3 rounded-[3px] bg-amber-500" />
-                  <div className="h-3 w-3 rounded-[3px] bg-orange-600" />
-                  <span>More</span>
-                </div>
-                <p>
-                  {h.lastActivePrefix}
-                  <span className="ml-1 text-stone-500">
-                    {activity.recentActiveDay ? homeRelFmt(activity.recentActiveDay.date) : h.noActivityYet}
-                  </span>
-                </p>
-              </div>
-            </section>
+            <LearningActivityCalendar
+              workspace={workspaceState}
+              labels={{
+                title: h.activityTitle,
+                subtitle: h.activitySubtitle,
+                total: h.activityTotal,
+                dayTitle: h.activityDayTitle,
+                lastActivePrefix: h.lastActivePrefix,
+                noActivityYet: h.noActivityYet,
+              }}
+              formatRelativeDate={homeRelFmt}
+            />
 
             <section className="mb-12">
               <div className="rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">
@@ -1361,20 +1268,6 @@ export function LearningHome() {
               {h.exportLessonPackage}
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setLessonMenuState(null);
-                setLessonMoveMenuState(null);
-                ridocFileInputRef.current?.click();
-              }}
-              disabled={busyKey !== null}
-              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Upload className="h-4 w-4" />
-              {h.loadExportedLessonPackage}
-            </button>
-
             <div className="my-1 h-px bg-stone-100" />
 
             <button
@@ -1459,7 +1352,7 @@ export function LearningHome() {
         </div>
       ) : null}
 
-      <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[27rem] xl:right-8 xl:top-6">
+      <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[42rem] xl:right-8 xl:top-6">
         {renderNotificationPanel()}
       </div>
 
@@ -1882,7 +1775,17 @@ export function LearningHome() {
   function renderNotificationPanel() {
     return (
       <div className="flex flex-col items-end gap-4">
-        <div className="flex flex-wrap items-start justify-end gap-3">
+        <div className="flex flex-nowrap items-center justify-end gap-3 whitespace-nowrap">
+          <Link
+            href="/wallet"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-emerald-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(16,185,129,0.10)] transition hover:-translate-y-0.5 hover:bg-emerald-600 hover:text-white sm:flex"
+            aria-label="打开积分与充值"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 transition group-hover:bg-white">
+              <WalletCards className="h-4 w-4" />
+            </span>
+            <span>充值</span>
+          </Link>
           <Link
             href="/trending"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
@@ -1923,11 +1826,11 @@ export function LearningHome() {
             </span>
             <span>动态</span>
           </Link>
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setNotificationOpen((current) => !current)}
-              className="relative rounded-full border border-stone-200 bg-white p-3 text-stone-700 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
+              className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-700 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
               aria-label={h.notificationToggleAria}
               title={h.notificationToggleAria}
             >
@@ -1941,7 +1844,7 @@ export function LearningHome() {
             <button
               type="button"
               onClick={handleToggleInterfaceLanguage}
-              className="group flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-2.5 text-[11px] font-semibold text-stone-600 shadow-[0_8px_18px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+              className="group flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-[11px] font-semibold text-stone-600 shadow-[0_8px_18px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
               aria-label={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
               title={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
             >
@@ -1957,7 +1860,7 @@ export function LearningHome() {
         </div>
 
         {notificationOpen ? (
-          <div className="w-full rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
+          <div className="w-full max-w-[27rem] rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
               <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">消息推送</h4>
               <span className="rounded-full bg-rose-500 px-2 py-1 text-[10px] font-semibold text-white">

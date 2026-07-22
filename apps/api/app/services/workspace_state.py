@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.models import (
     BoardSegmentKind,
+    CommitRecord,
     CoursePackage,
     CoursePackageView,
     DocumentSegmentSearchResult,
@@ -103,6 +104,25 @@ def save_lesson_for_user_if_head(
         lesson,
         expected_branch_name=expected_branch_name,
         expected_head_commit_id=expected_head_commit_id,
+    )
+
+
+def append_non_document_commit_for_user_if_head(
+    user_id: str,
+    lesson_id: str,
+    commit: CommitRecord,
+    *,
+    expected_branch_name: str,
+    expected_head_commit_id: str,
+    lesson_updated_at: str,
+) -> bool:
+    return get_store().append_non_document_commit_for_user_if_head(
+        user_id,
+        lesson_id,
+        commit,
+        expected_branch_name=expected_branch_name,
+        expected_head_commit_id=expected_head_commit_id,
+        lesson_updated_at=lesson_updated_at,
     )
 
 

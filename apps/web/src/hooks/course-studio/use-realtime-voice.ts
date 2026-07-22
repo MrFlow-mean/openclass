@@ -30,6 +30,7 @@ import type {
 export type RealtimeTranscriptUpdate = {
   lessonId: string;
   turnId: string;
+  messageId: string;
   role: "user" | "assistant";
   text: string;
   final: boolean;
@@ -178,6 +179,7 @@ export function useRealtimeVoice({
   const openAIResponseInProgressRef = useRef(false);
   const openAIRealtimeToolsEnabledRef = useRef(false);
   const openAIAssistantTranscriptRef = useRef("");
+  const openAIAssistantMessageIdRef = useRef<string | null>(null);
   const openAIInputTranscriptsRef = useRef(new Map<string, string>());
   const openAIProcessedToolCallsRef = useRef(new Set<string>());
   const realtimeBoardReferencesRef = useRef<SelectionRef[]>([]);
@@ -228,7 +230,15 @@ export function useRealtimeVoice({
     const turnId = createClientSessionId("turn");
     realtimeTurnIdRef.current = turnId;
     openAIAssistantTranscriptRef.current = "";
+    openAIAssistantMessageIdRef.current = null;
     return turnId;
+  }
+
+  function currentAssistantMessageId() {
+    if (!openAIAssistantMessageIdRef.current) {
+      openAIAssistantMessageIdRef.current = createClientSessionId("realtime-message");
+    }
+    return openAIAssistantMessageIdRef.current;
   }
 
   function stopGoogleQueuedPlayback() {
@@ -299,6 +309,7 @@ export function useRealtimeVoice({
     openAIResponseInProgressRef.current = false;
     openAIRealtimeToolsEnabledRef.current = false;
     openAIAssistantTranscriptRef.current = "";
+    openAIAssistantMessageIdRef.current = null;
     openAIInputTranscriptsRef.current.clear();
     openAIProcessedToolCallsRef.current.clear();
     realtimeBoardReferencesRef.current = [];
@@ -357,10 +368,16 @@ export function useRealtimeVoice({
     if (!normalized) {
       return;
     }
-    enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized);
+    const turnId = currentTurnId();
+    const messageId = `realtime:${turnId}:user`;
+    enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized, {
+      clientEventId: messageId,
+      turnId,
+    });
     onTranscriptUpdate({
       lessonId,
-      turnId: currentTurnId(),
+      turnId,
+      messageId,
       role: "user",
       text: normalized,
       final: true,
@@ -384,16 +401,24 @@ export function useRealtimeVoice({
       googleInputTranscriptRef.current = "";
     }
     if (assistantTranscript) {
-      enqueueRealtimeLogEvent(lessonId, "assistant", "google.output_transcription", assistantTranscript);
+      const turnId = currentTurnId();
+      const messageId = currentAssistantMessageId();
+      enqueueRealtimeLogEvent(lessonId, "assistant", "google.output_transcription", assistantTranscript, {
+        clientEventId: messageId,
+        turnId,
+      });
       onTranscriptUpdate({
         lessonId,
-        turnId: currentTurnId(),
+        turnId,
+        messageId,
         role: "assistant",
         text: assistantTranscript,
         final: true,
       });
       googleOutputTranscriptRef.current = "";
     }
+    realtimeTurnIdRef.current = null;
+    openAIAssistantMessageIdRef.current = null;
   }
 
   function beginGoogleAudioStreaming(socket: WebSocket, mediaStream: MediaStream, audioContext: AudioContext) {
@@ -631,6 +656,7 @@ export function useRealtimeVoice({
             const payload = JSON.parse(messageEvent.data) as OpenAIRealtimeEvent;
           if (payload.type === "response.created") {
             openAIResponseInProgressRef.current = true;
+            openAIAssistantMessageIdRef.current = createClientSessionId("realtime-message");
           }
           if (
             payload.type === "response.done" ||
@@ -663,7 +689,9 @@ export function useRealtimeVoice({
             const toolLabel = functionCall.name === "read_board_context" ? "正在定位并读取板书" : "正在交给 Chatbot 工作流处理";
             setVoiceStatusText(toolLabel);
             onToolStatusUpdate({ lessonId, turnId, label: toolLabel, status: "pending" });
-            enqueueRealtimeLogEvent(lessonId, "tool", payload.type, `${functionCall.name} (${functionCall.callId})`);
+            enqueueRealtimeLogEvent(lessonId, "tool", payload.type, `${functionCall.name} (${functionCall.callId})`, {
+              turnId,
+            });
             const clientSessionId = realtimeClientSessionIdRef.current;
             if (!clientSessionId) {
               const message = "Realtime 客户端会话标识已失效";
@@ -731,7 +759,15 @@ export function useRealtimeVoice({
           if (payload.type === "conversation.item.input_audio_transcription.delta" && payload.delta) {
             const transcript = `${openAIInputTranscriptsRef.current.get(inputItemId) ?? ""}${payload.delta}`;
             openAIInputTranscriptsRef.current.set(inputItemId, transcript);
-            onTranscriptUpdate({ lessonId, turnId: currentTurnId(), role: "user", text: transcript, final: false });
+            const turnId = currentTurnId();
+            onTranscriptUpdate({
+              lessonId,
+              turnId,
+              messageId: `realtime:${turnId}:user`,
+              role: "user",
+              text: transcript,
+              final: false,
+            });
           }
           if (
             (payload.type === "conversation.item.input_audio_transcription.completed" ||
@@ -746,6 +782,7 @@ export function useRealtimeVoice({
             onTranscriptUpdate({
               lessonId,
               turnId: currentTurnId(),
+              messageId: currentAssistantMessageId(),
               role: "assistant",
               text: openAIAssistantTranscriptRef.current,
               final: false,
@@ -753,7 +790,14 @@ export function useRealtimeVoice({
           }
           if (payload.type === "response.output_text.delta" && payload.delta) {
             openAIAssistantTranscriptRef.current += payload.delta;
-            onTranscriptUpdate({ lessonId, turnId: currentTurnId(), role: "assistant", text: openAIAssistantTranscriptRef.current, final: false });
+            onTranscriptUpdate({
+              lessonId,
+              turnId: currentTurnId(),
+              messageId: currentAssistantMessageId(),
+              role: "assistant",
+              text: openAIAssistantTranscriptRef.current,
+              final: false,
+            });
           }
           if (
             payload.type === "response.audio_transcript.done" ||
@@ -761,9 +805,15 @@ export function useRealtimeVoice({
             payload.type === "response.output_text.done"
           ) {
             const transcript = payload.transcript ?? openAIAssistantTranscriptRef.current;
-            enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, transcript);
-            onTranscriptUpdate({ lessonId, turnId: currentTurnId(), role: "assistant", text: transcript, final: true });
+            const turnId = currentTurnId();
+            const messageId = currentAssistantMessageId();
+            enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, transcript, {
+              clientEventId: messageId,
+              turnId,
+            });
+            onTranscriptUpdate({ lessonId, turnId, messageId, role: "assistant", text: transcript, final: true });
             openAIAssistantTranscriptRef.current = "";
+            openAIAssistantMessageIdRef.current = null;
           }
           } catch (toolError) {
             const lessonId = realtimeLessonIdRef.current;
@@ -819,8 +869,12 @@ export function useRealtimeVoice({
       return false;
     }
     const turnId = beginRealtimeTurn();
-    onTranscriptUpdate({ lessonId, turnId, role: "user", text: normalized, final: true });
-    enqueueRealtimeLogEvent(lessonId, "user", "conversation.item.input_text", normalized);
+    const messageId = `realtime:${turnId}:user`;
+    onTranscriptUpdate({ lessonId, turnId, messageId, role: "user", text: normalized, final: true });
+    enqueueRealtimeLogEvent(lessonId, "user", "conversation.item.input_text", normalized, {
+      clientEventId: messageId,
+      turnId,
+    });
     dataChannel.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
