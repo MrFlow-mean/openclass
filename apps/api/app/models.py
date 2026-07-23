@@ -1178,6 +1178,7 @@ class SourceCatalogView(BaseModel):
     source_content_hash: str = ""
     catalog_schema_version: str = "legacy"
     catalog_model: str = ""
+    task_contract: str = ""
     chapter_count: int = Field(default=0, ge=0)
     verified_chapter_count: int = Field(default=0, ge=0)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)

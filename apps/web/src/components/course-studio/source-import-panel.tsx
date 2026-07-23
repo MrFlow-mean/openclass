@@ -1016,11 +1016,13 @@ function SourceRow({
           ) : null}
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
-              <SourceStructureQualitySummary
-                source={source}
-                quality={structureQuality}
-                warnings={catalog?.warnings}
-              />
+              {catalog?.task_contract !== "directory_pages_offset_tree_v1" ? (
+                <SourceStructureQualitySummary
+                  source={source}
+                  quality={structureQuality}
+                  warnings={catalog?.warnings}
+                />
+              ) : null}
               <div className="mb-1 mt-2 flex justify-end">
                 <button
                   type="button"
