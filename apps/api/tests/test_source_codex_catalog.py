@@ -359,6 +359,51 @@ def test_directory_only_catalog_enforces_the_three_step_contract(tmp_path: Path)
     assert all(chapter.metadata["body_range_investigated"] is False for chapter in result.chapters)
 
 
+def test_directory_only_catalog_routes_pi_selection_to_pi_source_runtime(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.pdf"
+    _write_pdf(path)
+    content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = _directory_only_catalog(
+        _directory_node(
+            "chapter-1",
+            title="Chapter One",
+            number="1",
+            directory_page=2,
+            printed_page=1,
+        ),
+        _directory_node(
+            "chapter-2",
+            title="Chapter Two",
+            number="2",
+            directory_page=3,
+            printed_page=21,
+        ),
+    )
+    client = FakeSourceCodexClient(catalog, source_sha256=content_hash)
+    owners: list[str] = []
+
+    def build_client(owner_user_id: str):
+        owners.append(owner_user_id)
+        return client
+
+    monkeypatch.setattr(source_codex_catalog_module, "PiSourceTextClient", build_client)
+    selection = _model().model_copy(update={"agent_backend": "pi"})
+
+    result = generate_directory_only_catalog(
+        record=_record(path),
+        source_path=path,
+        source_content_hash=content_hash,
+        selection=selection,
+    )
+
+    assert owners == [_record(path).owner_user_id]
+    assert result.audit_metadata["catalog_authority"] == "source_pi"
+    assert result.audit_metadata["source_agent_backend"] == "pi"
+
+
 def test_directory_only_catalog_rejects_an_inexact_p(tmp_path: Path) -> None:
     path = tmp_path / "source.pdf"
     _write_pdf(path)
