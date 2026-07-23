@@ -266,7 +266,7 @@ class SourceIngestionService:
             raise SourceIngestionError("This file type is not supported by the native source importer.")
         display_title = title.strip() or file_name
         source_type = _source_type_for_upload(mime_type=mime_type, file_name=file_name)
-        selected_catalog_model = catalog_model or default_text_selection()
+        selected_catalog_model = _require_source_codex_selection(catalog_model)
         use_directory_catalog = (
             source_type == "local_file"
             and _supported_directory_file_name(file_name)
@@ -754,15 +754,19 @@ class SourceIngestionService:
         use_directory_catalog = _uses_directory_catalog(retrying)
         if use_directory_catalog:
             retrying = _as_directory_catalog_record(retrying)
-            if catalog_model is not None:
-                retrying = retrying.model_copy(
-                    update={
-                        "metadata": {
-                            **retrying.metadata,
-                            "catalog_model": catalog_model.model_dump(mode="json"),
-                        }
+            selected_model = (
+                _require_source_codex_selection(catalog_model)
+                if catalog_model is not None
+                else _source_codex_selection_from_metadata(retrying)
+            )
+            retrying = retrying.model_copy(
+                update={
+                    "metadata": {
+                        **retrying.metadata,
+                        "catalog_model": selected_model.model_dump(mode="json"),
                     }
-                )
+                }
+            )
         elif self.source_backend == "native":
             retrying = _detach_open_notebook_state(retrying)
         self.store.save_source(retrying)
@@ -848,12 +852,11 @@ class SourceIngestionService:
         local_path = source_local_path(record)
         if local_path is None:
             raise SourceIngestionError("Source content is unavailable; import the source again.")
-        selected_model = catalog_model
-        if selected_model is None:
-            try:
-                selected_model = AIModelSelection.model_validate(record.metadata.get("catalog_model"))
-            except Exception:
-                selected_model = default_text_selection()
+        selected_model = (
+            _require_source_codex_selection(catalog_model)
+            if catalog_model is not None
+            else _source_codex_selection_from_metadata(record)
+        )
         rebuilding = _as_directory_catalog_record(record).model_copy(
             update={
                 "status": "parsing",
@@ -1216,7 +1219,7 @@ class SourceIngestionService:
         )
         activity_by_id: dict[str, AgentActivityEvent] = {}
         activity_order: list[str] = []
-        source_codex_progress_tracker: SourceCodexProgressTracker | None = None
+        codex_progress_tracker: SourceCodexProgressTracker | None = None
 
         def report_progress(phase: str, progress: int) -> None:
             nonlocal saved, indexing_job
@@ -1231,12 +1234,12 @@ class SourceIngestionService:
                 phase=phase,
             )
 
-        def report_model_activity(event: AgentActivityEvent) -> None:
+        def report_codex_activity(event: AgentActivityEvent) -> None:
             nonlocal saved, indexing_job
             progress = indexing_job.progress
             phase = indexing_job.phase_history[-1] if indexing_job.phase_history else "parsing"
-            if source_codex_progress_tracker is not None:
-                observation = source_codex_progress_tracker.observe(event)
+            if codex_progress_tracker is not None:
+                observation = codex_progress_tracker.observe(event)
                 event = observation.event
                 progress = observation.progress
                 phase = observation.phase
@@ -1274,19 +1277,19 @@ class SourceIngestionService:
                 local_path = source_local_path(saved)
                 if local_path is None:
                     raise SourceIngestionError("Source file is unavailable for directory cataloging.")
+                codex_progress_tracker = SourceCodexProgressTracker(local_path)
                 raw_catalog_model = saved.metadata.get("catalog_model")
                 try:
                     catalog_model = AIModelSelection.model_validate(raw_catalog_model)
                 except Exception as exc:
                     raise SourceIngestionError("The selected catalog model is invalid.") from exc
-                if catalog_model.provider == "openai_codex":
-                    source_codex_progress_tracker = SourceCodexProgressTracker(local_path)
+                catalog_model = _require_source_codex_selection(catalog_model)
                 structure = self.directory_processor.process(
                     record=saved,
                     path=local_path,
                     catalog_model=catalog_model,
                     progress_callback=report_progress,
-                    activity_callback=report_model_activity,
+                    activity_callback=report_codex_activity,
                 )
             else:
                 structure = (
@@ -1685,6 +1688,29 @@ def _uses_directory_catalog(record: SourceIngestionRecord) -> bool:
         record.metadata.get("catalog_pipeline") == CATALOG_SCHEMA_VERSION
         and supports_directory_catalog(record)
     )
+
+
+def _require_source_codex_selection(
+    selection: AIModelSelection | None,
+) -> AIModelSelection:
+    selected = selection or default_text_selection()
+    if selected.provider != "openai_codex" or not selected.model.strip():
+        raise SourceIngestionError(
+            "Source cataloging requires an OpenAI Codex text model."
+        )
+    return selected
+
+
+def _source_codex_selection_from_metadata(
+    record: SourceIngestionRecord,
+) -> AIModelSelection:
+    try:
+        selected = AIModelSelection.model_validate(record.metadata.get("catalog_model"))
+    except Exception:
+        return default_text_selection()
+    if selected.provider != "openai_codex" or not selected.model.strip():
+        return default_text_selection()
+    return selected
 
 
 def _as_directory_catalog_record(record: SourceIngestionRecord) -> SourceIngestionRecord:
