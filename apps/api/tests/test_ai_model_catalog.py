@@ -13,6 +13,7 @@ def _status(*, configured: bool) -> CodexProviderStatus:
 
 
 def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> None:
+    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_CODEX_MODEL", "gpt-5.4-mini")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "google")
@@ -88,6 +89,7 @@ def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> N
         "codex",
         "pi",
     ]
+    assert catalog.agent_backends["source"][1].enabled is False
     assert len(catalog.realtime) == 2
     assert catalog.realtime[0].model == "gpt-realtime-2.1"
     assert catalog.realtime[0].default is True
@@ -247,3 +249,12 @@ def test_model_selection_defaults_to_codex_and_accepts_pi() -> None:
 
     assert default_selection.agent_backend == "codex"
     assert pi_selection.agent_backend == "pi"
+
+
+def test_teaching_pi_backend_is_enabled_when_runtime_is_installed(monkeypatch) -> None:
+    monkeypatch.setattr(ai_model_catalog, "pi_runtime_available", lambda: True)
+
+    options = ai_model_catalog._agent_backend_options()
+
+    assert options["teaching"][1].enabled is True
+    assert options["source"][1].enabled is False
