@@ -37,6 +37,7 @@ import { api } from "@/lib/api";
 import { useSourceBatchManagement } from "@/hooks/course-studio/use-source-batch-management";
 import type { SourceCatalogCacheController } from "@/hooks/course-studio/use-source-catalog-cache";
 import type {
+  AIAgentBackendOption,
   AIModelOption,
   AIModelSelection,
   SelectionRef,
@@ -49,6 +50,7 @@ type SourceImportPanelProps = {
   catalogCache: SourceCatalogCacheController;
   catalogModelOptions: AIModelOption[];
   defaultCatalogModel: AIModelSelection;
+  agentBackends: AIAgentBackendOption[];
   disabled?: boolean;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
@@ -76,6 +78,7 @@ export function SourceImportPanel({
   catalogCache,
   catalogModelOptions,
   defaultCatalogModel,
+  agentBackends,
   disabled = false,
   onError,
   onSourceReference,
@@ -353,6 +356,7 @@ export function SourceImportPanel({
           disabled={disabled || isImporting}
         />
         <SourceCatalogModelPicker
+          agentBackends={agentBackends}
           options={catalogModelOptions}
           selection={catalogModel}
           defaultSelection={defaultCatalogModel}

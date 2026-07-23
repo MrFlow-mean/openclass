@@ -615,6 +615,10 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByTitle("展开右侧栏").click();
   await page.getByRole("button", { name: "Sources" }).click();
 
+  const sourceAgentBackend = page.getByTestId("source-agent-backend");
+  await expect(sourceAgentBackend).toHaveValue("codex");
+  await expect(sourceAgentBackend.locator('option[value="pi"]')).toHaveAttribute("disabled", "");
+
   const catalogModelButton = page.getByTestId("source-catalog-model-settings-button");
   const catalogModelMenu = page.getByTestId("source-catalog-model-settings-menu");
   await expect(catalogModelButton).toHaveAccessibleName(
