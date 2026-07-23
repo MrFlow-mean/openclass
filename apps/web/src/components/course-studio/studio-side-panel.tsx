@@ -13,6 +13,7 @@ import { useGeometryWorkspace } from "@/hooks/course-studio/use-geometry-workspa
 import { useSourceCatalogCache } from "@/hooks/course-studio/use-source-catalog-cache";
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
 import type {
+  AIAgentBackendOption,
   AIModelOption,
   AIModelSelection,
   BoardDecision,
@@ -64,6 +65,7 @@ type CourseStudioSidePanelProps = {
   textModel: AIModelSelection | null;
   catalogModelOptions: AIModelOption[];
   defaultCatalogModel: AIModelSelection;
+  sourceAgentBackends: AIAgentBackendOption[];
   selectedTextModel: AIModelSelection;
   selectedTextOption: AIModelOption | null;
   textModelOptions: AIModelOption[];
@@ -131,6 +133,7 @@ export function CourseStudioSidePanel({
   textModel,
   catalogModelOptions,
   defaultCatalogModel,
+  sourceAgentBackends,
   selectedTextModel,
   selectedTextOption,
   textModelOptions,
@@ -257,6 +260,7 @@ export function CourseStudioSidePanel({
             catalogCache={sourceCatalogCache}
             catalogModelOptions={catalogModelOptions}
             defaultCatalogModel={defaultCatalogModel}
+            agentBackends={sourceAgentBackends}
             onError={onError}
             onSourceReference={onSourceReference}
           />

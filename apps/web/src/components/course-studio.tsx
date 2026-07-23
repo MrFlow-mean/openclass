@@ -925,6 +925,7 @@ export function CourseStudio() {
           textModel={selectedTextModel}
           catalogModelOptions={modelCatalog.text}
           defaultCatalogModel={modelCatalog.defaults.text}
+          sourceAgentBackends={modelCatalog.agent_backends?.source ?? []}
           selectedTextModel={selectedTextModel}
           selectedTextOption={selectedTextOption}
           textModelOptions={modelCatalog.text}
