@@ -19,11 +19,18 @@ from app.services.deepseek_api import (
     DEEPSEEK_CURATED_MODELS,
     deepseek_config,
 )
+from app.services.media_transcription import local_transcription_runtime
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
+OPENAI_DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
+OPENAI_TRANSCRIPTION_MODELS = (
+    ("gpt-4o-mini-transcribe", "OpenAI GPT-4o Mini Transcribe"),
+    ("gpt-4o-transcribe", "OpenAI GPT-4o Transcribe"),
+    ("whisper-1", "OpenAI Whisper-1"),
+)
 
 
 def default_text_selection(
@@ -44,6 +51,26 @@ def default_realtime_selection() -> AIModelSelection:
     return AIModelSelection(
         provider="openai",
         model=(os.getenv("OPENAI_REALTIME_MODEL") or OPENAI_DEFAULT_REALTIME_MODEL).strip(),
+    )
+
+
+def default_transcription_selection() -> AIModelSelection:
+    requested_provider = (
+        os.getenv("OPENCLASS_DEFAULT_TRANSCRIPTION_PROVIDER") or ""
+    ).strip().lower()
+    local = local_transcription_runtime()
+    api_configured = bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    if local.available and (
+        requested_provider == "openclass_local"
+        or (not requested_provider and not api_configured)
+    ):
+        return AIModelSelection(provider="openclass_local", model="local-whisper")
+    return AIModelSelection(
+        provider="openai",
+        model=(
+            os.getenv("OPENAI_TRANSCRIPTION_MODEL")
+            or OPENAI_DEFAULT_TRANSCRIPTION_MODEL
+        ).strip(),
     )
 
 
@@ -156,6 +183,8 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     status = codex_provider_status(user_id, refresh=False)
     shared_deepseek = deepseek_config()
     realtime_default = default_realtime_selection()
+    transcription_default = default_transcription_selection()
+    local_runtime = local_transcription_runtime()
     realtime_configured = _configured_secret("OPENAI_API_KEY")
     realtime_enabled = realtime_runtime_enabled() and realtime_configured
     realtime_models = [
@@ -209,6 +238,15 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         )
         for model, label in deepseek_models
     )
+    transcription_models = list(OPENAI_TRANSCRIPTION_MODELS)
+    if (
+        transcription_default.provider == "openai"
+        and not any(model == transcription_default.model for model, _label in transcription_models)
+    ):
+        transcription_models.insert(
+            0,
+            (transcription_default.model, f"OpenAI {transcription_default.model}"),
+        )
     codex_default_option = next(option for option in text_options if option.provider == "openai_codex" and option.default)
     if deepseek_is_default:
         codex_default_option.default = False
@@ -237,5 +275,62 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             )
             for model, label in realtime_models
         ],
-        defaults={"text": text_default, "realtime": realtime_default},
+        transcription=[
+            AIModelOption(
+                provider="openai",
+                model=model,
+                label=label,
+                capability="transcription",
+                enabled=realtime_configured,
+                configured=realtime_configured,
+                default=(
+                    transcription_default.provider == "openai"
+                    and model == transcription_default.model
+                ),
+            )
+            for model, label in transcription_models
+        ]
+        + [
+            AIModelOption(
+                provider="openclass_local",
+                model="local-whisper",
+                label=(
+                    f"Local Whisper · {local_runtime.engine} · {local_runtime.model}"
+                    if local_runtime.available
+                    else "Local Whisper"
+                ),
+                capability="transcription",
+                enabled=local_runtime.available,
+                configured=local_runtime.available,
+                default=transcription_default.provider == "openclass_local",
+            )
+        ],
+        vision=[
+            AIModelOption(
+                provider=option.provider,
+                model=option.model,
+                label=option.label,
+                capability="vision",
+                enabled=option.enabled,
+                configured=option.configured,
+                default=option.model == codex_default_option.model,
+                default_reasoning_effort=option.default_reasoning_effort,
+                supported_reasoning_efforts=option.supported_reasoning_efforts,
+                default_service_tier=option.default_service_tier,
+                service_tiers=option.service_tiers,
+            )
+            for option in text_options
+            if option.provider == "openai_codex"
+        ],
+        defaults={
+            "text": text_default,
+            "realtime": realtime_default,
+            "transcription": transcription_default,
+            "vision": AIModelSelection(
+                provider="openai_codex",
+                model=codex_default_option.model,
+                reasoning_effort=codex_default_option.default_reasoning_effort,
+                service_tier=codex_default_option.default_service_tier,
+            ),
+        },
     )
