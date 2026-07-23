@@ -714,7 +714,7 @@ function SourceRow({
     setIsRetrying(true);
     try {
       onCatalogInvalidate();
-      onSourceUpdate(await api.retryPackageSource(packageId, source.id, catalogModel));
+      onSourceUpdate(await api.retryPackageSource(packageId, source.id));
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料重试失败");
     } finally {
