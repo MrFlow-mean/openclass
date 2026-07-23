@@ -214,6 +214,74 @@ def test_structured_turn_sends_provider_strict_output_schema(
     assert "Role instructions:\nsystem" in session.thread_params["developerInstructions"]
 
 
+def test_structured_turn_forwards_a_custom_model_provider() -> None:
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+            self.thread_params: dict[str, object] = {}
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": '{"value":"ok"}',
+                        }
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def request(self, method, params, *, timeout_seconds):
+            assert method == "thread/start"
+            assert timeout_seconds > 0
+            self.thread_params = params
+            return {
+                "thread": {"id": "thread-id"},
+                "activePermissionProfile": {"id": "openclass_chat"},
+                "sandbox": {"type": "readOnly", "networkAccess": False},
+            }
+
+        def _write(self, _payload):
+            return None
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    session = _Session()
+
+    codex_app_server._run_structured_turn(
+        session=session,  # type: ignore[arg-type]
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        system_prompt="system",
+        user_prompt="user",
+        schema=_Payload,
+    )
+
+    assert session.thread_params["modelProvider"] == "deepseek"
+
+
+def test_custom_model_provider_does_not_require_chatgpt_sign_in(monkeypatch) -> None:
+    monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
+    monkeypatch.setattr(codex_app_server, "codex_app_server_available", lambda: True)
+    monkeypatch.setattr(
+        codex_app_server,
+        "codex_provider_status",
+        lambda *_args, **_kwargs: pytest.fail("custom providers must not require ChatGPT status"),
+    )
+
+    codex_app_server._require_codex_model_access("user_a", "deepseek")
+
+
 def test_codex_command_defines_an_isolated_source_permission_profile() -> None:
     rendered = "\n".join(
         codex_app_server._codex_app_server_command("/usr/local/bin/codex")

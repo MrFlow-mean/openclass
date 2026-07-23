@@ -128,9 +128,9 @@ def generate_codex_direct_catalog(
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
     client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
 ) -> SourceCodexCatalogResult:
-    if selection.provider != "openai_codex" or not selection.model.strip():
+    if not selection.model.strip():
         raise SourceCodexCatalogError(
-            "A configured Codex model is required for source cataloging."
+            "A configured text model is required for source cataloging."
         )
     suffix = Path(record.file_name or source_path.name).suffix.lower()
     if suffix not in SUPPORTED_SOURCE_SUFFIXES:
@@ -149,6 +149,7 @@ def generate_codex_direct_catalog(
     )
     response = client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
+        provider=selection.provider,
         model=selection.model,
         system_prompt=_catalog_system_prompt(),
         user_prompt=_catalog_user_prompt(suffix=suffix, mime_type=record.mime_type),

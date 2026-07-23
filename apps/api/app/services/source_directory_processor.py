@@ -113,8 +113,8 @@ class CodexDirectoryNormalizer:
         candidates: Sequence[DirectoryCandidate],
         selection: AIModelSelection,
     ) -> DirectoryNormalizationResult:
-        if selection.provider != "openai_codex" or not selection.model.strip():
-            raise SourceDirectoryProcessingError("A configured Codex text model is required for cataloging.")
+        if not selection.model.strip():
+            raise SourceDirectoryProcessingError("A configured text model is required for cataloging.")
         if not candidates:
             return DirectoryNormalizationResult(candidates=(), turn_count=0, metadata={"batch_count": 0})
 
@@ -138,6 +138,7 @@ class CodexDirectoryNormalizer:
             batch_hash = _hash_json(packet)
             batch_hashes.append(batch_hash)
             response = client.parse(
+                provider=selection.provider,
                 model=selection.model,
                 system_prompt=_directory_system_prompt(),
                 user_prompt=(

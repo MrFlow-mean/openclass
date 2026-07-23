@@ -322,13 +322,19 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     default_reasoning_effort: null,
     supported_reasoning_efforts: [],
   };
+  const deepseekModel = {
+    ...defaultOnlyModel,
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+  };
   await page.unroute("**/api/ai-models");
   await page.route("**/api/ai-models", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        text: [solModel, lunaModel, defaultOnlyModel],
+        text: [solModel, lunaModel, defaultOnlyModel, deepseekModel],
         realtime: [],
         defaults: {
           text: {
@@ -722,6 +728,20 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(uploadPostData).toContain('"model":"gpt-5.6-luna"');
   expect(uploadPostData).toContain('"reasoning_effort":"medium"');
   expect(uploadPostData).toContain('"service_tier":null');
+
+  await catalogModelButton.click();
+  await page.getByTestId("source-catalog-model-model-row").click();
+  await page
+    .getByTestId("source-catalog-model-model-menu")
+    .getByRole("button", { name: "选择模型 DeepSeek V4 Pro" })
+    .click();
+  await page.getByTestId("source-file-input").setInputFiles({
+    name: `catalog-provider-${unique}.pdf`,
+    mimeType: "application/pdf",
+    buffer: Buffer.from("catalog provider upload"),
+  });
+  await expect.poll(() => uploadPostData).toContain('"provider":"deepseek"');
+  expect(uploadPostData).toContain('"model":"deepseek-v4-pro"');
 
   await catalogModelButton.click();
   await page.getByTestId("source-catalog-model-model-row").click();
