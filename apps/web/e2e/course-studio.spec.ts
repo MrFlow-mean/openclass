@@ -45,6 +45,218 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("imports a video URL and starts board generation from its timed chapter", async ({ page }) => {
+  const unique = Date.now();
+  const sourceId = `video-source-${unique}`;
+  const chapterId = `video-chapter-${unique}`;
+  const textModel = {
+    provider: "openai_codex",
+    model: "gpt-5.6-sol",
+    label: "OpenAI Codex GPT-5.6-Sol",
+    enabled: true,
+    configured: true,
+    default: true,
+    default_reasoning_effort: null,
+    supported_reasoning_efforts: [],
+    default_service_tier: null,
+    service_tiers: [],
+  };
+  const transcriptionModel = {
+    provider: "openai",
+    model: "gpt-4o-mini-transcribe",
+    label: "OpenAI GPT-4o Mini Transcribe",
+    capability: "transcription",
+    enabled: true,
+    configured: true,
+    default: true,
+  };
+  await page.route("**/api/ai-models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: [{ ...textModel, capability: "text" }],
+        realtime: [],
+        transcription: [transcriptionModel],
+        vision: [{ ...textModel, capability: "vision" }],
+        defaults: {
+          text: { provider: textModel.provider, model: textModel.model },
+          realtime: { provider: "openai", model: "gpt-realtime-2.1" },
+          transcription: { provider: transcriptionModel.provider, model: transcriptionModel.model },
+          vision: { provider: textModel.provider, model: textModel.model },
+        },
+      }),
+    });
+  });
+  const quality = {
+    evaluator_version: 1,
+    level: "fully_verified",
+    text_readiness: "ready",
+    confidence: 1,
+    total_chapter_count: 1,
+    verified_chapter_count: 1,
+    unverified_chapter_count: 0,
+    demoted_chapter_count: 0,
+    verified_leaf_count: 1,
+    expected_leaf_count: 1,
+    verified_ratio: 1,
+    boundary_valid_ratio: 1,
+    body_coverage_ratio: 1,
+    independent_anchor_ratio: 1,
+    meaningful_characters_per_page: 0,
+    duplicate_locator_ratio: 0,
+    duplicate_range_count: 0,
+    overlap_ratio: 0,
+    non_monotonic_count: 0,
+    oversized_leaf_count: 0,
+    diagnostics: [],
+  };
+  const source = {
+    id: sourceId,
+    owner_user_id: "guest",
+    package_id: "package",
+    title: `视频资料 ${unique}`,
+    source_type: "video_url",
+    source_uri: "https://example.com/lecture",
+    file_name: "transcript-v1.txt",
+    mime_type: "text/plain",
+    size_bytes: 100,
+    status: "ready",
+    error: "",
+    structure_status: "ready",
+    structure_strategy: "media_timeline",
+    structure_has_verified_toc: true,
+    structure_quality: quality,
+    structure_error: "",
+    structure_updated_at: "2026-07-22T00:00:00Z",
+    media_package: {
+      version: 1,
+      duration_ms: 600000,
+      language: "en",
+      source_content_hash: "a".repeat(64),
+      active_transcript_version: 1,
+      transcript_status: "ready",
+      visual_status: "empty",
+      chapter_status: "ready",
+      transcript_segment_count: 20,
+      chapter_count: 1,
+      visual_count: 0,
+      warnings: [],
+      raw_media_retained: false,
+      updated_at: "2026-07-22T00:00:00Z",
+    },
+    ingestion_job: null,
+    created_at: "2026-07-22T00:00:00Z",
+    updated_at: "2026-07-22T00:00:00Z",
+    metadata: { content_hash: "a".repeat(64) },
+  };
+  const chapter = {
+    id: chapterId,
+    owner_user_id: "guest",
+    package_id: "package",
+    source_ingestion_id: sourceId,
+    parent_id: null,
+    number: "1",
+    normalized_number: "1",
+    title: "完整章节",
+    level: 1,
+    path: ["完整章节"],
+    order_index: 0,
+    source_locator: "video:0-600000",
+    body_start_offset: 0,
+    body_end_offset: 100,
+    page_start: null,
+    page_end: null,
+    anchor_status: "verified",
+    range: null,
+    media_time_range: { start_ms: 0, end_ms: 600000, display_label: "00:00:00–00:10:00" },
+    mapping_status: "verified",
+    source_content_hash: "a".repeat(64),
+    catalog_evidence: [],
+    catalog_version: 1,
+    confidence: 1,
+    excerpt: "chapter",
+    metadata: {},
+  };
+  const catalog = {
+    source,
+    structure_id: "structure-video",
+    status: "ready",
+    strategy: "media_timeline",
+    has_verified_toc: true,
+    catalog_version: 1,
+    catalog_updated_at: "2026-07-22T00:00:00Z",
+    source_content_hash: "a".repeat(64),
+    catalog_schema_version: "media_timeline_v1",
+    catalog_model: textModel.model,
+    chapter_count: 1,
+    verified_chapter_count: 1,
+    confidence: 1,
+    quality,
+    error: "",
+    warnings: [],
+    chapters: [chapter],
+  };
+  let imported = false;
+  let importBody = "";
+  let chatPayload: Record<string, unknown> | null = null;
+  await page.route("**/api/packages/*/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.endsWith("/sources")) {
+      imported = true;
+      importBody = request.postData() ?? "";
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(source) });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/sources")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(imported ? [source] : []) });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith("/sources/catalogs")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ package_id: "package", catalogs: imported ? [catalog] : [] }) });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith(`/sources/${sourceId}/catalog`)) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(catalog) });
+      return;
+    }
+    if (request.method() === "GET" && path.endsWith(`/sources/${sourceId}/structure`)) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ source, structure: null, chapters: [chapter], chunks: [], visuals: [] }) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    chatPayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "captured" }) });
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `视频测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `视频测试页面 ${unique}`);
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  await page.getByText("这是公开单视频 URL").click();
+  await page.getByPlaceholder("https://").fill("https://example.com/lecture");
+  await page.getByLabel("导入 URL").click();
+  await expect.poll(() => importBody).toContain('name="source_kind"');
+  expect(importBody).toContain("video");
+  await page.getByLabel(new RegExp(`查看资料目录 ${source.title}`)).click();
+  await page.getByRole("button", { name: "学习此章节" }).click();
+  await expect.poll(() => chatPayload).not.toBeNull();
+  expect(chatPayload).toMatchObject({
+    board_generation_action: "start",
+    post_generation_action: "auto_explain",
+    selection: {
+      source_ingestion_id: sourceId,
+      source_chapter_id: chapterId,
+      source_time_range: chapter.media_time_range,
+      media_package_version: 1,
+    },
+  });
+});
+
 async function enterAsGuest(page: Page, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
   await page.getByRole("button", { name: /游客登录/ }).click();
