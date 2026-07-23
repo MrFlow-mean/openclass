@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import csv
-import io
 import json
-import os
-import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from functools import cmp_to_key
 from pathlib import Path
@@ -109,172 +104,11 @@ def _run_vision_ocr(args: list[str], *, timeout: int) -> str | None:
     return text or None
 
 
-def _tesseract_languages() -> str:
-    return os.getenv("OPENCLASS_TESSERACT_LANGUAGES", "eng").strip() or "eng"
-
-
-def _tesseract_binary() -> str | None:
-    configured = os.getenv("OPENCLASS_TESSERACT_BINARY", "tesseract").strip()
-    return shutil.which(configured) if configured else None
-
-
-def _run_tesseract_text(file_path: Path, *, timeout: int) -> str | None:
-    binary = _tesseract_binary()
-    if binary is None:
-        return None
-    try:
-        result = subprocess.run(
-            [
-                binary,
-                str(file_path),
-                "stdout",
-                "-l",
-                _tesseract_languages(),
-                "--psm",
-                "6",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
-    text = result.stdout.strip()
-    return text or None
-
-
-def _parse_tesseract_tsv(payload: str, *, page_no: int) -> OCRPageLayout:
-    grouped_words: dict[tuple[int, int, int], list[tuple[int, str, int, int, int, int]]] = {}
-    reader = csv.DictReader(io.StringIO(payload), delimiter="\t")
-    image_width = 0
-    image_height = 0
-    for row in reader:
-        try:
-            level = int(row.get("level") or 0)
-            width = int(row.get("width") or 0)
-            height = int(row.get("height") or 0)
-            image_width = max(image_width, width if level == 1 else 0)
-            image_height = max(image_height, height if level == 1 else 0)
-            if level != 5:
-                continue
-            text = str(row.get("text") or "").strip()
-            confidence = float(row.get("conf") or -1)
-            if not text or confidence < 0:
-                continue
-            left = int(row.get("left") or 0)
-            top = int(row.get("top") or 0)
-            key = (
-                int(row.get("block_num") or 0),
-                int(row.get("par_num") or 0),
-                int(row.get("line_num") or 0),
-            )
-        except (TypeError, ValueError):
-            continue
-        grouped_words.setdefault(key, []).append((left, text, top, width, height, int(confidence)))
-
-    if image_width < 1 or image_height < 1:
-        return OCRPageLayout(page_no=page_no)
-
-    lines: list[OCRLineLayout] = []
-    for words in grouped_words.values():
-        ordered = sorted(words, key=lambda word: word[0])
-        segments: list[list[tuple[int, str, int, int, int, int]]] = []
-        for word in ordered:
-            previous_right = (
-                max(existing[0] + existing[3] for existing in segments[-1])
-                if segments
-                else None
-            )
-            if previous_right is None or word[0] - previous_right > image_width * 0.035:
-                segments.append([word])
-            else:
-                segments[-1].append(word)
-        for segment in segments:
-            left = min(word[0] for word in segment)
-            top = min(word[2] for word in segment)
-            right = max(word[0] + word[3] for word in segment)
-            bottom = max(word[2] + word[4] for word in segment)
-            text = " ".join(word[1] for word in segment).strip()
-            if not text:
-                continue
-            lines.append(
-                OCRLineLayout(
-                    text=text,
-                    x=left / image_width,
-                    y=1.0 - (top / image_height),
-                    width=max(0.0, (right - left) / image_width),
-                    height=max(0.0, (bottom - top) / image_height),
-                )
-            )
-    return OCRPageLayout(page_no=page_no, lines=ordered_ocr_lines(lines))
-
-
-def _extract_pdf_pages_layout_with_tesseract(
-    file_path: Path,
-    *,
-    page_start: int,
-    page_end: int,
-    max_pages: int,
-) -> list[OCRPageLayout]:
-    binary = _tesseract_binary()
-    if binary is None:
-        return []
-    try:
-        import fitz
-    except Exception:
-        return []
-
-    start = max(page_start, 1)
-    end = max(page_end, start)
-    final_page = min(end, start + max(1, max_pages) - 1)
-    layouts: list[OCRPageLayout] = []
-    try:
-        document = fitz.open(str(file_path))
-    except Exception:
-        return []
-    try:
-        final_page = min(final_page, document.page_count)
-        with tempfile.TemporaryDirectory(prefix="openclass-tesseract-pdf-") as temp_dir:
-            temp_root = Path(temp_dir)
-            for page_no in range(start, final_page + 1):
-                page = document.load_page(page_no - 1)
-                image_path = temp_root / f"page-{page_no}.png"
-                page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False).save(str(image_path))
-                try:
-                    result = subprocess.run(
-                        [
-                            binary,
-                            str(image_path),
-                            "stdout",
-                            "-l",
-                            _tesseract_languages(),
-                            "--psm",
-                            "3",
-                            "tsv",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                        timeout=90,
-                    )
-                except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                    layouts.append(OCRPageLayout(page_no=page_no))
-                    continue
-                layouts.append(_parse_tesseract_tsv(result.stdout, page_no=page_no))
-    finally:
-        document.close()
-    return layouts
-
-
 def extract_image_text(file_path: Path) -> str | None:
-    if not file_path.exists():
+    if not file_path.exists() or not VISION_OCR_SCRIPT.exists():
         return None
-    if VISION_OCR_SCRIPT.exists():
-        text = _run_vision_ocr([str(file_path)], timeout=90)
-        if text:
-            return text
-    return _run_tesseract_text(file_path, timeout=90)
+
+    return _run_vision_ocr([str(file_path)], timeout=90)
 
 
 def extract_pdf_pages_text(
@@ -284,25 +118,14 @@ def extract_pdf_pages_text(
     page_end: int,
     max_pages: int = 4,
 ) -> str | None:
-    if not file_path.exists():
+    if not file_path.exists() or not VISION_OCR_SCRIPT.exists():
         return None
 
     start = max(page_start, 1)
     end = max(page_end, start)
     pages = max(1, min(max_pages, end - start + 1))
     timeout = max(120, pages * 60)
-    if VISION_OCR_SCRIPT.exists():
-        text = _run_vision_ocr([str(file_path), str(start), str(end), str(pages)], timeout=timeout)
-        if text:
-            return text
-    layouts = _extract_pdf_pages_layout_with_tesseract(
-        file_path,
-        page_start=start,
-        page_end=end,
-        max_pages=pages,
-    )
-    text = "\n".join(line.text for page in layouts for line in ordered_ocr_lines(page.lines)).strip()
-    return text or None
+    return _run_vision_ocr([str(file_path), str(start), str(end), str(pages)], timeout=timeout)
 
 
 def extract_pdf_pages_layout(
@@ -313,7 +136,7 @@ def extract_pdf_pages_layout(
     max_pages: int = 12,
     trailing_column_pass: bool = False,
 ) -> list[OCRPageLayout]:
-    if not file_path.exists():
+    if not file_path.exists() or not VISION_OCR_SCRIPT.exists():
         return []
 
     start = max(page_start, 1)
@@ -323,14 +146,9 @@ def extract_pdf_pages_layout(
     args = [str(file_path), str(start), str(end), str(pages)]
     if trailing_column_pass:
         args.append("trailing-column-lines")
-    payload = _run_vision_ocr_payload(args, timeout=timeout) if VISION_OCR_SCRIPT.exists() else None
+    payload = _run_vision_ocr_payload(args, timeout=timeout)
     if not payload:
-        return _extract_pdf_pages_layout_with_tesseract(
-            file_path,
-            page_start=start,
-            page_end=end,
-            max_pages=pages,
-        )
+        return []
 
     page_layouts: list[OCRPageLayout] = []
     raw_pages = payload.get("pages")
