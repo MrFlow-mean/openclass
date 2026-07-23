@@ -18,6 +18,7 @@ export type CoursePackageApplyOptions = {
   blankLessonIds?: string[];
   activeLessonId?: string | null;
   rebuildMessageLessonIds?: string[];
+  preserveActiveTransientUi?: boolean;
 };
 
 export type AppliedCoursePackage = {
