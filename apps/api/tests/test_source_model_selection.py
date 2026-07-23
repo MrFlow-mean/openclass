@@ -5,33 +5,21 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from app.models import AIModelSelection
 from app.routers.sources import _parse_catalog_model
-from app.services.source_ingestion_service import (
-    SourceIngestionError,
-    _require_source_codex_selection,
-)
 
 
-def test_catalog_model_parser_accepts_openai_codex() -> None:
+def test_catalog_model_parser_accepts_supported_non_codex_text_model() -> None:
     selection = _parse_catalog_model(
-        json.dumps({"provider": "openai_codex", "model": "gpt-5.6-sol"})
+        json.dumps({"provider": "deepseek", "model": "deepseek-chat"})
     )
 
     assert selection is not None
-    assert selection.provider == "openai_codex"
-    assert selection.model == "gpt-5.6-sol"
+    assert selection.provider == "deepseek"
+    assert selection.model == "deepseek-chat"
 
 
-def test_catalog_model_parser_rejects_deepseek() -> None:
-    with pytest.raises(HTTPException, match="OpenAI Codex text model"):
+def test_catalog_model_parser_rejects_provider_without_directory_adapter() -> None:
+    with pytest.raises(HTTPException, match="supported text model"):
         _parse_catalog_model(
-            json.dumps({"provider": "deepseek", "model": "deepseek-v4-flash"})
-        )
-
-
-def test_source_ingestion_service_rejects_deepseek_catalog_model() -> None:
-    with pytest.raises(SourceIngestionError, match="OpenAI Codex text model"):
-        _require_source_codex_selection(
-            AIModelSelection(provider="deepseek", model="deepseek-v4-flash")
+            json.dumps({"provider": "google", "model": "gemini-test"})
         )
