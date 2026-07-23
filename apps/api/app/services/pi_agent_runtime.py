@@ -36,6 +36,19 @@ def pi_runtime_available() -> bool:
     return shutil.which("pi") is not None
 
 
+def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
+    owner_key = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:24]
+    configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
+    if configured_agent_dir:
+        agent_dir = Path(configured_agent_dir).expanduser().resolve()
+        if not agent_dir.is_dir():
+            raise RuntimeError("The configured Pi agent directory does not exist")
+        return agent_dir
+    agent_dir = runtime_root / "agents" / owner_key
+    agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return agent_dir
+
+
 def _pi_provider(provider: str) -> str:
     return "openai-codex" if provider == "openai_codex" else provider.replace("_", "-")
 
@@ -126,15 +139,10 @@ class PiTextClient:
 
     def _run(self, *, system_prompt: str, user_prompt: str) -> str:
         load_root_dotenv()
-        owner_key = hashlib.sha256(self.owner_user_id.encode("utf-8")).hexdigest()[:24]
-        configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
-        if configured_agent_dir:
-            agent_dir = Path(configured_agent_dir).expanduser().resolve()
-            if not agent_dir.is_dir():
-                raise RuntimeError("The configured Pi agent directory does not exist")
-        else:
-            agent_dir = self.runtime_root / "agents" / owner_key
-            agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        agent_dir = pi_agent_directory(
+            owner_user_id=self.owner_user_id,
+            runtime_root=self.runtime_root,
+        )
         workspace_root = self.runtime_root / "workspaces"
         workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = os.environ.copy()

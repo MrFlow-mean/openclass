@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +27,7 @@ from app.services.codex_app_server import (
     CODEX_SOURCE_CATALOG_ARTIFACT,
     CodexAppServerTextClient,
 )
+from app.services.pi_source_runtime import PiSourceTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_pdf_mapping import build_pdf_catalog_visual_inputs
 from app.services.source_archive import SafeSourceArchive
@@ -151,7 +152,11 @@ class SourceCodexCatalogResult:
     audit_metadata: dict[str, object]
 
 
-SourceCodexClientFactory = Callable[[str], CodexAppServerTextClient]
+class SourceCatalogTextClient(Protocol):
+    def parse_source_file(self, **kwargs: Any) -> Any: ...
+
+
+SourceCatalogClientFactory = Callable[[str], SourceCatalogTextClient]
 
 
 def generate_directory_only_catalog(
@@ -161,7 +166,7 @@ def generate_directory_only_catalog(
     source_content_hash: str,
     selection: AIModelSelection,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
-    client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
+    client_factory: SourceCatalogClientFactory | None = None,
 ) -> SourceCodexCatalogResult:
     if not selection.model.strip():
         raise SourceCodexCatalogError(
@@ -170,14 +175,19 @@ def generate_directory_only_catalog(
     suffix = Path(record.file_name or source_path.name).suffix.lower()
     if suffix not in SUPPORTED_SOURCE_SUFFIXES:
         raise SourceCodexCatalogError(
-            "This source format is not supported by the Source Codex directory contract."
+            "This source format is not supported by the source-agent directory contract."
         )
     if source_path.suffix.lower() != suffix:
         raise SourceCodexCatalogError(
             "The stored source suffix does not match its directory identity."
         )
 
-    response = client_factory(record.owner_user_id).parse_source_file(
+    selected_client_factory = client_factory or (
+        PiSourceTextClient
+        if selection.agent_backend == "pi"
+        else CodexAppServerTextClient
+    )
+    response = selected_client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         provider=selection.provider,
         model=selection.model,
@@ -199,15 +209,15 @@ def generate_directory_only_catalog(
     runner_source_hash = str(getattr(response, "source_sha256", "") or "").lower()
     if runner_source_hash != source_content_hash.lower():
         raise SourceCodexCatalogError(
-            "Source Codex inspected a file fingerprint that does not match this directory task."
+            "The source agent inspected a file fingerprint that does not match this directory task."
         )
     source_turn_count = int(getattr(response, "source_turn_count", 0) or 0)
     if source_turn_count < 1:
         raise SourceCodexCatalogError(
-            "Source Codex directory extraction did not complete an auditable investigation turn."
+            "The source agent did not complete an auditable directory investigation turn."
         )
     if not isinstance(response.output_text, str) or not response.output_text.strip():
-        raise SourceCodexCatalogError("Source Codex returned no auditable directory output.")
+        raise SourceCodexCatalogError("The source agent returned no auditable directory output.")
 
     raw_output = response.output_text
     try:
@@ -217,11 +227,11 @@ def generate_directory_only_catalog(
         parsed_catalog = SourceDirectoryOnlyCatalog.model_validate(response.output_parsed)
     except (json.JSONDecodeError, SourceCodexCatalogError, ValueError, TypeError) as exc:
         raise SourceCodexCatalogError(
-            "Source Codex returned an invalid directory-only object."
+            "The source agent returned an invalid directory-only object."
         ) from exc
     if catalog.model_dump(mode="json") != parsed_catalog.model_dump(mode="json"):
         raise SourceCodexCatalogError(
-            "Source Codex parsed output does not match its auditable raw directory output."
+            "The source agent parsed output does not match its auditable raw directory output."
         )
 
     canonical_payload = catalog.model_dump(mode="json")
@@ -240,7 +250,12 @@ def generate_directory_only_catalog(
         raw_output=raw_output,
         raw_output_sha256=raw_output_sha256,
         audit_metadata={
-            "catalog_authority": "source_codex",
+            "catalog_authority": (
+                "source_pi" if selection.agent_backend == "pi" else "source_codex"
+            ),
+            "source_agent_backend": selection.agent_backend,
+            "source_agent_input_sha256": runner_source_hash,
+            "source_agent_turn_count": source_turn_count,
             "catalog_task_contract": "directory_pages_offset_tree_v1",
             "source_codex_input_sha256": runner_source_hash,
             "source_codex_turn_count": source_turn_count,
@@ -264,7 +279,7 @@ def generate_codex_direct_catalog(
     source_content_hash: str,
     selection: AIModelSelection,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
-    client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
+    client_factory: SourceCatalogClientFactory = CodexAppServerTextClient,
 ) -> SourceCodexCatalogResult:
     if not selection.model.strip():
         raise SourceCodexCatalogError(

@@ -67,7 +67,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       {
         id: "pi",
         label: "Pi Agent",
-        description: "Pi Agent 运行框架正在接入。",
+        description: "使用 Pi Agent 和 OpenClass 受限文件资料工具。",
         enabled: false,
       },
     ],

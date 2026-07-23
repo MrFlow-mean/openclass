@@ -257,4 +257,4 @@ def test_teaching_pi_backend_is_enabled_when_runtime_is_installed(monkeypatch) -
     options = ai_model_catalog._agent_backend_options()
 
     assert options["teaching"][1].enabled is True
-    assert options["source"][1].enabled is False
+    assert options["source"][1].enabled is True

@@ -43,11 +43,11 @@ test.beforeEach(async ({ page }) => {
         agent_backends: {
           teaching: [
             { id: "codex", label: "Codex Agent", description: "", enabled: true },
-            { id: "pi", label: "Pi Agent", description: "", enabled: false },
+            { id: "pi", label: "Pi Agent", description: "", enabled: true },
           ],
           source: [
             { id: "codex", label: "Codex Agent", description: "", enabled: true },
-            { id: "pi", label: "Pi Agent", description: "", enabled: false },
+            { id: "pi", label: "Pi Agent", description: "", enabled: true },
           ],
         },
       }),
@@ -593,7 +593,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   const chatModelButton = page.getByTestId("codex-model-settings-button");
   const teachingAgentBackend = page.getByTestId("teaching-agent-backend");
   await expect(teachingAgentBackend).toHaveValue("codex");
-  await expect(teachingAgentBackend.locator('option[value="pi"]')).toHaveAttribute("disabled", "");
+  await teachingAgentBackend.selectOption("pi");
+  await expect(teachingAgentBackend).toHaveValue("pi");
   await chatModelButton.click();
   const chatModelMenu = page.getByTestId("codex-model-settings-menu");
   await expect(chatModelMenu).toBeVisible();
@@ -617,7 +618,8 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
 
   const sourceAgentBackend = page.getByTestId("source-agent-backend");
   await expect(sourceAgentBackend).toHaveValue("codex");
-  await expect(sourceAgentBackend.locator('option[value="pi"]')).toHaveAttribute("disabled", "");
+  await sourceAgentBackend.selectOption("pi");
+  await expect(sourceAgentBackend).toHaveValue("pi");
 
   const catalogModelButton = page.getByTestId("source-catalog-model-settings-button");
   const catalogModelMenu = page.getByTestId("source-catalog-model-settings-menu");
@@ -715,6 +717,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByLabel(`重新建立资料目录 ${sourceTitle}`).click();
   await expect.poll(() => rebuildRequests).toBe(1);
   expect(rebuildPostData).toContain('name="catalog_model"');
+  expect(rebuildPostData).toContain('"agent_backend":"pi"');
   expect(rebuildPostData).toContain('"provider":"openai_codex"');
   expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
   expect(rebuildPostData).toContain('"reasoning_effort":"high"');
@@ -743,6 +746,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
     buffer: Buffer.from("catalog model upload"),
   });
   await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
+  expect(uploadPostData).toContain('"agent_backend":"pi"');
   expect(uploadPostData).toContain('"provider":"openai_codex"');
   expect(uploadPostData).toContain('"model":"gpt-5.6-luna"');
   expect(uploadPostData).toContain('"reasoning_effort":"medium"');
