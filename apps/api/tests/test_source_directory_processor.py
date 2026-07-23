@@ -78,10 +78,6 @@ def _model() -> AIModelSelection:
     return AIModelSelection(provider="openai_codex", model="catalog-test-model")
 
 
-def _deepseek_model() -> AIModelSelection:
-    return AIModelSelection(provider="deepseek", model="deepseek-chat")
-
-
 def _write_reordered_pptx(path: Path) -> None:
     presentation = """<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -1365,58 +1361,6 @@ def test_processor_publishes_catalog_without_chunks_or_visuals(tmp_path: Path) -
     assert run == ("succeeded", 1, 3)
 
 
-def test_production_processor_uses_selected_non_codex_model_with_bounded_directory_evidence(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
-    path = tmp_path / "source.md"
-    path.write_text("# First\nBody\n## Child\nMore body", encoding="utf-8")
-    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
-
-    def fake_parse(self, **kwargs):
-        packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
-        return (
-            DirectoryBatchDecision(
-                batch_hash=packet["batch_hash"],
-                decisions=[
-                    DirectoryNodeDecision(
-                        local_key=node["local_key"],
-                        keep=True,
-                        title=node["title"],
-                        number=node["number"],
-                        level=node["level"],
-                    )
-                    for node in packet["nodes"]
-                ],
-            ),
-            [],
-        )
-
-    monkeypatch.setattr(
-        "app.services.ai_execution_adapter.DeepSeekTextClient.parse",
-        fake_parse,
-    )
-    monkeypatch.setattr(
-        "app.services.source_directory_processor.generate_codex_direct_catalog",
-        lambda **_kwargs: pytest.fail("A non-Codex model must not enter the isolated Codex file path"),
-    )
-
-    structure = SourceDirectoryProcessor(store=store).process(
-        record=_record(path),
-        path=path,
-        catalog_model=_deepseek_model(),
-    )
-    catalog = store.get_catalog_view(source=_record(path))
-
-    assert structure.status == "ready"
-    assert structure.catalog_model == "deepseek-chat"
-    assert structure.metadata["catalog_model_selection"]["provider"] == "deepseek"
-    assert structure.metadata["catalog_authority"] == "host_directory_evidence_with_selected_model"
-    assert [chapter.title for chapter in catalog.chapters] == ["First", "Child"]
-    assert all(chapter.mapping_status == "verified" for chapter in catalog.chapters)
-
-
 def test_processor_rejects_stale_metadata_fingerprint_before_extraction(tmp_path: Path) -> None:
     path = tmp_path / "source.md"
     path.write_text("# One\nBody", encoding="utf-8")
@@ -1836,73 +1780,6 @@ def test_stale_directory_task_cannot_recreate_an_already_deleted_source(
     ) is None
 
 
-def test_retry_directory_source_uses_the_current_catalog_model(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    database = tmp_path / "openclass.sqlite3"
-    source_store = SourceEvidenceStore(database)
-    structure_store = SourceStructureStore(database)
-    observed_selections: list[AIModelSelection] = []
-
-    class RecordingNormalizer:
-        def normalize(self, *, record, candidates, selection):
-            observed_selections.append(selection)
-            return DirectoryNormalizationResult(
-                candidates=tuple(candidates),
-                turn_count=1 if candidates else 0,
-                metadata={"test_adapter": "recording"},
-            )
-
-    monkeypatch.setattr(workspace_state, "UPLOAD_DIR", tmp_path / "uploads")
-    service = SourceIngestionService(
-        source_backend="native",
-        store=source_store,
-        job_store=SourceIngestionJobStore(database),
-        structure_store=structure_store,
-        directory_processor=SourceDirectoryProcessor(
-            store=structure_store,
-            normalizer_factory=lambda _record: RecordingNormalizer(),
-        ),
-    )
-    package = CoursePackage(id="course_directory", title="Directory", summary="", lessons=[])
-    queued = service.queue_file_source(
-        owner_user_id="user_directory",
-        package=package,
-        file_name="source.md",
-        content=b"# One\nBody",
-        mime_type="text/markdown",
-        catalog_model=_model(),
-    )
-    source_store.save_source(
-        queued.model_copy(
-            update={
-                "status": "failed",
-                "error": "Sign in with ChatGPT/Codex to use subscription models.",
-            }
-        )
-    )
-
-    retried = service.retry_source(
-        owner_user_id="user_directory",
-        package_id=package.id,
-        source_id=queued.id,
-        catalog_model=_deepseek_model(),
-    )
-
-    assert retried is not None
-    assert retried.status == "ready"
-    assert retried.metadata["catalog_model"] == _deepseek_model().model_dump(mode="json")
-    assert observed_selections == [_deepseek_model()]
-    structure = structure_store.get_structure(
-        owner_user_id="user_directory",
-        package_id=package.id,
-        source_id=queued.id,
-    )
-    assert structure is not None
-    assert structure.catalog_model == "deepseek-chat"
-
-
 @pytest.mark.parametrize(
     ("operation", "legacy_source"),
     [
@@ -2073,7 +1950,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
         )
 
     monkeypatch.setattr(
-        "app.services.ai_execution_adapter.CodexAppServerTextClient.parse",
+        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
         fake_parse,
     )
     candidates = [
@@ -2150,7 +2027,7 @@ def test_codex_normalizer_preserves_native_epub_levels_across_batches(monkeypatc
         )
 
     monkeypatch.setattr(
-        "app.services.ai_execution_adapter.CodexAppServerTextClient.parse",
+        "app.services.source_directory_processor.CodexAppServerTextClient.parse",
         fake_parse,
     )
     monkeypatch.setattr("app.services.source_directory_processor.MAX_CODEX_BATCH_NODES", 2)
