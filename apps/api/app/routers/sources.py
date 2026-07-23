@@ -47,8 +47,11 @@ class SourceRetryRequest(BaseModel):
 def _validate_catalog_model(selection: AIModelSelection | None) -> AIModelSelection | None:
     if selection is None:
         return None
-    if selection.provider not in {"openai_codex", "deepseek"} or not selection.model.strip():
-        raise HTTPException(status_code=400, detail="Catalog extraction requires a supported text model.")
+    if selection.provider != "openai_codex" or not selection.model.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Catalog extraction requires an OpenAI Codex text model.",
+        )
     return selection
 
 

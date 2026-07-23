@@ -714,6 +714,11 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
 
   await catalogModelButton.click();
   await page.getByTestId("source-catalog-model-model-row").click();
+  await expect(
+    page
+      .getByTestId("source-catalog-model-model-menu")
+      .getByRole("button", { name: "选择模型 DeepSeek V4 Flash" })
+  ).toHaveCount(0);
   await page
     .getByTestId("source-catalog-model-model-menu")
     .getByRole("button", { name: "选择模型 5.6 Luna" })
@@ -735,25 +740,6 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(uploadPostData).toContain('"model":"gpt-5.6-luna"');
   expect(uploadPostData).toContain('"reasoning_effort":"medium"');
   expect(uploadPostData).toContain('"service_tier":null');
-
-  await catalogModelButton.click();
-  await page.getByTestId("source-catalog-model-model-row").click();
-  await page
-    .getByTestId("source-catalog-model-model-menu")
-    .getByRole("button", { name: "选择模型 DeepSeek V4 Flash" })
-    .click();
-  await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 DeepSeek V4 Flash，推理强度 默认，速度 标准/
-  );
-  uploadPostData = "";
-  await page.getByTestId("source-file-input").setInputFiles({
-    name: `catalog-deepseek-model-${unique}.pdf`,
-    mimeType: "application/pdf",
-    buffer: Buffer.from("deepseek catalog model upload"),
-  });
-  await expect.poll(() => uploadPostData).toContain('name="catalog_model"');
-  expect(uploadPostData).toContain('"provider":"deepseek"');
-  expect(uploadPostData).toContain('"model":"deepseek-chat"');
 
   await catalogModelButton.click();
   await page.getByTestId("source-catalog-model-model-row").click();

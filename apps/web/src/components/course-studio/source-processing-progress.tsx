@@ -55,7 +55,7 @@ const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
   locating_toc_pages: "正在定位目录页",
   mapping_directory_to_pages: "正在绑定目录与文件范围",
   scanning_heading_regions: "正在检查页面标题区域",
-  normalizing_directory: "解析模型：读取目录证据并生成目录",
+  normalizing_directory: "Codex 任务：读取原文件并生成目录",
   source_codex_investigation: "Codex 任务：调查目录与正文范围",
   source_codex_scanning_pages: "Codex 任务：扫描文件页面",
   source_codex_mapping_nodes: "Codex 任务：映射目录节点",

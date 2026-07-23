@@ -22,7 +22,7 @@ from app.models import (
     SourceStructureQuality,
     now_iso,
 )
-from app.services.ai_execution_adapter import build_ai_execution_adapter
+from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_catalog import (
     SourceCodexCatalogError,
@@ -90,8 +90,8 @@ class DirectoryNormalizer(Protocol):
     ) -> DirectoryNormalizationResult: ...
 
 
-class TextModelDirectoryNormalizer:
-    """Run bounded directory-only model turns serially.
+class CodexDirectoryNormalizer:
+    """Run bounded directory-only Codex turns serially.
 
     The model receives headings and locators only. It never receives the source
     file path or extracted body text, and it cannot alter authoritative ranges.
@@ -102,11 +102,9 @@ class TextModelDirectoryNormalizer:
         *,
         user_id: str,
         progress_callback: CatalogProgressCallback | None = None,
-        activity_callback: Callable[[AgentActivityEvent], None] | None = None,
     ) -> None:
         self.user_id = user_id
         self.progress_callback = progress_callback
-        self.activity_callback = activity_callback
 
     def normalize(
         self,
@@ -115,21 +113,15 @@ class TextModelDirectoryNormalizer:
         candidates: Sequence[DirectoryCandidate],
         selection: AIModelSelection,
     ) -> DirectoryNormalizationResult:
-        if not selection.model.strip():
-            raise SourceDirectoryProcessingError("A configured text model is required for cataloging.")
+        if selection.provider != "openai_codex" or not selection.model.strip():
+            raise SourceDirectoryProcessingError("A configured Codex text model is required for cataloging.")
         if not candidates:
             return DirectoryNormalizationResult(candidates=(), turn_count=0, metadata={"batch_count": 0})
 
         batches = _bounded_candidate_batches(candidates)
         normalized: list[DirectoryCandidate] = []
         batch_hashes: list[str] = []
-        try:
-            adapter = build_ai_execution_adapter(
-                selection,
-                owner_user_id=self.user_id,
-            )
-        except RuntimeError as exc:
-            raise SourceDirectoryProcessingError(str(exc)) from exc
+        client = CodexAppServerTextClient(self.user_id)
         for batch_index, batch in enumerate(batches):
             packet = {
                 "schema": CATALOG_SCHEMA_VERSION,
@@ -145,7 +137,8 @@ class TextModelDirectoryNormalizer:
             }
             batch_hash = _hash_json(packet)
             batch_hashes.append(batch_hash)
-            response = adapter.parse_structured(
+            response = client.parse(
+                model=selection.model,
                 system_prompt=_directory_system_prompt(),
                 user_prompt=(
                     "Review this bounded directory-evidence packet. Copy batch_hash exactly and "
@@ -154,7 +147,9 @@ class TextModelDirectoryNormalizer:
                 ),
                 schema=DirectoryBatchDecision,
                 allow_live_web_search=False,
-                on_activity=self.activity_callback,
+                reasoning_effort=selection.reasoning_effort,
+                service_tier=selection.service_tier,
+                service_tier_is_set="service_tier" in selection.model_fields_set,
             )
             decision = DirectoryBatchDecision.model_validate(response.output_parsed)
             normalized.extend(_apply_batch_decision(batch, decision, expected_hash=batch_hash))
@@ -175,10 +170,6 @@ class TextModelDirectoryNormalizer:
                 "execution": "serial_bounded_turns",
             },
         )
-
-
-# Backward-compatible import name for existing integrations and tests.
-CodexDirectoryNormalizer = TextModelDirectoryNormalizer
 
 
 class SourceDirectoryProcessor:
@@ -233,11 +224,7 @@ class SourceDirectoryProcessor:
             turn_count: int
             has_authoritative_ranges = False
 
-            uses_direct_source_codex = (
-                self.normalizer_factory is None
-                and catalog_model.provider == "openai_codex"
-            )
-            if uses_direct_source_codex:
+            if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
                 # Source Codex owns both directory semantics and range
                 # investigation. The host validates and persists its exact
@@ -307,10 +294,9 @@ class SourceDirectoryProcessor:
                     )
                 )
             else:
-                # Non-Codex providers receive only bounded directory evidence
-                # extracted by the host. Codex keeps the richer isolated-file
-                # path above, while all providers share the same validated
-                # chapter and source-range persistence contract.
+                # Compatibility seam for legacy unit tests that explicitly
+                # inject a host normalizer. Production construction never sets
+                # this factory and therefore cannot enter this branch.
                 extraction = extract_directory(
                     record,
                     path,
@@ -328,16 +314,7 @@ class SourceDirectoryProcessor:
                     )
                 )
                 _report(progress_callback, "normalizing_directory", 64)
-                normalizer = (
-                    self.normalizer_factory(record)
-                    if self.normalizer_factory is not None
-                    else TextModelDirectoryNormalizer(
-                        user_id=record.owner_user_id,
-                        progress_callback=progress_callback,
-                        activity_callback=activity_callback,
-                    )
-                )
-                normalization = normalizer.normalize(
+                normalization = self.normalizer_factory(record).normalize(
                     record=record,
                     candidates=extraction.candidates,
                     selection=catalog_model,
@@ -362,12 +339,7 @@ class SourceDirectoryProcessor:
                     )
                 catalog_complete = not bool(extraction.metadata.get("navigation_truncated"))
                 execution_metadata = {
-                    "catalog_authority": (
-                        "legacy_explicit_test_injection"
-                        if self.normalizer_factory is not None
-                        else "host_directory_evidence_with_selected_model"
-                    ),
-                    "catalog_model_provider": catalog_model.provider,
+                    "catalog_authority": "legacy_explicit_test_injection",
                     "extraction": extraction.metadata,
                     "normalization": normalization.metadata,
                 }
@@ -376,7 +348,7 @@ class SourceDirectoryProcessor:
 
             validation_stage = (
                 "validating_directory_ranges"
-                if not uses_direct_source_codex or has_authoritative_ranges
+                if self.normalizer_factory is not None or has_authoritative_ranges
                 else "validating_directory"
             )
             _report(progress_callback, validation_stage, 92)
@@ -1093,7 +1065,7 @@ def _catalog_quality(
 
 def _directory_system_prompt() -> str:
     return """
-You are the OpenClass file-directory normalization model. You review only bounded
+You are the single OpenClass file-directory Codex. You review only bounded
 navigation evidence prepared by the host. Never infer subject knowledge or add
 headings that are absent from the packet. Keep a node only when it is a genuine
 document navigation unit; remove repeated running headers, page numbers, and
