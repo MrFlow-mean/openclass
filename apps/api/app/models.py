@@ -108,8 +108,9 @@ AIProvider = Literal[
     "minimax",
     "openai_compatible",
     "anthropic_compatible",
+    "openclass_local",
 ]
-AIModelCapability = Literal["text", "realtime"]
+AIModelCapability = Literal["text", "realtime", "transcription", "vision"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ResourcePageRole = Literal["cover", "copyright", "toc", "preface", "body", "appendix", "back_matter", "unknown"]
@@ -384,6 +385,8 @@ class LearningSourceReference(BaseModel):
     page_range: str = ""
     page_start: int | None = None
     page_end: int | None = None
+    media_time_range: "MediaTimeRange | None" = None
+    media_package_version: int | None = Field(default=None, ge=1)
     body_start_offset: int | None = None
     body_end_offset: int | None = None
     chunk_ids: list[str] = Field(default_factory=list)
@@ -763,6 +766,7 @@ SourceStructureStrategy = Literal[
     "markdown_heading",
     "linear_text",
     "open_notebook_search_only",
+    "media_timeline",
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
 SourceChapterMappingStatus = Literal["verified", "partial", "unverified", "unmapped"]
@@ -780,6 +784,8 @@ SourceCatalogRunStatus = Literal["queued", "running", "succeeded", "failed"]
 SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
 SourceVisualAnchorStatus = Literal["verified", "unverified"]
 SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
+MediaComponentStatus = Literal["pending", "running", "ready", "empty", "partial", "failed"]
+MediaVisualRole = Literal["board_final", "slide_final", "teaching_visual"]
 SourceScopeKind = Literal["source", "chapter", "page_range"]
 PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
 AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
@@ -815,6 +821,62 @@ class SourceRange(BaseModel):
         elif isinstance(self.start, int) and isinstance(self.end, int) and self.end < self.start:
             raise ValueError("SourceRange.end must not precede SourceRange.start.")
         return self
+
+
+class MediaTimeRange(BaseModel):
+    start_ms: int = Field(default=0, ge=0)
+    end_ms: int = Field(default=0, ge=0)
+    display_label: str = ""
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "MediaTimeRange":
+        if self.end_ms <= self.start_ms:
+            raise ValueError("MediaTimeRange.end_ms must be greater than start_ms.")
+        return self
+
+
+class TimedTranscriptSegment(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("transcriptsegment"))
+    source_ingestion_id: str
+    version: int = Field(default=1, ge=1)
+    order_index: int = Field(default=0, ge=0)
+    start_ms: int = Field(default=0, ge=0)
+    end_ms: int = Field(default=0, ge=0)
+    text: str
+    language: str = ""
+    source_kind: Literal["official_subtitle", "automatic_subtitle", "model_transcription"]
+    provider: str = ""
+    model: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_segment(self) -> "TimedTranscriptSegment":
+        if self.end_ms <= self.start_ms:
+            raise ValueError("Transcript segment end_ms must be greater than start_ms.")
+        if not self.text.strip():
+            raise ValueError("Transcript segment text must not be empty.")
+        return self
+
+
+class MediaPackageManifest(BaseModel):
+    version: int = Field(default=1, ge=1)
+    duration_ms: int = Field(default=0, ge=0)
+    language: str = ""
+    source_content_hash: str = ""
+    active_transcript_version: int = Field(default=0, ge=0)
+    transcript_status: MediaComponentStatus = "pending"
+    visual_status: MediaComponentStatus = "pending"
+    chapter_status: MediaComponentStatus = "pending"
+    transcription_model: "AIModelSelection | None" = None
+    vision_model: "AIModelSelection | None" = None
+    catalog_model: "AIModelSelection | None" = None
+    transcript_segment_count: int = Field(default=0, ge=0)
+    chapter_count: int = Field(default=0, ge=0)
+    visual_count: int = Field(default=0, ge=0)
+    warnings: list[str] = Field(default_factory=list)
+    raw_media_retained: bool = False
+    updated_at: str = Field(default_factory=now_iso)
 
 
 class SourceCatalogEvidence(BaseModel):
@@ -861,6 +923,7 @@ class SourceIngestionJob(BaseModel):
     progress: int = Field(default=0, ge=0, le=100)
     error: str = ""
     phase_history: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
     agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -959,6 +1022,7 @@ class SourceIngestionRecord(BaseModel):
     structure_error: str = ""
     structure_updated_at: str | None = None
     ingestion_job: SourceIngestionJob | None = None
+    media_package: MediaPackageManifest | None = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -978,6 +1042,7 @@ class RetrievalEvidence(BaseModel):
     chapter_id: str = ""
     section_path: list[str] = Field(default_factory=list)
     page_range: str = ""
+    media_time_range: MediaTimeRange | None = None
     chunk_ids: list[str] = Field(default_factory=list)
     excerpt: str = ""
     expanded_text: str = ""
@@ -1031,6 +1096,7 @@ class SourceChapter(BaseModel):
     body_end_offset: int | None = None
     page_start: int | None = None
     page_end: int | None = None
+    media_time_range: MediaTimeRange | None = None
     anchor_status: SourceChapterAnchorStatus = "unverified"
     range: SourceRange | None = None
     mapping_status: SourceChapterMappingStatus = "unverified"
@@ -1079,6 +1145,8 @@ class SourceChunk(BaseModel):
     end_offset: int = 0
     page_start: int | None = None
     page_end: int | None = None
+    media_time_range: MediaTimeRange | None = None
+    transcript_segment_ids: list[str] = Field(default_factory=list)
     token_count: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -1098,6 +1166,8 @@ class SourceVisualAsset(BaseModel):
     paragraph_index: int | None = None
     slide_no: int | None = None
     sheet_name: str = ""
+    timestamp_ms: int | None = Field(default=None, ge=0)
+    media_role: MediaVisualRole | None = None
     bbox: list[float] = Field(default_factory=list)
     before_chunk_id: str | None = None
     after_chunk_id: str | None = None
@@ -1131,6 +1201,8 @@ class SourceVisualEvidence(BaseModel):
     paragraph_index: int | None = None
     slide_no: int | None = None
     sheet_name: str = ""
+    timestamp_ms: int | None = Field(default=None, ge=0)
+    media_role: MediaVisualRole | None = None
     bbox: list[float] = Field(default_factory=list)
     before_chunk_id: str | None = None
     after_chunk_id: str | None = None
@@ -1286,6 +1358,8 @@ class SelectionRef(BaseModel):
     source_locator: str = ""
     source_page_start: int | None = None
     source_page_end: int | None = None
+    source_time_range: MediaTimeRange | None = None
+    media_package_version: int | None = Field(default=None, ge=1)
     source_range: SourceRange | None = None
     catalog_version: int | None = Field(default=None, ge=0)
     source_content_hash: str | None = None
@@ -1350,6 +1424,8 @@ class AIModelOption(BaseModel):
 class AIModelCatalog(BaseModel):
     text: list[AIModelOption] = Field(default_factory=list)
     realtime: list[AIModelOption] = Field(default_factory=list)
+    transcription: list[AIModelOption] = Field(default_factory=list)
+    vision: list[AIModelOption] = Field(default_factory=list)
     defaults: dict[AIModelCapability, AIModelSelection]
 
 
