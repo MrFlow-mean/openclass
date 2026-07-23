@@ -3185,10 +3185,7 @@ def test_board_quota_accepts_large_explicit_limit(monkeypatch: pytest.MonkeyPatc
     assert codex_chat._board_max_bytes() == 32 * 1024 * 1024
 
 
-def test_codex_app_server_command_uses_exact_board_permission_profile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OPENCLASS_CODEX_SHELL", "/bin/sh")
+def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     command = codex_app_server._codex_app_server_command("/usr/local/bin/codex")
     rendered = "\n".join(command)
 
@@ -3205,21 +3202,8 @@ def test_codex_app_server_command_uses_exact_board_permission_profile(
     assert "features.hooks=false" in rendered
     assert "features.plugins=false" in rendered
     assert "features.computer_use=false" in rendered
-    assert f"SHELL={json.dumps(codex_app_server._codex_shell_path())}" in rendered
     assert "--strict-config" in command
     assert "danger-full-access" not in rendered
-
-
-def test_codex_shell_uses_an_available_portable_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("OPENCLASS_CODEX_SHELL", raising=False)
-    monkeypatch.setenv("SHELL", "/missing/shell")
-
-    shell_path = Path(codex_app_server._codex_shell_path())
-
-    assert shell_path.is_file()
-    assert shell_path.stat().st_mode & 0o111
 
 
 def test_codex_app_server_process_uses_direct_command_without_file_size_limit() -> None:

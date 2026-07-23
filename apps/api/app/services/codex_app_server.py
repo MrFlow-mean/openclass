@@ -216,28 +216,7 @@ def _codex_process_env(user_id: str) -> dict[str, str]:
     return {**os.environ, "CODEX_HOME": str(home)}
 
 
-def _codex_shell_path() -> str:
-    configured = (os.getenv("OPENCLASS_CODEX_SHELL") or "").strip()
-    candidates = (
-        configured,
-        (os.getenv("SHELL") or "").strip(),
-        "/bin/zsh",
-        "/bin/bash",
-        "/bin/sh",
-    )
-    for candidate in candidates:
-        if not candidate:
-            continue
-        resolved = candidate if Path(candidate).is_absolute() else shutil.which(candidate)
-        if resolved and Path(resolved).is_file() and os.access(resolved, os.X_OK):
-            return str(Path(resolved).resolve())
-    raise CodexAppServerError(
-        "No executable shell is available for the isolated Codex runtime"
-    )
-
-
 def _codex_permission_config_args() -> list[str]:
-    shell_path = json.dumps(_codex_shell_path())
     return [
         "-c",
         f'default_permissions="{CODEX_BOARD_PERMISSION_PROFILE}"',
@@ -268,7 +247,7 @@ def _codex_permission_config_args() -> list[str]:
         "-c",
         (
             'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin",'
-            f'LANG="en_US.UTF-8",SHELL={shell_path}}}'
+            'LANG="en_US.UTF-8",SHELL="/bin/zsh"}'
         ),
         "-c",
         "mcp_servers={}",
@@ -1832,7 +1811,7 @@ def _run_source_file_structured_turn(
                 "set": {
                     "PATH": _source_document_tool_path(toolbox_path),
                     "LANG": "en_US.UTF-8",
-                    "SHELL": _codex_shell_path(),
+                    "SHELL": "/bin/zsh",
                 },
             },
         }
