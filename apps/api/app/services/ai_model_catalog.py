@@ -20,6 +20,7 @@ from app.services.deepseek_api import (
     DEEPSEEK_CURATED_MODELS,
     deepseek_config,
 )
+from app.services.pi_agent_runtime import pi_runtime_available
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
@@ -28,23 +29,37 @@ OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
 
 
 def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
-    options = [
-        AIAgentBackendOption(
-            id="codex",
-            label="Codex Agent",
-            description="使用当前 Codex Agent 运行框架。",
-            enabled=True,
-        ),
+    codex_option = AIAgentBackendOption(
+        id="codex",
+        label="Codex Agent",
+        description="使用当前 Codex Agent 运行框架。",
+        enabled=True,
+    )
+    pi_available = pi_runtime_available()
+    teaching_options = [
+        codex_option,
         AIAgentBackendOption(
             id="pi",
             label="Pi Agent",
-            description="Pi Agent 运行框架正在接入。",
-            enabled=False,
+            description=(
+                "使用 Pi Agent 运行框架。"
+                if pi_available
+                else "服务器尚未安装 Pi Agent。"
+            ),
+            enabled=pi_available,
         ),
     ]
     return {
-        "teaching": options,
-        "source": [option.model_copy() for option in options],
+        "teaching": teaching_options,
+        "source": [
+            codex_option.model_copy(),
+            AIAgentBackendOption(
+                id="pi",
+                label="Pi Agent",
+                description="Pi Agent 文件资料工具正在接入。",
+                enabled=False,
+            ),
+        ],
     }
 
 
