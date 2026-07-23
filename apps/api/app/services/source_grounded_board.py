@@ -134,6 +134,17 @@ def resolve_source_grounded_board_plan(
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
+    if source.source_type == "video_url":
+        if (
+            selection.media_package_version is not None
+            and selection.media_package_version != view.structure.catalog_version
+        ):
+            raise SourceGroundedBoardError("视频素材包已经更新，请从最新章节目录重新选择。")
+        if (
+            selection.source_content_hash
+            and selection.source_content_hash != view.structure.source_content_hash
+        ):
+            raise SourceGroundedBoardError("远端视频内容已变化，请重新解析后再选择章节。")
     uses_on_demand_range = is_codex_directory_catalog(view.structure)
     if uses_on_demand_range and is_whole_source:
         raise SourceGroundedBoardError("新目录资料需要先选择一个已验证的章节范围。")
@@ -324,6 +335,8 @@ def resolve_source_grounded_board_plan(
             "catalog_version": range_read.catalog_version if range_read else None,
             "source_content_hash": range_read.source_content_hash if range_read else "",
             "source_range": range_read.source_range if range_read else None,
+            "media_time_range": chapter.media_time_range.model_dump(mode="json") if chapter and chapter.media_time_range else None,
+            "media_package_version": view.structure.catalog_version if source.source_type == "video_url" else None,
         },
     )
     source_evidence_store.save_bundle(bundle)
@@ -369,6 +382,10 @@ def resolve_source_grounded_board_plan(
             if range_read
             else selection.source_page_end if is_page_range else chapter.page_end if chapter else None
         ),
+        media_time_range=chapter.media_time_range if chapter else None,
+        media_package_version=(
+            view.structure.catalog_version if source.source_type == "video_url" else None
+        ),
         body_start_offset=chapter.body_start_offset if chapter else None,
         body_end_offset=chapter.body_end_offset if chapter else None,
         chunk_ids=_dedupe_chunk_ids(evidence),
@@ -386,7 +403,8 @@ def resolve_source_grounded_board_plan(
         frozen_evidence=evidence,
         frozen_visual_evidence=visual_evidence,
     )
-    source_label = " / ".join(part for part in [source.title, chapter_label, reference.page_range] if part)
+    media_label = reference.media_time_range.display_label if reference.media_time_range else ""
+    source_label = " / ".join(part for part in [source.title, chapter_label, media_label or reference.page_range] if part)
     requirement = LearningRequirementSheet(
         teaching_type="knowledge_point",
         learning_content=chapter_label,

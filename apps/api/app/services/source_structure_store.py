@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from app.models import (
+    MediaTimeRange,
     RetrievalEvidence,
     SourceCatalogBatchView,
     SourceCatalogRun,
@@ -542,6 +543,7 @@ class SourceStructureStore:
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
         visuals: list[SourceVisualAsset] | None = None,
+        preserve_visual_history: bool = False,
     ) -> SourceStructure:
         return self.coordinator.run_write(
             self.path,
@@ -550,6 +552,7 @@ class SourceStructureStore:
                 chapters=chapters,
                 chunks=chunks,
                 visuals=visuals,
+                preserve_visual_history=preserve_visual_history,
             ),
         )
 
@@ -560,6 +563,7 @@ class SourceStructureStore:
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
         visuals: list[SourceVisualAsset] | None = None,
+        preserve_visual_history: bool = False,
     ) -> SourceStructure:
         visuals = visuals or []
         chunks = [_chunk_with_text_hash(chunk) for chunk in chunks]
@@ -577,7 +581,7 @@ class SourceStructureStore:
         )
         with self._lock:
             with self._connect() as conn:
-                old_visual_rows = conn.execute(
+                old_visual_rows = [] if preserve_visual_history else conn.execute(
                         """
                         SELECT asset_path, storage_key FROM source_visual_assets
                         WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
@@ -599,7 +603,11 @@ class SourceStructureStore:
                     if row["storage_key"]
                 ]
                 with conn:
-                    self._delete_index_rows(conn, structure)
+                    self._delete_index_rows(
+                        conn,
+                        structure,
+                        delete_visuals=not preserve_visual_history,
+                    )
                     conn.execute(
                         """
                         INSERT INTO source_structures(
@@ -1087,12 +1095,20 @@ class SourceStructureStore:
                     """,
                     (source.owner_user_id, source.package_id, source.id),
                 ).fetchall()
+        structure = self._structure_from_row(structure_row) if structure_row else None
+        visuals = [self._visual_from_row(row) for row in visual_rows]
+        if structure and structure.strategy == "media_timeline":
+            visuals = [
+                visual
+                for visual in visuals
+                if visual.structure_version == structure.catalog_version
+            ]
         return SourceStructureView(
             source=self.attach_summary(source),
-            structure=self._structure_from_row(structure_row) if structure_row else None,
+            structure=structure,
             chapters=[self._chapter_from_row(row) for row in chapter_rows],
             chunks=[self._chunk_from_row(row) for row in chunk_rows],
-            visuals=[self._visual_from_row(row) for row in visual_rows],
+            visuals=visuals,
         )
 
     def visual_evidence_for_scope(
@@ -1107,6 +1123,13 @@ class SourceStructureStore:
     ) -> list[SourceVisualEvidence]:
         with self._lock:
             with self._connect() as conn:
+                structure_row = conn.execute(
+                    """
+                    SELECT catalog_version, strategy FROM source_structures
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    """,
+                    (owner_user_id, package_id, source_ingestion_id),
+                ).fetchone()
                 rows = conn.execute(
                     """
                     SELECT * FROM source_visual_assets
@@ -1116,6 +1139,12 @@ class SourceStructureStore:
                     (owner_user_id, package_id, source_ingestion_id),
                 ).fetchall()
         assets = [self._visual_from_row(row) for row in rows]
+        if structure_row and structure_row["strategy"] == "media_timeline":
+            assets = [
+                asset
+                for asset in assets
+                if asset.structure_version == int(structure_row["catalog_version"] or 0)
+            ]
         selected = [
             asset
             for asset in assets
@@ -1136,6 +1165,8 @@ class SourceStructureStore:
                 paragraph_index=asset.paragraph_index,
                 slide_no=asset.slide_no,
                 sheet_name=asset.sheet_name,
+                timestamp_ms=asset.timestamp_ms,
+                media_role=asset.media_role,
                 bbox=asset.bbox,
                 before_chunk_id=asset.before_chunk_id,
                 after_chunk_id=asset.after_chunk_id,
@@ -1482,6 +1513,7 @@ class SourceStructureStore:
                     chapter_id=chapter.id,
                     section_path=chapter.path or [chapter.title],
                     page_range=_chapter_page_range(chapter),
+                    media_time_range=chapter.media_time_range,
                     chunk_ids=chunk_ids,
                     excerpt=chapter.excerpt or _compact_text(expanded_text, 360),
                     expanded_text=expanded_text,
@@ -1819,20 +1851,27 @@ class SourceStructureStore:
             ),
         )
 
-    def _delete_index_rows(self, conn: sqlite3.Connection, structure: SourceStructure) -> None:
+    def _delete_index_rows(
+        self,
+        conn: sqlite3.Connection,
+        structure: SourceStructure,
+        *,
+        delete_visuals: bool = True,
+    ) -> None:
         self.native_index.delete_for_source(
             conn,
             owner_user_id=structure.owner_user_id,
             package_id=structure.package_id,
             source_ingestion_id=structure.source_ingestion_id,
         )
-        conn.execute(
-            """
-            DELETE FROM source_visual_assets
-            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
-            """,
-            (structure.owner_user_id, structure.package_id, structure.source_ingestion_id),
-        )
+        if delete_visuals:
+            conn.execute(
+                """
+                DELETE FROM source_visual_assets
+                WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                """,
+                (structure.owner_user_id, structure.package_id, structure.source_ingestion_id),
+            )
         conn.execute(
             """
             DELETE FROM source_chunks
@@ -1877,6 +1916,8 @@ class SourceStructureStore:
         )
 
     def _chapter_from_row(self, row: sqlite3.Row) -> SourceChapter:
+        metadata = _loads(row["metadata_json"], {})
+        raw_time_range = metadata.get("media_time_range")
         return SourceChapter(
             id=row["id"],
             owner_user_id=row["owner_user_id"],
@@ -1896,13 +1937,18 @@ class SourceStructureStore:
             page_end=row["page_end"],
             anchor_status=row["anchor_status"],
             range=SourceRange.model_validate(_loads(row["range_json"], {})) if row["range_json"] else None,
+            media_time_range=(
+                MediaTimeRange.model_validate(raw_time_range)
+                if isinstance(raw_time_range, dict)
+                else None
+            ),
             mapping_status=row["mapping_status"],
             source_content_hash=row["source_content_hash"],
             catalog_evidence=_loads(row["catalog_evidence_json"], []),
             catalog_version=row["catalog_version"],
             confidence=row["confidence"],
             excerpt=row["excerpt"],
-            metadata=_loads(row["metadata_json"], {}),
+            metadata=metadata,
         )
 
     def _catalog_run_from_row(self, row: sqlite3.Row) -> SourceCatalogRun:
@@ -1931,6 +1977,8 @@ class SourceStructureStore:
         )
 
     def _chunk_from_row(self, row: sqlite3.Row) -> SourceChunk:
+        metadata = _loads(row["metadata_json"], {})
+        raw_time_range = metadata.get("media_time_range")
         return SourceChunk(
             id=row["id"],
             owner_user_id=row["owner_user_id"],
@@ -1944,11 +1992,22 @@ class SourceStructureStore:
             end_offset=row["end_offset"],
             page_start=row["page_start"],
             page_end=row["page_end"],
+            media_time_range=(
+                MediaTimeRange.model_validate(raw_time_range)
+                if isinstance(raw_time_range, dict)
+                else None
+            ),
+            transcript_segment_ids=[
+                str(item)
+                for item in metadata.get("transcript_segment_ids", [])
+                if str(item).strip()
+            ],
             token_count=row["token_count"],
-            metadata=_loads(row["metadata_json"], {}),
+            metadata=metadata,
         )
 
     def _visual_from_row(self, row: sqlite3.Row) -> SourceVisualAsset:
+        metadata = _loads(row["metadata_json"], {})
         return SourceVisualAsset(
             id=row["id"],
             owner_user_id=row["owner_user_id"],
@@ -1964,6 +2023,8 @@ class SourceStructureStore:
             paragraph_index=row["paragraph_index"],
             slide_no=row["slide_no"],
             sheet_name=row["sheet_name"],
+            timestamp_ms=metadata.get("timestamp_ms"),
+            media_role=metadata.get("media_role"),
             bbox=_loads(row["bbox_json"], []),
             before_chunk_id=row["before_chunk_id"],
             after_chunk_id=row["after_chunk_id"],
@@ -1982,7 +2043,7 @@ class SourceStructureStore:
             table_data=_loads(row["table_data_json"], []),
             confidence=row["confidence"],
             created_at=row["created_at"] or now_iso(),
-            metadata=_loads(row["metadata_json"], {}),
+            metadata=metadata,
         )
 
 
