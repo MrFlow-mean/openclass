@@ -15,7 +15,7 @@ type SourceProcessingProgressProps = {
 type SourceProcessingState = {
   label: string;
   detail?: string;
-  value: number;
+  value?: number;
   activity?: AgentActivityEvent[];
 };
 
@@ -68,6 +68,21 @@ const DIRECTORY_JOB_PHASE_LABELS: Record<string, string> = {
   validating_directory_ranges: "后端任务：验证目录范围",
   publishing_catalog: "后端任务：保存目录",
   catalog_ready: "目录已经保存",
+};
+
+const MEDIA_JOB_PHASE_LABELS: Record<string, string> = {
+  queued: "等待解析视频 URL",
+  retranscribe: "等待重新转写",
+  visuals_retry: "等待重试关键帧",
+  resolving_media: "正在解析视频来源",
+  downloading_media: "正在下载临时视频",
+  extracting_subtitles: "正在读取视频字幕",
+  transcribing_audio: "正在转写语音",
+  extracting_keyframes: "正在定位完整板书与幻灯片",
+  analyzing_keyframes: "正在分析关键帧候选",
+  building_media_chapters: "正在生成完整章节目录",
+  persisting_media_package: "正在保存学习素材包",
+  media_package_ready: "学习素材包已完成",
 };
 
 export function isDirectoryCatalogSource(source: SourceIngestionRecord) {
@@ -193,7 +208,9 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
     : LEGACY_SOURCE_STATUS_PROGRESS;
   const phaseLabels = isDirectoryCatalog
     ? DIRECTORY_JOB_PHASE_LABELS
-    : LEGACY_JOB_PHASE_LABELS;
+    : source.source_type === "video_url"
+      ? MEDIA_JOB_PHASE_LABELS
+      : LEGACY_JOB_PHASE_LABELS;
   const job = source.ingestion_job;
   if (job && ACTIVE_JOB_STATUSES.has(job.status)) {
     const phase = job.phase_history.at(-1) ?? "";
@@ -204,8 +221,13 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
         phaseLabels[phase] ??
         statusProgress[job.status]?.label ??
         (isDirectoryCatalog ? "正在建立目录" : "正在处理资料"),
-      detail: sourceProgress?.detail,
-      value: job.progress,
+      detail:
+        sourceProgress?.detail ??
+        (source.source_type === "video_url" ? mediaMetricsDetail(job.metrics ?? {}) : undefined),
+      value:
+        source.source_type !== "video_url" || job.metrics?.progress_determinate === true
+          ? job.progress
+          : undefined,
       activity: job.agent_activity ?? [],
     };
   }
@@ -231,6 +253,32 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
     };
   }
   return null;
+}
+
+function mediaMetricsDetail(metrics: Record<string, unknown>) {
+  const parts: string[] = [];
+  if (typeof metrics.downloaded_bytes === "number") {
+    const total = typeof metrics.total_bytes === "number" && metrics.total_bytes > 0
+      ? ` / ${(metrics.total_bytes / 1024 / 1024).toFixed(1)} MB`
+      : "";
+    parts.push(`已下载 ${(metrics.downloaded_bytes / 1024 / 1024).toFixed(1)} MB${total}`);
+  }
+  if (typeof metrics.transcript_segments === "number") {
+    parts.push(`逐字稿 ${metrics.transcript_segments} 段`);
+  }
+  if (typeof metrics.processed_audio_seconds === "number") {
+    parts.push(`已转写 ${Math.round(metrics.processed_audio_seconds / 60)} 分钟`);
+  }
+  if (typeof metrics.duration_ms === "number") {
+    parts.push(`视频 ${Math.round(metrics.duration_ms / 1000)} 秒`);
+  }
+  if (typeof metrics.chapters === "number") {
+    parts.push(`章节 ${metrics.chapters} 个`);
+  }
+  if (typeof metrics.candidate_keyframes === "number") {
+    parts.push(`关键帧候选 ${metrics.candidate_keyframes} 张`);
+  }
+  return parts.join(" · ") || undefined;
 }
 
 function latestSourceProgress(events: AgentActivityEvent[]): { label: string; detail?: string } | null {
