@@ -132,7 +132,7 @@ type UseRealtimeVoiceOptions = {
   setBusyAction: Dispatch<SetStateAction<string | null>>;
   setError: Dispatch<SetStateAction<string | null>>;
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
-  chatRequestInFlightRef: MutableRefObject<boolean>;
+  chatRequestInFlightLessonIdsRef: MutableRefObject<Set<string>>;
   onSubmitTranscript: (message: string) => void;
   currentSelection: SelectionRef | null;
   currentSelections: SelectionRef[];
@@ -155,7 +155,7 @@ export function useRealtimeVoice({
   setBusyAction,
   setError,
   flushAutoSave,
-  chatRequestInFlightRef,
+  chatRequestInFlightLessonIdsRef,
   onSubmitTranscript,
   currentSelection,
   currentSelections,
@@ -386,7 +386,7 @@ export function useRealtimeVoice({
       setVoiceStatusText("Realtime 正在通过后端 Chatbot 工具处理这句话");
       return;
     }
-    if (chatRequestInFlightRef.current) {
+    if (chatRequestInFlightLessonIdsRef.current.has(lessonId)) {
       setVoiceStatusText("正在处理上一句语音，请稍等片刻");
       return;
     }
