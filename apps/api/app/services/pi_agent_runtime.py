@@ -127,9 +127,15 @@ class PiTextClient:
     def _run(self, *, system_prompt: str, user_prompt: str) -> str:
         load_root_dotenv()
         owner_key = hashlib.sha256(self.owner_user_id.encode("utf-8")).hexdigest()[:24]
-        agent_dir = self.runtime_root / "agents" / owner_key
+        configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
+        if configured_agent_dir:
+            agent_dir = Path(configured_agent_dir).expanduser().resolve()
+            if not agent_dir.is_dir():
+                raise RuntimeError("The configured Pi agent directory does not exist")
+        else:
+            agent_dir = self.runtime_root / "agents" / owner_key
+            agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace_root = self.runtime_root / "workspaces"
-        agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = os.environ.copy()
         environment.update(
