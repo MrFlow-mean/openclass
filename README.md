@@ -137,6 +137,24 @@ Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启
 
 聊天回复的自动播报使用独立的 TTS（文字转语音）链路。默认 adapter（适配器）通过 `VOLCENGINE_TTS_API_KEY` 调用豆包语音 V3 HTTP Chunked API（第三版 HTTP 分块接口），不复用 Codex device login（设备登录）的额度或认证。模型版本、音色和语速分别由 `VOLCENGINE_TTS_RESOURCE_ID`、`VOLCENGINE_TTS_SPEAKER`、`VOLCENGINE_TTS_SPEECH_RATE` 配置；密钥只由 FastAPI 后端读取，不能放进 `NEXT_PUBLIC_*` 前端变量。右侧「课程工作台辅助」里的“AI 回复自动播报”开关控制新回复是否自动播放，聊天消息下方的“播报”按钮可手动重播单条回复。
 
+### 视频 URL 学习素材包
+
+视频 URL 导入由 `OPENCLASS_MEDIA_INGESTION_ENABLED=true` 启用，只接受公开单个点播视频或公开媒体直链。FFmpeg（音视频处理工具）可以由系统安装，也可以由 `imageio-ffmpeg` 提供；`ffprobe`（媒体信息探测工具）为可选加速路径，`GET /health` 会返回实际运行状态。YouTube 提取还需要 `yt-dlp-ejs`（YouTube JavaScript 挑战求解组件）和受支持的 JavaScript runtime（JavaScript 运行时）。默认限制为 2 GB、4 小时，失败产生的临时媒体默认保留 24 小时：
+
+```bash
+OPENCLASS_MEDIA_INGESTION_ENABLED=true
+OPENCLASS_MEDIA_MAX_BYTES=2147483648
+OPENCLASS_MEDIA_MAX_DURATION_SECONDS=14400
+OPENCLASS_MEDIA_FAILED_CACHE_HOURS=24
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+OPENCLASS_YOUTUBE_JS_RUNTIME=node
+# OPENCLASS_YOUTUBE_JS_RUNTIME_PATH=/absolute/path/to/node
+```
+
+字幕优先；无字幕时可使用 OpenAI 转写，或安装 `.[media-local]` 后启用本地 Whisper（语音识别模型）。受信任的本机部署可以设置 `OPENCLASS_YOUTUBE_BROWSER_AUTH_ENABLED=true`，但只有用户在单次导入或重试中明确授权时，后端才读取本机浏览器会话；服务器部署应改用受保护的 `OPENCLASS_YOUTUBE_COOKIE_FILE`，不得提交 Cookie 文件。
+
+该 worker（后台任务进程）从 SQLite（轻量数据库）恢复未完成任务；成功后删除临时视频和音频，只保存逐字稿版本、章节时间范围、关键帧、内容哈希与质量状态。长视频的粗采样帧和送入视觉模型的候选帧都有独立上限，避免处理成本随时长无限增长。
+
 ## 数据与文档格式
 
 - AI 写入 Board 的正式正文必须是 Markdown / 普通文本，不能把模型直接返回的 HTML 保存为正式 `content_text`。
