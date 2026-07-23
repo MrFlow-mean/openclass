@@ -56,8 +56,12 @@ def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
             AIAgentBackendOption(
                 id="pi",
                 label="Pi Agent",
-                description="Pi Agent 文件资料工具正在接入。",
-                enabled=False,
+                description=(
+                    "使用 Pi Agent 和 OpenClass 受限文件资料工具。"
+                    if pi_available
+                    else "服务器尚未安装 Pi Agent。"
+                ),
+                enabled=pi_available,
             ),
         ],
     }

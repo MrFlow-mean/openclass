@@ -225,8 +225,8 @@ class SourceDirectoryProcessor:
 
             if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
-                # Source Codex owns only directory-page discovery, exact PDF P,
-                # and the expandable directory tree. The host mechanically
+                # the selected source agent owns only directory-page discovery,
+                # exact PDF P, and the expandable directory tree. The host mechanically
                 # validates and persists that exact contract without inspecting
                 # body ranges or deriving directory semantics.
                 _report(progress_callback, "source_codex_investigation", 30)
@@ -243,7 +243,7 @@ class SourceDirectoryProcessor:
                     "directory_pages_offset_tree_v1"
                 ):
                     raise SourceDirectoryProcessingError(
-                        "Source Codex did not return the required directory-only task contract."
+                        "The source agent did not return the required directory-only task contract."
                     )
                 if any(
                     chapter.range is not None
@@ -291,7 +291,7 @@ class SourceDirectoryProcessor:
                 turn_count = direct_catalog.turn_count
                 warnings = []
                 if not chapters:
-                    warnings.append("Source Codex returned an empty directory list.")
+                    warnings.append("The source agent returned an empty directory list.")
                 catalog_complete = True
                 structure_execution_metadata = {
                     key: value
