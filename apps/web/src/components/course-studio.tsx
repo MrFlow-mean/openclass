@@ -527,6 +527,19 @@ export function CourseStudio() {
     });
   }
 
+  function learnSourceChapter(sourceReference: SelectionRef) {
+    if (sourceReference.kind !== "source" || !sourceReference.source_chapter_id) {
+      return;
+    }
+    void handleSubmitChat({
+      message: sourceReference.excerpt,
+      selection: sourceReference,
+      interaction_mode: "ask",
+      board_generation_action: "start",
+      post_generation_action: "auto_explain",
+    });
+  }
+
   function handleFormulaInkSubmit(payload: FormulaInkEditorSubmitPayload) {
     if (!activeLesson || lessonMerge.isActive || !textModelReady || isChatBusy || chatRequestInFlightRef.current) {
       return false;
@@ -920,6 +933,7 @@ export function CourseStudio() {
           onSubmitMerge={lessonMerge.submit}
           onError={setError}
           onSourceReference={applySourceReference}
+          onLearnSourceChapter={learnSourceChapter}
           geometryReference={geometryReference}
           onGeometryReferenceClear={() => setGeometryReference(null)}
           textModel={selectedTextModel}
@@ -929,6 +943,10 @@ export function CourseStudio() {
           selectedTextOption={selectedTextOption}
           textModelOptions={modelCatalog.text}
           onSelectTextModel={selectTextModel}
+          transcriptionModelOptions={modelCatalog.transcription}
+          defaultTranscriptionModel={modelCatalog.defaults.transcription}
+          visionModelOptions={modelCatalog.vision}
+          defaultVisionModel={modelCatalog.defaults.vision}
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsLoading={chatSpeech.isSpeechLoading}
           speechIsPlaying={chatSpeech.isSpeechPlaying}
