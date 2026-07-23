@@ -17,6 +17,10 @@ import { useRef, useState, type Dispatch, type HTMLAttributes, type ReactNode, t
 
 import { CourseChatMessage } from "@/components/chatbot";
 import { ChatAttachmentChips, ChatAttachmentMenu } from "@/components/course-studio/chat-attachment-menu";
+import {
+  AgentBackendPicker,
+  FALLBACK_AGENT_BACKENDS,
+} from "@/components/course-studio/agent-backend-picker";
 import { CodexModelSettingsPicker } from "@/components/course-studio/codex-model-settings-picker";
 import {
   modelButtonLabel,
@@ -508,8 +512,21 @@ export function CourseStudioChatSidebar({
       <div className="shrink-0 border-t border-gray-100 bg-white px-3 py-3">
         <div
           ref={modelControlsRef}
-          className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2"
+          className="mb-2 grid grid-cols-[minmax(92px,0.7fr)_minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2"
         >
+          <AgentBackendPicker
+            ariaLabel="教学 Agent 后端"
+            options={modelCatalog.agent_backends?.teaching ?? FALLBACK_AGENT_BACKENDS}
+            value={selectedTextModel.agent_backend ?? "codex"}
+            disabled={isChatBusy || interactionLocked}
+            onChange={(agentBackend) =>
+              onSelectTextModel({
+                ...selectedTextModel,
+                agent_backend: agentBackend,
+              })
+            }
+            testId="teaching-agent-backend"
+          />
           <CodexModelSettingsPicker
             open={openModelMenu === "text"}
             onOpenChange={(open) => setOpenModelMenu(open ? "text" : null)}
@@ -517,7 +534,12 @@ export function CourseStudioChatSidebar({
             selectedOption={selectedTextOption}
             defaultSelection={modelCatalog.defaults.text}
             options={modelCatalog.text}
-            onChange={onSelectTextModel}
+            onChange={(selection) =>
+              onSelectTextModel({
+                ...selection,
+                agent_backend: selectedTextModel.agent_backend ?? "codex",
+              })
+            }
           />
           <ModelPicker
             kind="realtime"

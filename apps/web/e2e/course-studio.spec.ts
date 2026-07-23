@@ -37,8 +37,18 @@ test.beforeEach(async ({ page }) => {
         text: [textModel],
         realtime: [realtimeModel],
         defaults: {
-          text: { provider: textModel.provider, model: textModel.model },
+          text: { agent_backend: "codex", provider: textModel.provider, model: textModel.model },
           realtime: { provider: realtimeModel.provider, model: realtimeModel.model },
+        },
+        agent_backends: {
+          teaching: [
+            { id: "codex", label: "Codex Agent", description: "", enabled: true },
+            { id: "pi", label: "Pi Agent", description: "", enabled: false },
+          ],
+          source: [
+            { id: "codex", label: "Codex Agent", description: "", enabled: true },
+            { id: "pi", label: "Pi Agent", description: "", enabled: false },
+          ],
         },
       }),
     });
@@ -581,6 +591,9 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   }
 
   const chatModelButton = page.getByTestId("codex-model-settings-button");
+  const teachingAgentBackend = page.getByTestId("teaching-agent-backend");
+  await expect(teachingAgentBackend).toHaveValue("codex");
+  await expect(teachingAgentBackend.locator('option[value="pi"]')).toHaveAttribute("disabled", "");
   await chatModelButton.click();
   const chatModelMenu = page.getByTestId("codex-model-settings-menu");
   await expect(chatModelMenu).toBeVisible();

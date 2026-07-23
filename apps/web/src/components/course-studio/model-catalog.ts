@@ -53,8 +53,38 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
   ],
   defaults: {
-    text: { provider: "openai_codex", model: "gpt-5.6-sol" },
+    text: { agent_backend: "codex", provider: "openai_codex", model: "gpt-5.6-sol" },
     realtime: { provider: "openai", model: "gpt-realtime-2.1" },
+  },
+  agent_backends: {
+    teaching: [
+      {
+        id: "codex",
+        label: "Codex Agent",
+        description: "使用当前 Codex Agent 运行框架。",
+        enabled: true,
+      },
+      {
+        id: "pi",
+        label: "Pi Agent",
+        description: "Pi Agent 运行框架正在接入。",
+        enabled: false,
+      },
+    ],
+    source: [
+      {
+        id: "codex",
+        label: "Codex Agent",
+        description: "使用当前 Codex Agent 运行框架。",
+        enabled: true,
+      },
+      {
+        id: "pi",
+        label: "Pi Agent",
+        description: "Pi Agent 运行框架正在接入。",
+        enabled: false,
+      },
+    ],
   },
 };
 
@@ -160,6 +190,7 @@ export function selectionForModelOption(
           (defaultServiceTier && supportedServiceTiers.has(defaultServiceTier) ? defaultServiceTier : null);
 
   return {
+    agent_backend: current?.agent_backend ?? "codex",
     provider: option.provider,
     model: option.model,
     reasoning_effort: reasoningEffort,
