@@ -3876,7 +3876,7 @@ def test_deepseek_selection_uses_shared_provider_for_an_authorized_board_edit(
         def parse_structured(self, **kwargs):
             schema = kwargs["schema"]
             calls.append(schema)
-            if schema is codex_chat._DeepSeekExistingBoardTurn:
+            if schema is codex_chat._StructuredExistingBoardTurn:
                 parsed = schema(
                     chatbot_message="I updated the requested paragraph.",
                     board_markdown="# Existing\n\nUpdated content.",
@@ -3910,4 +3910,50 @@ def test_deepseek_selection_uses_shared_provider_for_an_authorized_board_edit(
     assert "Updated content." in saved_lesson.board_document.content_text
     assert metadata["ai_provider"] == "deepseek"
     assert metadata["ai_model"] == "deepseek-v4-flash"
-    assert codex_chat._DeepSeekExistingBoardTurn in calls
+    assert codex_chat._StructuredExistingBoardTurn in calls
+
+
+def test_pi_backend_uses_structured_workflow_with_a_codex_provider_model(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="# Existing\n\nOriginal content.")
+
+    class FakePiAdapter:
+        def parse_structured(self, **kwargs):
+            schema = kwargs["schema"]
+            if schema is codex_chat._StructuredExistingBoardTurn:
+                parsed = schema(
+                    chatbot_message="Here is the explanation.",
+                    board_markdown="# Existing\n\nOriginal content.",
+                )
+            else:
+                parsed = schema(suggestions=["Continue"])
+            return SimpleNamespace(output_parsed=parsed, activity=[])
+
+    monkeypatch.setattr(
+        codex_chat,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakePiAdapter(),
+    )
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Explain this paragraph.",
+            text_model={
+                "agent_backend": "pi",
+                "provider": "openai_codex",
+                "model": "gpt-5.5",
+            },
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    metadata = current_head_commit(saved_lesson).metadata
+    assert response.chatbot_message == "Here is the explanation."
+    assert response.board_document_operation_status == "none"
+    assert metadata["agent_backend"] == "pi"
+    assert metadata["assistant_message_source"] == "pi"
+    assert metadata["ai_provider"] == "openai_codex"
