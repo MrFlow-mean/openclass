@@ -59,6 +59,7 @@ type CourseStudioSidePanelProps = {
   onSubmitMerge: () => void | Promise<void>;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onLearnSourceChapter?: (selection: SelectionRef) => void;
   geometryReference: SelectionRef | null;
   onGeometryReferenceClear: () => void;
   textModel: AIModelSelection | null;
@@ -68,6 +69,10 @@ type CourseStudioSidePanelProps = {
   selectedTextOption: AIModelOption | null;
   textModelOptions: AIModelOption[];
   onSelectTextModel: (selection: AIModelSelection) => void;
+  transcriptionModelOptions: AIModelOption[];
+  defaultTranscriptionModel: AIModelSelection;
+  visionModelOptions: AIModelOption[];
+  defaultVisionModel: AIModelSelection;
   speechAutoEnabled: boolean;
   speechIsLoading: boolean;
   speechIsPlaying: boolean;
@@ -126,6 +131,7 @@ export function CourseStudioSidePanel({
   onSubmitMerge,
   onError,
   onSourceReference,
+  onLearnSourceChapter,
   geometryReference,
   onGeometryReferenceClear,
   textModel,
@@ -135,6 +141,10 @@ export function CourseStudioSidePanel({
   selectedTextOption,
   textModelOptions,
   onSelectTextModel,
+  transcriptionModelOptions,
+  defaultTranscriptionModel,
+  visionModelOptions,
+  defaultVisionModel,
   speechAutoEnabled,
   speechIsLoading,
   speechIsPlaying,
@@ -257,8 +267,13 @@ export function CourseStudioSidePanel({
             catalogCache={sourceCatalogCache}
             catalogModelOptions={catalogModelOptions}
             defaultCatalogModel={defaultCatalogModel}
+            transcriptionModelOptions={transcriptionModelOptions}
+            defaultTranscriptionModel={defaultTranscriptionModel}
+            visionModelOptions={visionModelOptions}
+            defaultVisionModel={defaultVisionModel}
             onError={onError}
             onSourceReference={onSourceReference}
+            onLearnSourceChapter={onLearnSourceChapter}
           />
         ) : sidebarTab === "history" && mergeSession ? (
           <LessonMergePanel
