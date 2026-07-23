@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronDown, ChevronRight, TextQuote } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, TextQuote } from "lucide-react";
 
 import {
   createSourceChapterSelection,
@@ -24,12 +24,14 @@ export function SourceChapterTree({
   expandedIds,
   onToggle,
   onSourceReference,
+  onLearnSourceChapter,
 }: {
   source: SourceIngestionRecord;
   catalog: SourceCatalogView;
   expandedIds: Set<string>;
   onToggle: (chapterId: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onLearnSourceChapter?: (selection: SelectionRef) => void;
 }) {
   const nodes = buildChapterTree(catalog.chapters);
   return (
@@ -43,6 +45,7 @@ export function SourceChapterTree({
           expandedIds={expandedIds}
           onToggle={onToggle}
           onSourceReference={onSourceReference}
+          onLearnSourceChapter={onLearnSourceChapter}
           depth={0}
         />
       ))}
@@ -57,6 +60,7 @@ function SourceChapterNode({
   expandedIds,
   onToggle,
   onSourceReference,
+  onLearnSourceChapter,
   depth,
 }: {
   source: SourceIngestionRecord;
@@ -65,6 +69,7 @@ function SourceChapterNode({
   expandedIds: Set<string>;
   onToggle: (chapterId: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onLearnSourceChapter?: (selection: SelectionRef) => void;
   depth: number;
 }) {
   const hasChildren = node.children.length > 0;
@@ -115,6 +120,17 @@ function SourceChapterNode({
             <TextQuote className="h-4 w-4" />
           </button>
         ) : null}
+        {source.source_type === "video_url" && onLearnSourceChapter && isVerified ? (
+          <button
+            type="button"
+            onClick={() => onLearnSourceChapter(createSourceChapterSelection(source, node.chapter, catalog))}
+            className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 text-[10px] font-semibold text-blue-700 transition hover:border-blue-300 hover:bg-blue-100"
+            title="直接生成并讲解此章节板书"
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            学习此章节
+          </button>
+        ) : null}
       </div>
       {hasChildren && isExpanded ? (
         <div className="mt-0.5 space-y-0.5">
@@ -127,6 +143,7 @@ function SourceChapterNode({
               expandedIds={expandedIds}
               onToggle={onToggle}
               onSourceReference={onSourceReference}
+              onLearnSourceChapter={onLearnSourceChapter}
               depth={depth + 1}
             />
           ))}
@@ -137,6 +154,9 @@ function SourceChapterNode({
 }
 
 function sourceChapterRangeLabel(chapter: SourceChapter) {
+  if (chapter.media_time_range?.display_label) {
+    return chapter.media_time_range.display_label;
+  }
   const authoritative = sourceRangeDisplayLabel(chapter.range);
   if (authoritative) {
     return authoritative;
