@@ -77,6 +77,17 @@ def test_catalog_exposes_codex_and_shared_deepseek_text_models(monkeypatch) -> N
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
     assert catalog.defaults["realtime"].provider == "openai"
     assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
+    assert catalog.defaults["text"].agent_backend == "codex"
+    assert [option.id for option in catalog.agent_backends["teaching"]] == [
+        "codex",
+        "pi",
+    ]
+    assert catalog.agent_backends["teaching"][0].enabled is True
+    assert catalog.agent_backends["teaching"][1].enabled is False
+    assert [option.id for option in catalog.agent_backends["source"]] == [
+        "codex",
+        "pi",
+    ]
     assert len(catalog.realtime) == 2
     assert catalog.realtime[0].model == "gpt-realtime-2.1"
     assert catalog.realtime[0].default is True
@@ -228,3 +239,11 @@ def test_shared_deepseek_is_enabled_for_every_user_without_a_user_quota(monkeypa
         assert all(option.enabled and option.configured for option in deepseek_options)
         assert catalog.defaults["text"].provider == "deepseek"
         assert catalog.defaults["text"].model == "deepseek-v4-flash"
+
+
+def test_model_selection_defaults_to_codex_and_accepts_pi() -> None:
+    default_selection = ai_model_catalog.default_text_selection()
+    pi_selection = default_selection.model_copy(update={"agent_backend": "pi"})
+
+    assert default_selection.agent_backend == "codex"
+    assert pi_selection.agent_backend == "pi"

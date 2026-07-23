@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from app.models import (
+    AIAgentBackendOption,
     AIModelCatalog,
     AIModelOption,
     AIModelSelection,
@@ -24,6 +25,27 @@ from app.services.deepseek_api import (
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
+
+
+def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
+    options = [
+        AIAgentBackendOption(
+            id="codex",
+            label="Codex Agent",
+            description="使用当前 Codex Agent 运行框架。",
+            enabled=True,
+        ),
+        AIAgentBackendOption(
+            id="pi",
+            label="Pi Agent",
+            description="Pi Agent 运行框架正在接入。",
+            enabled=False,
+        ),
+    ]
+    return {
+        "teaching": options,
+        "source": [option.model_copy() for option in options],
+    }
 
 
 def default_text_selection(
@@ -238,4 +260,5 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             for model, label in realtime_models
         ],
         defaults={"text": text_default, "realtime": realtime_default},
+        agent_backends=_agent_backend_options(),
     )
