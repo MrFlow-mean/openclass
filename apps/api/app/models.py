@@ -1323,7 +1323,15 @@ class AIServiceTierOption(BaseModel):
     description: str = ""
 
 
+class AIAgentBackendOption(BaseModel):
+    id: Literal["codex", "pi"]
+    label: str
+    description: str = ""
+    enabled: bool = False
+
+
 class AIModelSelection(BaseModel):
+    agent_backend: Literal["codex", "pi"] = "codex"
     provider: AIProvider
     model: str
     reasoning_effort: str | None = None
@@ -1351,6 +1359,10 @@ class AIModelCatalog(BaseModel):
     text: list[AIModelOption] = Field(default_factory=list)
     realtime: list[AIModelOption] = Field(default_factory=list)
     defaults: dict[AIModelCapability, AIModelSelection]
+    agent_backends: dict[
+        Literal["teaching", "source"],
+        list[AIAgentBackendOption],
+    ] = Field(default_factory=dict)
 
 
 class CodexAccountView(BaseModel):

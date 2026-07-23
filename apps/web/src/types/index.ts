@@ -807,10 +807,18 @@ export interface AdminOverview {
 }
 
 export interface AIModelSelection {
+  agent_backend?: "codex" | "pi";
   provider: AIProvider;
   model: string;
   reasoning_effort?: string | null;
   service_tier?: string | null;
+}
+
+export interface AIAgentBackendOption {
+  id: "codex" | "pi";
+  label: string;
+  description: string;
+  enabled: boolean;
 }
 
 export interface AIReasoningEffortOption {
@@ -845,6 +853,10 @@ export interface AIModelCatalog {
   defaults: {
     text: AIModelSelection;
     realtime: AIModelSelection;
+  };
+  agent_backends?: {
+    teaching: AIAgentBackendOption[];
+    source: AIAgentBackendOption[];
   };
 }
 
