@@ -47,8 +47,8 @@ def _parse_catalog_model(raw: str | None) -> AIModelSelection | None:
         selection = AIModelSelection.model_validate(json.loads(raw))
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail="catalog_model must be a valid model selection.") from exc
-    if selection.provider != "openai_codex" or not selection.model.strip():
-        raise HTTPException(status_code=400, detail="Catalog extraction requires an OpenAI Codex text model.")
+    if not selection.model.strip():
+        raise HTTPException(status_code=400, detail="Catalog extraction requires a configured text model.")
     return selection
 
 

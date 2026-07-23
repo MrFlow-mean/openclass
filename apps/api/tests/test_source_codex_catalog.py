@@ -16,6 +16,7 @@ from app.models import (
     SourceIngestionRecord,
     SourceRange,
 )
+from app.routers.sources import _parse_catalog_model
 from app.services import source_directory_processor as directory_processor_module
 from app.services import source_codex_catalog as source_codex_catalog_module
 from app.services import source_codex_pdf_mapping as pdf_mapping_module
@@ -151,9 +152,13 @@ def _record(path: Path, *, mime_type: str = "application/pdf") -> SourceIngestio
     )
 
 
-def _model(*, reasoning_effort: str | None = "low") -> AIModelSelection:
+def _model(
+    *,
+    provider: str = "openai_codex",
+    reasoning_effort: str | None = "low",
+) -> AIModelSelection:
     return AIModelSelection(
-        provider="openai_codex",
+        provider=provider,
         model="catalog-test-model",
         reasoning_effort=reasoning_effort,
         service_tier="priority",
@@ -168,6 +173,7 @@ def _generate(
     mime_type: str = "application/pdf",
     raw_output: str | None = None,
     source_turn_count: int = 1,
+    selection: AIModelSelection | None = None,
 ):
     path = tmp_path / f"source{suffix}"
     path.write_bytes(b"source bytes")
@@ -182,7 +188,7 @@ def _generate(
         record=_record(path, mime_type=mime_type),
         source_path=path,
         source_content_hash=content_hash,
-        selection=_model(),
+        selection=selection or _model(),
         client_factory=lambda _user_id: client,
     )
     return result, client, path, content_hash
@@ -206,6 +212,7 @@ def test_source_codex_runs_once_and_materializes_unmapped_hierarchy(tmp_path: Pa
     assert len(client.calls) == 1
     call = client.calls[0]
     assert call["source_path"] == path
+    assert call["provider"] == "openai_codex"
     assert call["reasoning_effort"] == "low"
     assert call["output_artifact_path"] == "scratch/catalog.json"
     assert "body range" in str(call["system_prompt"])
@@ -223,6 +230,26 @@ def test_source_codex_runs_once_and_materializes_unmapped_hierarchy(tmp_path: Pa
         "mechanical_materialization_only"
     )
     assert result.audit_metadata["body_text_extracted_by_host"] is False
+
+
+def test_source_codex_forwards_a_custom_model_provider(tmp_path: Path) -> None:
+    _result, client, _path, _content_hash = _generate(
+        tmp_path,
+        _catalog(_node("chapter-1")),
+        selection=_model(provider="deepseek"),
+    )
+
+    assert client.calls[0]["provider"] == "deepseek"
+
+
+def test_source_upload_accepts_any_configured_text_provider() -> None:
+    selection = _parse_catalog_model(
+        json.dumps({"provider": "deepseek", "model": "deepseek-v4-pro"})
+    )
+
+    assert selection is not None
+    assert selection.provider == "deepseek"
+    assert selection.model == "deepseek-v4-pro"
 
 
 def test_source_codex_materializes_exact_authored_pdf_ranges(tmp_path: Path) -> None:

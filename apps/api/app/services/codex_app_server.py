@@ -1217,6 +1217,29 @@ def logout_codex(user_id: str) -> None:
     _invalidate_status(user_id)
 
 
+def _codex_model_provider(provider: str) -> str | None:
+    normalized = provider.strip()
+    if not normalized or normalized == "openai_codex":
+        return None
+    return normalized
+
+
+def _require_codex_model_access(user_id: str, provider: str) -> None:
+    if _codex_model_provider(provider) is not None:
+        if not codex_app_server_runtime_enabled():
+            raise CodexAppServerError("The Codex app-server runtime is disabled")
+        if not codex_app_server_available():
+            raise CodexAppServerError(
+                "Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid"
+            )
+        return
+    status = codex_provider_status(user_id, refresh=False)
+    if not status.configured:
+        raise CodexAppServerError(
+            status.message or "ChatGPT/Codex provider is not signed in"
+        )
+
+
 class CodexAppServerTextClient:
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
@@ -1224,6 +1247,7 @@ class CodexAppServerTextClient:
     def parse(
         self,
         *,
+        provider: str = "openai_codex",
         model: str,
         system_prompt: str,
         user_prompt: str,
@@ -1236,9 +1260,7 @@ class CodexAppServerTextClient:
         service_tier_is_set: bool = False,
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
-        status = codex_provider_status(self.user_id, refresh=False)
-        if not status.configured:
-            raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
+        _require_codex_model_access(self.user_id, provider)
         deadline_monotonic = (
             budget.deadline_monotonic
             if budget is not None
@@ -1252,6 +1274,7 @@ class CodexAppServerTextClient:
         ) as session:
             output_text, usage, activity = _run_structured_turn(
                 session=session,
+                provider=provider,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -1278,6 +1301,7 @@ class CodexAppServerTextClient:
         self,
         *,
         source_path: Path,
+        provider: str = "openai_codex",
         model: str,
         system_prompt: str,
         user_prompt: str,
@@ -1291,11 +1315,7 @@ class CodexAppServerTextClient:
         artifact_validator: Callable[[object], None] | None = None,
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
-        status = codex_provider_status(self.user_id, refresh=False)
-        if not status.configured:
-            raise CodexAppServerError(
-                status.message or "ChatGPT/Codex provider is not signed in"
-            )
+        _require_codex_model_access(self.user_id, provider)
         deadline_monotonic = (
             budget.deadline_monotonic
             if budget is not None
@@ -1310,6 +1330,7 @@ class CodexAppServerTextClient:
                 _run_source_file_structured_turn(
                     session=session,
                     source_path=source_path,
+                    provider=provider,
                     model=model,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
@@ -1653,6 +1674,7 @@ def _run_conversation_turn(
 def _run_structured_turn(
     *,
     session: CodexAppServerSession,
+    provider: str = "openai_codex",
     model: str,
     system_prompt: str,
     user_prompt: str,
@@ -1697,6 +1719,7 @@ def _run_structured_turn(
         return _run_structured_workspace_turn(
             session=session,
             cwd=Path(cwd_text),
+            provider=provider,
             model=model,
             user_prompt=user_prompt,
             schema=schema,
@@ -1763,6 +1786,7 @@ def _run_source_file_structured_turn(
     *,
     session: CodexAppServerSession,
     source_path: Path,
+    provider: str = "openai_codex",
     model: str,
     system_prompt: str,
     user_prompt: str,
@@ -1871,6 +1895,7 @@ def _run_source_file_structured_turn(
             output_text, usage, activity = _run_structured_workspace_turn(
                 session=session,
                 cwd=cwd,
+                provider=provider,
                 model=model,
                 user_prompt=user_prompt,
                 schema=turn_schema,
@@ -1979,6 +2004,7 @@ def _run_structured_workspace_turn(
     *,
     session: CodexAppServerSession,
     cwd: Path,
+    provider: str = "openai_codex",
     model: str,
     user_prompt: str,
     schema: type[BaseModel],
@@ -2008,6 +2034,9 @@ def _run_structured_workspace_turn(
             include_effort=False,
         ),
     }
+    model_provider = _codex_model_provider(provider)
+    if model_provider is not None:
+        thread_params["modelProvider"] = model_provider
     thread_result = session.request(
         "thread/start",
         thread_params,

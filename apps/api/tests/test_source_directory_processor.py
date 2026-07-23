@@ -1798,12 +1798,14 @@ def test_failed_rebuild_preserves_previous_catalog_version(tmp_path: Path) -> No
 
 def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None:
     calls: list[int] = []
+    providers: list[str] = []
     runtime_settings: list[tuple[str | None, str | None, bool]] = []
     progress_updates: list[tuple[str, int]] = []
 
     def fake_parse(self, **kwargs):
         packet = json.loads(kwargs["user_prompt"].split("\n", 1)[1])
         calls.append(packet["batch_index"])
+        providers.append(kwargs["provider"])
         runtime_settings.append(
             (
                 kwargs["reasoning_effort"],
@@ -1864,7 +1866,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
         ),
         candidates=candidates,
         selection=AIModelSelection(
-            provider="openai_codex",
+            provider="deepseek",
             model="catalog-test-model",
             reasoning_effort="high",
             service_tier="priority",
@@ -1872,6 +1874,7 @@ def test_codex_normalizer_executes_bounded_batches_serially(monkeypatch) -> None
     )
 
     assert calls == [0, 1, 2]
+    assert providers == ["deepseek"] * 3
     assert runtime_settings == [("high", "priority", True)] * 3
     assert progress_updates == [
         ("normalizing_directory", 69),
