@@ -13,6 +13,7 @@ from app.routers import (
     codex_provider,
     documents,
     geometry,
+    github_integration,
     lesson_merges,
     realtime,
     sources,
@@ -50,6 +51,7 @@ app.include_router(codex_provider.router)
 app.include_router(sources.router)
 app.include_router(speech.router)
 app.include_router(geometry.router)
+app.include_router(github_integration.router)
 app.include_router(realtime.router)
 
 

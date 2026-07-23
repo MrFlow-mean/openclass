@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.models import (
     AIModelSelection,
+    RepositoryMapView,
     SourceCatalogBatchView,
     SourceCatalogView,
     SourceIngestionJob,
@@ -23,6 +24,7 @@ from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_download_path, source_ingestion_service
 from app.services.source_structure_indexer import source_structure_indexer
 from app.services.source_structure_store import source_structure_store
+from app.services.repository_store import repository_store
 
 router = APIRouter()
 
@@ -77,6 +79,7 @@ async def import_package_source(
     title: str = Form(default=""),
     text: str | None = Form(default=None),
     catalog_model: str | None = Form(default=None),
+    learning_goal: str = Form(default=""),
     file: UploadFile | None = File(default=None),
     user: UserView = Depends(current_user),
 ) -> SourceIngestionRecord:
@@ -113,12 +116,23 @@ async def import_package_source(
                 title=title,
             )
         if source_uri and source_uri.strip():
-            return source_ingestion_service.add_url_source(
+            selected_catalog_model = _parse_catalog_model(catalog_model)
+            queued = source_ingestion_service.add_url_source(
                 owner_user_id=user.id,
                 package=package,
                 source_uri=source_uri,
                 title=title,
+                catalog_model=selected_catalog_model,
+                learning_goal=learning_goal,
             )
+            if queued.source_type == "code_repository":
+                background_tasks.add_task(
+                    source_ingestion_service.process_repository_source,
+                    owner_user_id=user.id,
+                    package_id=package.id,
+                    source_id=queued.id,
+                )
+            return queued
     except SourceIngestionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise HTTPException(status_code=400, detail="Provide a file, source_uri, or pasted text.")
@@ -275,6 +289,72 @@ def get_package_source_structure(
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
     return source_structure_store.get_structure_view(source=source)
+
+
+@router.get(
+    "/api/packages/{package_id}/sources/{source_id}/repository-map",
+    response_model=RepositoryMapView,
+)
+def get_package_repository_map(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> RepositoryMapView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None or source.source_type != "code_repository":
+        raise HTTPException(status_code=404, detail="Repository source not found.")
+    result = repository_store.get_map(source=source)
+    if result is None:
+        raise HTTPException(status_code=409, detail="Repository map is not ready.")
+    return result
+
+
+@router.post(
+    "/api/packages/{package_id}/sources/{source_id}/repository-refresh",
+    response_model=SourceIngestionRecord,
+)
+def refresh_package_repository_source(
+    package_id: str,
+    source_id: str,
+    background_tasks: BackgroundTasks,
+    user: UserView = Depends(current_user),
+) -> SourceIngestionRecord:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    package = workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None or source.source_type != "code_repository" or not source.source_uri:
+        raise HTTPException(status_code=404, detail="Repository source not found.")
+    raw_model = source.metadata.get("catalog_model")
+    try:
+        model = AIModelSelection.model_validate(raw_model)
+    except (TypeError, ValueError):
+        model = None
+    queued = source_ingestion_service.add_url_source(
+        owner_user_id=user.id,
+        package=package,
+        source_uri=source.source_uri,
+        title=source.title,
+        catalog_model=model,
+        learning_goal=str(source.metadata.get("learning_goal") or ""),
+        supersedes_source_id=source.id,
+    )
+    background_tasks.add_task(
+        source_ingestion_service.process_repository_source,
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=queued.id,
+    )
+    return queued
 
 
 @router.get("/api/packages/{package_id}/sources/catalogs", response_model=SourceCatalogBatchView)

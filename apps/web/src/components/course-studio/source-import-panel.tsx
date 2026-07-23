@@ -1,15 +1,14 @@
 "use client";
 
 import clsx from "clsx";
-import { BookOpen, Check, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
+import { BookOpen, Check, ClipboardPaste, Download, FileText, GitFork, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
-import {
-  SourceBatchControls,
-  type SourceSortOption,
-} from "@/components/course-studio/source-batch-controls";
+import { SourceBatchControls, type SourceSortOption } from "@/components/course-studio/source-batch-controls";
 import { SourceCatalogModelPicker } from "@/components/course-studio/source-catalog-model-picker";
 import { SourceChapterTree } from "@/components/course-studio/source-chapter-tree";
+import { GitHubRepositoryImport } from "@/components/course-studio/github-repository-import";
+import { RepositorySourceMap } from "@/components/course-studio/repository-source-map";
 import {
   findModelOption,
   persistModelSelection,
@@ -17,9 +16,7 @@ import {
   resolveModelSelection,
   selectionForModelOption,
 } from "@/components/course-studio/model-catalog";
-import {
-  createOpenNotebookSourceSelection,
-} from "@/components/course-studio/source-reference";
+import { createOpenNotebookSourceSelection } from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
   isDirectoryCatalogSource,
@@ -36,13 +33,7 @@ import {
 import { api } from "@/lib/api";
 import { useSourceBatchManagement } from "@/hooks/course-studio/use-source-batch-management";
 import type { SourceCatalogCacheController } from "@/hooks/course-studio/use-source-catalog-cache";
-import type {
-  AIModelOption,
-  AIModelSelection,
-  SelectionRef,
-  SourceCatalogView,
-  SourceIngestionRecord,
-} from "@/types";
+import type { AIModelOption, AIModelSelection, RepositoryMapView, SelectionRef, SourceCatalogView, SourceIngestionRecord } from "@/types";
 
 type SourceImportPanelProps = {
   packageId: string;
@@ -84,6 +75,7 @@ export function SourceImportPanel({
   const [sourceUri, setSourceUri] = useState("");
   const [pastedText, setPastedText] = useState("");
   const [title, setTitle] = useState("");
+  const [learningGoal, setLearningGoal] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -188,7 +180,11 @@ export function SourceImportPanel({
       return;
     }
     let active = true;
-    void Promise.all(sources.map((source) => ensureCurrentSource(packageId, source))).catch(
+    void Promise.all(
+      sources
+        .filter((source) => source.source_type !== "code_repository")
+        .map((source) => ensureCurrentSource(packageId, source))
+    ).catch(
       (error) => {
         if (active) {
           onError(error instanceof Error ? error.message : "资料目录更新失败");
@@ -207,10 +203,16 @@ export function SourceImportPanel({
     }
     setIsImporting(true);
     try {
-      const record = await api.importPackageSource(packageId, { sourceUri: uri, title: title.trim() });
+      const record = await api.importPackageSource(packageId, {
+        sourceUri: uri,
+        title: title.trim(),
+        catalogModel: activeCatalogModel,
+        learningGoal: learningGoal.trim(),
+      });
       setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
       setSourceUri("");
       setTitle("");
+      setLearningGoal("");
     } catch (error) {
       onError(error instanceof Error ? error.message : "URL 导入失败");
     } finally {
@@ -381,6 +383,14 @@ export function SourceImportPanel({
         <p className="mt-1 text-[11px] leading-5 text-gray-400">
           仅用于上传后解析文件结构并建立目录；后续按章阅读使用聊天框当前模型。
         </p>
+        <GitHubRepositoryImport
+          disabled={disabled || isImporting}
+          sourceUri={sourceUri}
+          learningGoal={learningGoal}
+          onSourceUriChange={setSourceUri}
+          onLearningGoalChange={setLearningGoal}
+          onError={onError}
+        />
         <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">URL</label>
         <div className="mt-2 flex gap-2">
           <input
@@ -624,6 +634,8 @@ function SourceRow({
   onRefresh: () => Promise<void>;
 }) {
   const [isStructureOpen, setIsStructureOpen] = useState(false);
+  const [repositoryMap, setRepositoryMap] = useState<RepositoryMapView | null>(null);
+  const [isLoadingRepositoryMap, setIsLoadingRepositoryMap] = useState(false);
   const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -637,6 +649,7 @@ function SourceRow({
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
+  const isRepository = source.source_type === "code_repository";
   const isOpenNotebookManaged = metadataString(source, "source_processing_owner") === "open_notebook";
   const isDirectoryOnlyCatalog =
     isDirectoryCatalogSource(source) ||
@@ -672,11 +685,23 @@ function SourceRow({
     return () => window.clearInterval(intervalId);
   }, [isRebuildingStructure, isRetrying, onRefresh]);
 
-  function toggleStructure() {
+  async function toggleStructure() {
     if (!isReady) {
       return;
     }
-    setIsStructureOpen((current) => !current);
+    const nextOpen = !isStructureOpen;
+    setIsStructureOpen(nextOpen);
+    if (!nextOpen || !isRepository || repositoryMap || isLoadingRepositoryMap) {
+      return;
+    }
+    setIsLoadingRepositoryMap(true);
+    try {
+      setRepositoryMap(await api.getRepositoryMap(packageId, source.id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "仓库结构读取失败");
+    } finally {
+      setIsLoadingRepositoryMap(false);
+    }
   }
 
   async function rebuildStructure() {
@@ -685,6 +710,11 @@ function SourceRow({
     }
     setIsRebuildingStructure(true);
     try {
+      if (isRepository) {
+        await api.refreshRepositorySource(packageId, source.id);
+        await onRefresh();
+        return;
+      }
       const usesDirectoryCatalog =
         isDirectoryCatalogSource(source) ||
         catalog?.strategy === "codex_directory_v1" ||
@@ -713,6 +743,11 @@ function SourceRow({
     }
     setIsRetrying(true);
     try {
+      if (isRepository) {
+        await api.refreshRepositorySource(packageId, source.id);
+        await onRefresh();
+        return;
+      }
       onCatalogInvalidate();
       onSourceUpdate(await api.retryPackageSource(packageId, source.id, catalogModel));
     } catch (error) {
@@ -792,7 +827,8 @@ function SourceRow({
 
   const hasChapters = Boolean(catalog?.chapters.length);
   const canViewDirectory = Boolean(
-    hasChapters ||
+    isRepository ||
+      hasChapters ||
       source.structure_has_verified_toc ||
       source.structure_quality?.total_chapter_count
   );
@@ -834,7 +870,7 @@ function SourceRow({
               isReady ? "bg-emerald-50 text-emerald-700" : isFailed ? "bg-rose-50 text-rose-700" : "bg-gray-50 text-gray-500"
             )}
           >
-            <UploadCloud className="h-4 w-4" />
+            {isRepository ? <GitFork className="h-4 w-4" /> : <UploadCloud className="h-4 w-4" />}
           </div>
         )}
         <div className="min-w-0 flex-1">
@@ -895,7 +931,7 @@ function SourceRow({
                   {isOpenNotebookManaged ? "OpenNotebook" : structureLabel}
                 </span>
               ) : null}
-              {isReady && !isOpenNotebookManaged && !isDirectoryOnlyCatalog ? (
+              {isReady && !isRepository && !isOpenNotebookManaged && !isDirectoryOnlyCatalog ? (
                 <button
                   type="button"
                   onClick={() => void toggleContent()}
@@ -942,7 +978,7 @@ function SourceRow({
               {isReady && !isOpenNotebookManaged ? (
                 <button
                   type="button"
-                  onClick={toggleStructure}
+                  onClick={() => void toggleStructure()}
                   className={clsx(
                     "flex min-w-10 flex-col items-center justify-center gap-0.5 rounded-md border border-transparent px-1 py-1 text-[10px] leading-none transition disabled:cursor-not-allowed disabled:opacity-50",
                     canViewDirectory
@@ -952,7 +988,7 @@ function SourceRow({
                   title={canViewDirectory ? "查看目录" : "查看目录状态"}
                   aria-label={`${canViewDirectory ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
                 >
-                  {isCatalogLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
+                  {isCatalogLoading || isLoadingRepositoryMap ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
                   <span>{isStructureOpen ? "收起" : "展开"}</span>
                 </button>
               ) : null}
@@ -971,6 +1007,13 @@ function SourceRow({
             </div>
           </div>
           <p className="mt-2 break-all text-xs leading-5 text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
+          {isRepository && isReady ? (
+            <p className="mt-1 text-[10px] leading-4 text-gray-500">
+              {metadataString(source, "repository_visibility") === "private" ? "私有仓库" : "公开仓库"}
+              {" · "}commit {metadataString(source, "repository_commit_sha").slice(0, 12)}
+              {" · "}学习覆盖 {Math.round(Number(source.metadata.repository_learning_coverage || 0) * 100)}%
+            </p>
+          ) : null}
           {processingState ? (
             <SourceProcessingProgress
               className="mt-2"
@@ -990,7 +1033,9 @@ function SourceRow({
           ) : null}
           {isReady ? (
             <p className="mt-2 text-xs leading-5 text-gray-500">
-              {isOpenNotebookManaged
+              {isRepository
+                ? "仓库已固定到不可变提交；选择项目或学习节点后，源码证据才会进入聊天。"
+                : isOpenNotebookManaged
                 ? "资料正文由 OpenNotebook 处理；引用后按本轮问题检索相关片段。"
                 : structureNote}
             </p>
@@ -1056,24 +1101,36 @@ function SourceRow({
           ) : null}
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
-              <SourceStructureQualitySummary
-                source={source}
-                quality={structureQuality}
-                warnings={catalog?.warnings}
-              />
+              {isRepository && repositoryMap ? (
+                <RepositorySourceMap
+                  source={source}
+                  map={repositoryMap}
+                  onSourceReference={onSourceReference}
+                />
+              ) : (
+                <SourceStructureQualitySummary
+                  source={source}
+                  quality={structureQuality}
+                  warnings={catalog?.warnings}
+                />
+              )}
               <div className="mb-1 mt-2 flex justify-end">
                 <button
                   type="button"
                   onClick={() => void rebuildStructure()}
                   disabled={isRebuildingStructure}
                   className="flex h-7 w-7 items-center justify-center rounded-md border border-blue-100 bg-white text-blue-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="重新建立目录"
-                  aria-label={`重新建立资料目录 ${source.title}`}
+                  title={isRepository ? "从当前分支创建新快照" : "重新建立目录"}
+                  aria-label={`${isRepository ? "创建仓库新快照" : "重新建立资料目录"} ${source.title}`}
                 >
                   <RefreshCw className={clsx("h-3.5 w-3.5", isRebuildingStructure && "animate-spin")} />
                 </button>
               </div>
-              {isCatalogLoading ? (
+              {isRepository ? (
+                isLoadingRepositoryMap || !repositoryMap ? (
+                  <p className="text-xs leading-5 text-gray-600">正在读取仓库结构…</p>
+                ) : null
+              ) : isCatalogLoading ? (
                 <p className="text-xs leading-5 text-gray-600">正在读取目录…</p>
               ) : catalog && hasChapters ? (
                 <SourceChapterTree
