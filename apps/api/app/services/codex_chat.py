@@ -166,6 +166,9 @@ heading tree is also the durable teaching scale used for later ordered explanati
 
 The frozen payload may include a `visual_manifest`. Every manifest item is verified evidence from
 the learner-selected source scope. Preserve manifest order and handle every item exactly once.
+When confirmed source metadata contains a media time range or a visual timestamp, cite important
+source-derived conclusions and inserted originals with the supplied source title, chapter title,
+and `HH:MM:SS` time. Do not invent or round a timestamp that is absent from the frozen payload.
 
 For a manifest item without `recreation_marker`, write its `marker` exactly once as a standalone
 ordinary paragraph immediately after the paragraph that introduces it. OpenClass will materialize
@@ -1366,6 +1369,10 @@ def _visual_manifest_payload(
         reference.source_ingestion_id: reference.source_title
         for reference in requirement.source_grounding.confirmed_references
     }
+    chapter_titles = {
+        (reference.source_ingestion_id, reference.source_chapter_id): reference.chapter_title
+        for reference in requirement.source_grounding.confirmed_references
+    }
     image_input_indexes = {
         visual_id: index
         for index, visual_id in enumerate(image_input_visual_ids or [])
@@ -1389,7 +1396,14 @@ def _visual_manifest_payload(
                 "kind": item.kind,
                 "caption": item.caption,
                 "source_title": source_titles.get(item.source_ingestion_id, ""),
+                "chapter_title": chapter_titles.get(
+                    (item.source_ingestion_id, getattr(evidence, "source_chapter_id", "")),
+                    "",
+                ),
                 "source_locator": item.source_locator,
+                "timestamp_ms": getattr(evidence, "timestamp_ms", None),
+                "timestamp": _media_timestamp(getattr(evidence, "timestamp_ms", None)),
+                "media_role": getattr(evidence, "media_role", None),
                 "page_start": getattr(evidence, "page_start", None),
                 "page_end": getattr(evidence, "page_end", None),
                 "slide_no": getattr(evidence, "slide_no", None),
@@ -1401,6 +1415,15 @@ def _visual_manifest_payload(
             }
         )
     return manifest
+
+
+def _media_timestamp(timestamp_ms: int | None) -> str:
+    if timestamp_ms is None:
+        return ""
+    total_seconds = max(0, timestamp_ms // 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _generate_blank_board(
