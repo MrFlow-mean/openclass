@@ -27,6 +27,7 @@ export function createSourceChapterSelection(
   const path = chapter.path.length ? chapter.path.join(" > ") : chapterLabel;
   const sourceRange = sourceChapterRange(chapter);
   const rangeLabel = sourceRangeDisplayLabel(sourceRange) || sourceChapterPageRange(chapter);
+  const mediaRangeLabel = chapter.media_time_range?.display_label ?? "";
   const pdfStart = sourceRange?.kind === "pdf_pages" && typeof sourceRange.start === "number"
     ? sourceRange.start
     : chapter.page_start;
@@ -35,7 +36,7 @@ export function createSourceChapterSelection(
     : chapter.page_end;
   return {
     kind: "source",
-    excerpt: [`《${source.title}》`, path, rangeLabel].filter(Boolean).join(" · "),
+    excerpt: [`《${source.title}》`, path, mediaRangeLabel || rangeLabel].filter(Boolean).join(" · "),
     heading_path: chapter.path,
     source_ingestion_id: source.id,
     source_title: source.title,
@@ -43,12 +44,14 @@ export function createSourceChapterSelection(
     source_chapter_id: chapter.id,
     source_chapter_number: chapter.number,
     source_chapter_title: chapter.title,
-    source_page_range: rangeLabel,
+    source_page_range: mediaRangeLabel || rangeLabel,
     source_locator: chapter.source_locator,
     source_page_start: pdfStart,
     source_page_end: pdfEnd,
     source_scope_kind: "chapter",
     source_range: sourceRange,
+    source_time_range: chapter.media_time_range ?? null,
+    media_package_version: source.media_package?.version ?? null,
     catalog_version: chapter.catalog_version ?? catalog?.catalog_version ?? null,
     source_content_hash: chapter.source_content_hash || catalog?.source_content_hash || "",
   };
