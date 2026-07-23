@@ -33,7 +33,11 @@ def _pi_stdout(content: str) -> str:
     )
 
 
-def test_pi_client_runs_without_tools_or_discovered_resources(tmp_path) -> None:
+def test_pi_client_runs_without_tools_or_discovered_resources(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def run(command, **kwargs):
@@ -68,6 +72,36 @@ def test_pi_client_runs_without_tools_or_discovered_resources(tmp_path) -> None:
     assert kwargs["input"] == "Question"
     assert kwargs["env"]["PI_TELEMETRY"] == "0"
     assert str(kwargs["env"]["PI_CODING_AGENT_DIR"]).startswith(str(tmp_path))
+
+
+def test_pi_client_uses_an_explicit_operator_agent_directory(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[dict[str, object]] = []
+    configured_agent_dir = tmp_path / "configured-agent"
+    configured_agent_dir.mkdir()
+    monkeypatch.setenv("OPENCLASS_PI_AGENT_DIR", str(configured_agent_dir))
+
+    def run(_command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            _pi_stdout('{"answer":"ok"}'),
+            "",
+        )
+
+    PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.6-sol",
+        binary="/test/pi",
+        runtime_root=tmp_path / "runtime",
+        process_runner=run,
+    ).parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
+
+    assert calls[0]["env"]["PI_CODING_AGENT_DIR"] == str(configured_agent_dir)
 
 
 def test_pi_client_maps_codex_provider_and_repairs_invalid_json(tmp_path) -> None:
