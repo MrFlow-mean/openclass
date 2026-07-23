@@ -379,7 +379,7 @@ export function SourceImportPanel({
           onChange={updateCatalogModel}
         />
         <p className="mt-1 text-[11px] leading-5 text-gray-400">
-          仅用于上传后解析文件结构并建立目录；后续按章阅读使用聊天框当前模型。
+          仅用于上传后建立目录；后续按章阅读使用聊天框当前模型。
         </p>
         <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">URL</label>
         <div className="mt-2 flex gap-2">
@@ -984,7 +984,7 @@ function SourceRow({
             <SourceCodexActivity
               className="mt-2"
               events={source.ingestion_job.agent_activity}
-              title="最近一次后端 OpenClass 输出"
+              title="最近一次后端 Codex 输出"
               expandedByDefault={false}
             />
           ) : null}
