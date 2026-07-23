@@ -46,8 +46,14 @@ def _source_thread_result(cwd: Path) -> dict:
 
 @pytest.fixture
 def prepared_source_toolbox(monkeypatch):
-    def prepare(*, cwd: Path, source_path: Path, scratch_path: Path) -> Path:
-        del source_path, scratch_path
+    def prepare(
+        *,
+        cwd: Path,
+        source_path: Path,
+        scratch_path: Path,
+        inspection_scope: str = "source",
+    ) -> Path:
+        del source_path, scratch_path, inspection_scope
         toolbox = cwd / "toolbox"
         (toolbox / "bin").mkdir(parents=True)
         return toolbox
@@ -446,6 +452,7 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
             system_prompt="return a directory",
             user_prompt="inspect the source",
             schema=_StructuredPayload,
+            inspection_scope="directory_only",
         )
     )
 
@@ -465,6 +472,8 @@ def test_source_structured_turn_stages_an_independent_read_only_copy(
     assert "scratch" in thread_params["developerInstructions"]
     assert "prefer one bounded pdftotext extraction" in thread_params["developerInstructions"]
     assert "do not assume that Python" in thread_params["developerInstructions"]
+    assert "Directory-only hard boundary" in thread_params["developerInstructions"]
+    assert "never scan the entire source" in thread_params["developerInstructions"]
     assert source_path.name not in thread_params["developerInstructions"]
     turn_payload = captured["turn_payload"]
     assert turn_payload["params"]["outputSchema"]["additionalProperties"] is False

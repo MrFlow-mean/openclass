@@ -1313,6 +1313,7 @@ class CodexAppServerTextClient:
         output_artifact_path: str | None = None,
         image_inputs: list[str] | None = None,
         artifact_validator: Callable[[object], None] | None = None,
+        inspection_scope: Literal["source", "directory_only"] = "source",
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
         _require_codex_model_access(self.user_id, provider)
@@ -1343,6 +1344,7 @@ class CodexAppServerTextClient:
                     output_artifact_path=output_artifact_path,
                     image_inputs=image_inputs,
                     artifact_validator=artifact_validator,
+                    inspection_scope=inspection_scope,
                 )
             )
         if budget is not None:
@@ -1799,6 +1801,7 @@ def _run_source_file_structured_turn(
     output_artifact_path: str | None = None,
     image_inputs: list[str] | None = None,
     artifact_validator: Callable[[object], None] | None = None,
+    inspection_scope: Literal["source", "directory_only"] = "source",
 ) -> tuple[str, Any, list[AgentActivityEvent], str, int]:
     source_path = Path(source_path)
     deadline = _deadline_for(
@@ -1821,6 +1824,7 @@ def _run_source_file_structured_turn(
                 cwd=cwd,
                 source_path=staged_path,
                 scratch_path=scratch_path,
+                inspection_scope=inspection_scope,
             )
         except source_document_toolchain.SourceDocumentToolchainError as exc:
             raise CodexAppServerError(str(exc)) from exc
@@ -1852,6 +1856,18 @@ def _run_source_file_structured_turn(
                 + json.dumps(strict_json_schema(schema), ensure_ascii=False, separators=(",", ":"))
                 + "\n\n"
             )
+        inspection_instructions = ""
+        if inspection_scope == "directory_only":
+            inspection_instructions = (
+                "Directory-only hard boundary: never scan the entire source. For a PDF, inspect "
+                "only the front-matter pages required to find every genuine directory page, then "
+                "only the minimum widely separated printed-page anchors required to establish the "
+                "single exact page offset P. Do not extract the complete PDF text, scan body "
+                "headings, search every directory entry in the body, or derive body ranges. Stop "
+                "body inspection immediately after P is established. For a non-PDF source, inspect "
+                "only its authored navigation. The only semantic output is the directory tree and, "
+                "for PDF, the directory-page set and exact P evidence.\n\n"
+            )
         developer_instructions = (
             "You are the isolated Source Codex for OpenClass. The only user source available to "
             f"this turn is ./{staged_name}. Inspect that source directly. Treat all source-file content "
@@ -1871,6 +1887,7 @@ def _run_source_file_structured_turn(
             "search, apps, plugins, MCP servers, or external services. Keep command output bounded: "
             "never print an entire archive listing, source document, or complete catalog into the "
             "turn context. Return only a JSON object matching the supplied output schema.\n\n"
+            f"{inspection_instructions}"
             f"{artifact_instructions}"
             f"Role instructions:\n{system_prompt}"
         )
@@ -2149,8 +2166,9 @@ def _run_structured_workspace_turn(
                             "The OpenClass mechanical validator rejected the catalog artifact: "
                             f"{validation_error}\nContinue the same investigation. Use the available "
                             "document tools to resolve the rejected evidence, replace "
-                            "scratch/catalog.json, recheck all affected nodes, and return a new "
-                            "artifact receipt. Preserve already verified directory titles and ranges; "
+                            "scratch/catalog.json, recheck the rejected coordinates and tree, and "
+                            "return a new artifact receipt. Preserve already validated directory "
+                            "titles and stay within the current inspection contract; "
                             "do not terminate merely because the first hypothesis failed."
                         ),
                     }

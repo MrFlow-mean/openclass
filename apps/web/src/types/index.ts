@@ -537,6 +537,7 @@ export interface SourceCatalogView {
   source_content_hash: string;
   catalog_schema_version: string;
   catalog_model: string;
+  task_contract: string;
   chapter_count: number;
   verified_chapter_count: number;
   confidence: number;

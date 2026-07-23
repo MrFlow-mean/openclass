@@ -26,9 +26,7 @@ from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_catalog import (
     SourceCodexCatalogError,
-    SourceCodexCatalogResult,
-    generate_codex_direct_catalog,
-    materialize_stored_codex_catalog,
+    generate_directory_only_catalog,
 )
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
@@ -227,11 +225,12 @@ class SourceDirectoryProcessor:
 
             if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
-                # Source Codex owns both directory semantics and range
-                # investigation. The host validates and persists its exact
-                # authored result without deriving page offsets or parent ranges.
+                # Source Codex owns only directory-page discovery, exact PDF P,
+                # and the expandable directory tree. The host mechanically
+                # validates and persists that exact contract without inspecting
+                # body ranges or deriving directory semantics.
                 _report(progress_callback, "source_codex_investigation", 30)
-                direct_catalog = generate_codex_direct_catalog(
+                direct_catalog = generate_directory_only_catalog(
                     record=record,
                     source_path=path,
                     source_content_hash=content_hash,
@@ -240,20 +239,46 @@ class SourceDirectoryProcessor:
                 )
                 chapters = list(direct_catalog.chapters)
                 execution_metadata = dict(direct_catalog.audit_metadata)
-                stage_history = [*run.stage_history, "source_codex_investigation"]
-                has_authoritative_ranges = any(
-                    chapter.mapping_status == "verified" and chapter.range is not None
+                if execution_metadata.get("catalog_task_contract") != (
+                    "directory_pages_offset_tree_v1"
+                ):
+                    raise SourceDirectoryProcessingError(
+                        "Source Codex did not return the required directory-only task contract."
+                    )
+                if any(
+                    chapter.range is not None
+                    or chapter.catalog_evidence
+                    or chapter.mapping_status == "verified"
                     for chapter in chapters
+                ):
+                    raise SourceDirectoryProcessingError(
+                        "A directory-only catalog must not publish body ranges or body evidence."
+                    )
+                stage_history = [*run.stage_history, "source_codex_investigation"]
+                pdf_task = execution_metadata.get("pdf_directory_task")
+                directory_pages = (
+                    pdf_task.get("directory_pages", [])
+                    if isinstance(pdf_task, dict)
+                    else []
+                )
+                anchor_pages = (
+                    [
+                        anchor.get("pdf_file_page")
+                        for anchor in pdf_task.get("anchors", [])
+                        if isinstance(anchor, dict)
+                    ]
+                    if isinstance(pdf_task, dict)
+                    else []
                 )
                 inspected_pdf_pages = {
                     page
-                    for chapter in chapters
-                    for evidence in chapter.catalog_evidence
-                    for page in (evidence.page_start, evidence.page_end)
+                    for page in [
+                        *directory_pages,
+                        *(page for page in anchor_pages if isinstance(page, int)),
+                    ]
                     if isinstance(page, int)
                 }
-                if has_authoritative_ranges:
-                    stage_history.append("source_codex_ranges_authored")
+                stage_history.append("directory_pages_offset_tree_verified")
                 run = self.store.save_catalog_run(
                     run.model_copy(
                         update={
@@ -264,16 +289,7 @@ class SourceDirectoryProcessor:
                     )
                 )
                 turn_count = direct_catalog.turn_count
-                unmapped_count = sum(
-                    chapter.mapping_status != "verified" for chapter in chapters
-                )
-                warnings = (
-                    [
-                        f"Source Codex left {unmapped_count} directory nodes unmapped after investigation."
-                    ]
-                    if unmapped_count
-                    else []
-                )
+                warnings = []
                 if not chapters:
                     warnings.append("Source Codex returned an empty directory list.")
                 catalog_complete = True
@@ -358,6 +374,10 @@ class SourceDirectoryProcessor:
             quality = _catalog_quality(
                 chapters,
                 catalog_complete=catalog_complete,
+                directory_only_complete=(
+                    execution_metadata.get("catalog_task_contract")
+                    == "directory_pages_offset_tree_v1"
+                ),
             )
             status = "ready" if chapters else "linear_only"
             structure = SourceStructure(
@@ -366,7 +386,7 @@ class SourceDirectoryProcessor:
                 source_ingestion_id=record.id,
                 status=status,
                 strategy="codex_directory_v1",
-                has_verified_toc=verified_count > 0,
+                has_verified_toc=bool(chapters) and catalog_complete,
                 quality=quality,
                 chapter_count=len(chapters),
                 chunk_count=0,
@@ -889,95 +909,6 @@ def _materialize_chapters(
     return chapters
 
 
-def _preserve_verified_ranges(
-    chapters: Sequence[SourceChapter],
-    *,
-    previous_chapters: Sequence[SourceChapter],
-    source_content_hash: str,
-) -> tuple[list[SourceChapter], int]:
-    previous_by_id = {
-        chapter.id: chapter
-        for chapter in previous_chapters
-        if chapter.mapping_status == "verified"
-        and chapter.anchor_status == "verified"
-        and chapter.range is not None
-        and chapter.source_content_hash == source_content_hash
-    }
-    preserved = 0
-    result: list[SourceChapter] = []
-    for chapter in chapters:
-        previous = previous_by_id.get(chapter.id)
-        if chapter.mapping_status == "verified" or previous is None:
-            result.append(chapter)
-            continue
-        preserved += 1
-        result.append(
-            chapter.model_copy(
-                update={
-                    "body_start_offset": previous.body_start_offset,
-                    "body_end_offset": previous.body_end_offset,
-                    "page_start": previous.page_start,
-                    "page_end": previous.page_end,
-                    "anchor_status": previous.anchor_status,
-                    "range": previous.range,
-                    "mapping_status": previous.mapping_status,
-                    "catalog_evidence": previous.catalog_evidence,
-                    "confidence": previous.confidence,
-                    "metadata": {
-                        **chapter.metadata,
-                        "source_range_mapped": True,
-                        "range_preserved_from_catalog_version": previous.catalog_version,
-                    },
-                }
-            )
-        )
-    return result, preserved
-
-
-def _reusable_failed_pdf_catalog(
-    *,
-    store: SourceStructureStore,
-    record: SourceIngestionRecord,
-    source_content_hash: str,
-) -> SourceCodexCatalogResult | None:
-    if Path(record.file_name).suffix.lower() != ".pdf":
-        return None
-    for previous_run in store.list_catalog_runs(
-        owner_user_id=record.owner_user_id,
-        package_id=record.package_id,
-        source_id=record.id,
-        limit=20,
-    ):
-        payload = previous_run.metadata.get("codex_directory_payload")
-        payload_sha256 = str(
-            previous_run.metadata.get("codex_directory_payload_sha256") or ""
-        )
-        if (
-            previous_run.status != "failed"
-            or previous_run.metadata.get("source_content_hash") != source_content_hash
-            or not isinstance(payload, dict)
-            or not payload_sha256
-        ):
-            continue
-        try:
-            reusable = materialize_stored_codex_catalog(
-                record=record,
-                payload=payload,
-                source_content_hash=source_content_hash,
-                expected_payload_sha256=payload_sha256,
-            )
-        except SourceCodexCatalogError:
-            continue
-        return replace(
-            reusable,
-            audit_metadata={
-                **reusable.audit_metadata,
-                "directory_reused_from_catalog_run": previous_run.id,
-            },
-        )
-    return None
-
-
 def _validate_chapters(chapters: Sequence[SourceChapter]) -> None:
     seen_ids: set[str] = set()
     known_chapters: dict[str, SourceChapter] = {}
@@ -1018,23 +949,24 @@ def _catalog_quality(
     chapters: Sequence[SourceChapter],
     *,
     catalog_complete: bool = True,
+    directory_only_complete: bool = False,
 ) -> SourceStructureQuality:
     total = len(chapters)
     verified = sum(chapter.mapping_status == "verified" for chapter in chapters)
     unverified = total - verified
     ratio = verified / total if total else 0.0
-    level = (
-        "fully_verified"
-        if total and verified == total and catalog_complete
-        else "partially_verified"
-        if verified
-        else "unverified"
-    )
-    diagnostics = (
-        ["目录结构已识别；正文范围尚未映射。"]
-        if total and not verified
-        else ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
-    )
+    if total and catalog_complete and (directory_only_complete or verified == total):
+        level = "fully_verified"
+    elif verified:
+        level = "partially_verified"
+    else:
+        level = "unverified"
+    if total and directory_only_complete:
+        diagnostics = ["目录页、PDF 页码偏移 P 与目录层级已通过目录任务合同校验。"]
+    elif total and not verified:
+        diagnostics = ["目录结构已识别；正文范围尚未映射。"]
+    else:
+        diagnostics = ["目录仅保存结构与范围，正文将在引用章节时按需读取。"]
     if not catalog_complete:
         diagnostics.append(
             "目录超过结构节点上限，当前只发布部分导航；已验证节点仍可单独引用。"
@@ -1045,9 +977,13 @@ def _catalog_quality(
         evaluator_version=2,
         level=level,
         text_readiness="unknown",
-        confidence=(1.0 if total and catalog_complete and not verified else ratio)
-        if catalog_complete
-        else min(ratio, 0.9),
+        confidence=(
+            1.0
+            if total and catalog_complete and (directory_only_complete or not verified)
+            else ratio
+            if catalog_complete
+            else min(ratio, 0.9)
+        ),
         total_chapter_count=total,
         verified_chapter_count=verified,
         unverified_chapter_count=unverified,

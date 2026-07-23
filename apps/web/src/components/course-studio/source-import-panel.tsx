@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { BookOpen, Check, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
+import { BookOpen, Check, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import {
@@ -82,7 +82,6 @@ export function SourceImportPanel({
 }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
-  const [pastedText, setPastedText] = useState("");
   const [title, setTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -263,24 +262,6 @@ export function SourceImportPanel({
     }
   }
 
-  async function submitPastedText() {
-    const text = pastedText.trim();
-    if (!text || disabled || isImporting) {
-      return;
-    }
-    setIsImporting(true);
-    try {
-      const record = await api.importPackageSource(packageId, { text, title: title.trim() });
-      setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
-      setPastedText("");
-      setTitle("");
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "粘贴文本导入失败");
-    } finally {
-      setIsImporting(false);
-    }
-  }
-
   async function removeSource(sourceId: string) {
     if (!sourceId || disabled || removingSourceId) {
       return;
@@ -399,27 +380,6 @@ export function SourceImportPanel({
             aria-label="导入 URL"
           >
             <Globe2 className="h-4 w-4" />
-          </button>
-        </div>
-        <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">粘贴文本</label>
-        <div className="mt-2 flex items-end gap-2">
-          <textarea
-            value={pastedText}
-            onChange={(event) => setPastedText(event.target.value)}
-            placeholder="粘贴需要索引的正文或 Markdown"
-            rows={3}
-            className="min-h-20 min-w-0 flex-1 resize-y rounded-md border border-gray-200 px-3 py-2 text-sm outline-none transition focus:border-black"
-            disabled={disabled || isImporting}
-          />
-          <button
-            type="button"
-            onClick={() => void submitPastedText()}
-            disabled={!pastedText.trim() || disabled || isImporting}
-            className="flex h-9 w-9 items-center justify-center rounded-md bg-black text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-            title="导入粘贴文本"
-            aria-label="导入粘贴文本"
-          >
-            <ClipboardPaste className="h-4 w-4" />
           </button>
         </div>
         <div className="mt-3 flex items-center justify-end">
@@ -984,7 +944,7 @@ function SourceRow({
             <SourceCodexActivity
               className="mt-2"
               events={source.ingestion_job.agent_activity}
-              title="最近一次后端 Codex 输出"
+              title="最近一次后端 OpenClass 输出"
               expandedByDefault={false}
             />
           ) : null}
@@ -1056,11 +1016,13 @@ function SourceRow({
           ) : null}
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
-              <SourceStructureQualitySummary
-                source={source}
-                quality={structureQuality}
-                warnings={catalog?.warnings}
-              />
+              {catalog?.task_contract !== "directory_pages_offset_tree_v1" ? (
+                <SourceStructureQualitySummary
+                  source={source}
+                  quality={structureQuality}
+                  warnings={catalog?.warnings}
+                />
+              ) : null}
               <div className="mb-1 mt-2 flex justify-end">
                 <button
                   type="button"
