@@ -198,7 +198,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
         AIModelOption(
             provider="openai_codex",
             model=str(item["model"]),
-            label=f"OpenAI Codex {item['displayName']}",
+            label=f"{item['displayName']} via Pi",
             capability="text",
             enabled=pi_openai_configured,
             configured=pi_openai_configured,
