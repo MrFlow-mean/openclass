@@ -333,6 +333,7 @@ def test_pi_adapter_generates_board_as_direct_markdown(monkeypatch) -> None:
     assert content == "# Generated board\n\nA direct Markdown document."
     assert result.final_response == ""
     assert "Return only the board Markdown" in captured["system_prompt"]
+    assert "visible final\nprovenance section" in captured["system_prompt"]
     assert "JSON object" in captured["system_prompt"]
     assert captured["is_cancelled"]() is False
 

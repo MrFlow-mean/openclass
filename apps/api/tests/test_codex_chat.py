@@ -359,6 +359,43 @@ def test_codex_turn_prompt_does_not_trust_unverified_source_chip_text() -> None:
     assert "10-12" not in prompt
 
 
+def test_visible_source_provenance_requires_verified_title_and_scope() -> None:
+    requirement = build_requirements("A source-grounded learning topic")
+    requirement.source_grounding = LearningSourceGrounding(
+        requested_by_user=True,
+        confirmation_status="confirmed",
+        confirmed_references=[
+            LearningSourceReference(
+                evidence_bundle_id="bundle_provenance",
+                source_ingestion_id="source_provenance",
+                source_title="Verified source title",
+                source_chapter_id="chapter_provenance",
+                chapter_title="Verified chapter title",
+                page_range="pp. 12-18",
+                content_hash="a" * 64,
+            )
+        ],
+    )
+
+    codex_chat._validate_visible_source_provenance(
+        content=(
+            "# Learning board\n\nBoard content.\n\n"
+            "## Sources\n\nVerified source title · Verified chapter title"
+        ),
+        requirement=requirement,
+    )
+    with pytest.raises(CodexAppServerError, match="source title"):
+        codex_chat._validate_visible_source_provenance(
+            content="# Learning board\n\nVerified chapter title",
+            requirement=requirement,
+        )
+    with pytest.raises(CodexAppServerError, match="chapter or range"):
+        codex_chat._validate_visible_source_provenance(
+            content="# Learning board\n\nVerified source title",
+            requirement=requirement,
+        )
+
+
 def test_document_for_codex_serializes_canonical_rich_structure_to_markdown() -> None:
     document = build_document(
         title="Board",
@@ -1601,6 +1638,7 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
 
     def fake_board_turn(**kwargs) -> CodexTurnResult:
         prompt = kwargs["user_prompt"]
+        assert "visible final\nprovenance section" in kwargs["developer_instructions"]
         assert '"granularity":"source_chapter"' in prompt
         assert "The selected source explains a durable concept" in prompt
         assert "为我讲解" not in prompt
@@ -1609,7 +1647,8 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         marker = payload["visual_manifest"][0]["marker"]
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
         board_path.write_text(
-            f"# Source-grounded board\n\nGrounded content.\n\n{marker}",
+            f"# Source-grounded board\n\nGrounded content.\n\n{marker}\n\n"
+            "## 出处\n\nSelected source · Chapter One",
             encoding="utf-8",
         )
         return CodexTurnResult(
@@ -1668,7 +1707,15 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     node_types = [
         node["type"] for node in saved_lesson.board_document.content_json["content"]
     ]
-    assert node_types == ["heading", "paragraph", "resourceVisualBlock"], node_types
+    assert node_types == [
+        "heading",
+        "paragraph",
+        "resourceVisualBlock",
+        "heading",
+        "paragraph",
+    ], node_types
+    assert "## 出处" in saved_lesson.board_document.content_text
+    assert "Selected source · Chapter One" in saved_lesson.board_document.content_text
     frozen_commit = next(
         commit
         for commit in saved_lesson.history_graph.commits
@@ -1686,6 +1733,14 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     assert saved_bundle.visual_items[0].visual_id == visual.visual_id
     assert generation_commit.metadata["board_visual_requested_count"] == 1
     assert generation_commit.metadata["skipped_visual_placements"] == []
+    assert generation_commit.metadata["verified_source_reference_used"] is True
+    assert generation_commit.metadata["verified_source_bundle_ids"] == [bundle_id]
+    assert generation_commit.metadata["verified_source_chapter_ids"] == [chapter.id]
+    assert generation_commit.metadata["verified_source_content_hashes"]
+    assert generation_commit.metadata["verified_source_evidence_ids"]
+    assert generation_commit.metadata["verified_source_references"][0][
+        "source_chapter_id"
+    ] == chapter.id
 
 
 def test_existing_board_source_selection_is_frozen_and_mandatory_for_codex(
@@ -1987,7 +2042,11 @@ def test_source_page_range_selection_generates_from_only_that_range(
         assert '"granularity":"source_range"' in kwargs["user_prompt"]
         assert "page four evidence" in kwargs["user_prompt"]
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
-        board_path.write_text("# Page range board\n\nGrounded content.", encoding="utf-8")
+        board_path.write_text(
+            "# Page range board\n\nGrounded content.\n\n"
+            "## Sources\n\nPaged source · p. 4",
+            encoding="utf-8",
+        )
         return CodexTurnResult(
             thread_id="thread_page_range",
             turn_id="turn_page_range",
@@ -2132,7 +2191,11 @@ def test_empty_scanned_pdf_chapter_uses_on_demand_ocr_before_generation(
         assert "Recovered chapter body" in kwargs["user_prompt"]
         assert "This next section must not enter" not in kwargs["user_prompt"]
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
-        board_path.write_text("# OCR-grounded board\n\nRecovered content.", encoding="utf-8")
+        board_path.write_text(
+            "# OCR-grounded board\n\nRecovered content.\n\n"
+            "## Sources\n\nScanned reference · 3.1 Selected section",
+            encoding="utf-8",
+        )
         return CodexTurnResult(
             thread_id="thread_scanned_pdf",
             turn_id="turn_scanned_pdf",
