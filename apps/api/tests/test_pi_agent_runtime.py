@@ -72,7 +72,48 @@ def test_pi_client_runs_without_tools_or_discovered_resources(
     assert "--no-context-files" in command
     assert kwargs["input"] == "Question"
     assert kwargs["env"]["PI_TELEMETRY"] == "0"
+    assert kwargs["timeout"] == 300
     assert str(kwargs["env"]["PI_CODING_AGENT_DIR"]).startswith(str(tmp_path))
+
+
+def test_pi_client_accepts_a_bounded_request_timeout(monkeypatch, tmp_path) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setenv("OPENCLASS_PI_REQUEST_TIMEOUT_SECONDS", "420")
+
+    def run(_command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess([], 0, _pi_stdout('{"answer":"ok"}'), "")
+
+    PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    ).parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
+
+    assert calls[0]["timeout"] == 420
+
+
+def test_pi_client_rejects_an_invalid_request_timeout(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENCLASS_PI_REQUEST_TIMEOUT_SECONDS", "unbounded")
+
+    client = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=lambda *_args, **_kwargs: None,
+    )
+
+    try:
+        client.parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
+    except RuntimeError as exc:
+        assert str(exc) == "OPENCLASS_PI_REQUEST_TIMEOUT_SECONDS must be an integer"
+    else:  # pragma: no cover - guards configuration validation
+        raise AssertionError("invalid Pi request timeout was accepted")
 
 
 def test_pi_client_uses_an_explicit_operator_agent_directory(
