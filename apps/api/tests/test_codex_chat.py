@@ -1471,6 +1471,7 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="")
     observed_board_commit_id = ""
+    document_deltas: list[str] = []
 
     class FakePiAdapter:
         def parse_structured(self, **kwargs):
@@ -1491,6 +1492,8 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
             )
 
         def generate_board(self, _request, **_kwargs):
+            _kwargs["on_document_delta"]("# Saved board\n\n")
+            _kwargs["on_document_delta"]("Generated learning content.")
             return (
                 ai_execution_adapter.StructuredBoardGenerationResult(
                     thread_id="piturn_board",
@@ -1542,6 +1545,7 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
             post_generation_action="stop_after_generation",
         ),
         user_id=TEST_USER_ID,
+        on_document_delta=document_deltas.append,
         is_cancelled=lambda: False,
     )
 
@@ -1553,6 +1557,7 @@ def test_pi_board_handoff_runs_only_after_the_document_commit(
         if commit.id == observed_board_commit_id
     )
     assert response.chatbot_message == "The saved board is ready for us to work through."
+    assert "".join(document_deltas) == "# Saved board\n\nGenerated learning content."
     assert response.board_document_operation_status == "succeeded"
     assert saved_lesson.board_document.content_text.startswith("# Saved board")
     assert handoff_commit.metadata["kind"] == "board_generation_handoff"

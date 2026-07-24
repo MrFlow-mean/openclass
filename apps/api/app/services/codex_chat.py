@@ -1429,6 +1429,7 @@ def _generate_blank_board(
     teaching_plan: str,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    on_document_delta: Callable[[str], None] | None = None,
 ) -> tuple[CodexBoardGenerationResult, str]:
     adapter = CodexAIExecutionAdapter(
         owner_user_id=user_id,
@@ -1444,6 +1445,7 @@ def _generate_blank_board(
         include_raster_images=True,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
+        on_document_delta=on_document_delta,
     )
 
 
@@ -1456,6 +1458,7 @@ def _generate_blank_board_with_adapter(
     include_raster_images: bool,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
+    on_document_delta: Callable[[str], None] | None,
 ) -> tuple[CodexBoardGenerationResult, str]:
     prepared_requirement, image_inputs = _prepare_source_generation_inputs(
         adapter=adapter,
@@ -1494,6 +1497,7 @@ def _generate_blank_board_with_adapter(
         ),
         is_cancelled=is_cancelled,
         on_activity=on_activity,
+        on_document_delta=on_document_delta,
     )
     if not content.strip():
         raise CodexAppServerError("Board generation completed without content")
@@ -1928,6 +1932,7 @@ def process_codex_chat_on_lesson(
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+    on_document_delta: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ChatResponse:
     with _turn_lock(user_id):
@@ -1967,6 +1972,7 @@ def process_codex_chat_on_lesson(
                 teaching_plan,
                 selected_is_cancelled,
                 selected_on_activity,
+                selected_on_document_delta,
             ):
                 return _generate_blank_board_with_adapter(
                     adapter=adapter,
@@ -1976,6 +1982,7 @@ def process_codex_chat_on_lesson(
                     include_raster_images=False,
                     is_cancelled=selected_is_cancelled,
                     on_activity=selected_on_activity,
+                    on_document_delta=selected_on_document_delta,
                 )
 
             return process_blank_board_turn(
@@ -1997,6 +2004,7 @@ def process_codex_chat_on_lesson(
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
                 on_agent_activity=on_agent_activity,
+                on_document_delta=on_document_delta,
                 is_cancelled=is_cancelled,
                 generate_board=(
                     generate_with_selected_adapter

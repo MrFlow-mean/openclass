@@ -308,6 +308,7 @@ BoardGenerationRunner = Callable[
         str,
         Callable[[], bool] | None,
         Callable[[AgentActivityEvent], None] | None,
+        Callable[[str], None] | None,
     ],
     tuple[BoardGenerationResult, str],
 ]
@@ -439,6 +440,7 @@ def process_blank_board_turn(
     on_delta: Callable[[str], None] | None,
     on_requirement_update: Callable[[dict[str, object]], None] | None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None,
+    on_document_delta: Callable[[str], None] | None,
     is_cancelled: Callable[[], bool] | None,
     generate_board: BoardGenerationRunner,
     discard_generated_thread: Callable[[str], None],
@@ -829,6 +831,7 @@ def process_blank_board_turn(
             outcome.teaching_plan,
             is_cancelled,
             record_activity,
+            on_document_delta,
         )
         provider_generation_finished = True
         ai_usage_logger.log_event(
