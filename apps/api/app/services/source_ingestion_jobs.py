@@ -350,16 +350,28 @@ class SourceIngestionTaskManager:
         try:
             from app.services.source_ingestion_service import source_ingestion_service
 
+            record = source_ingestion_service.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            weight = self.job_store.coordinator.processing_capacity
+            if record is not None:
+                weight = self.job_store.coordinator.processing_weight(
+                    size_bytes=record.size_bytes,
+                    source_type=record.source_type,
+                )
             operation = (
                 source_ingestion_service.retry_source
                 if retry
                 else source_ingestion_service.process_file_source
             )
-            operation(
-                owner_user_id=owner_user_id,
-                package_id=package_id,
-                source_id=source_id,
-            )
+            with self.job_store.coordinator.processing_slot(weight=weight):
+                operation(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
         except Exception:
             logger.exception("Source ingestion task failed for %s", source_id)
         finally:
