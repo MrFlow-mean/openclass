@@ -4,6 +4,7 @@ import json
 import subprocess
 from types import SimpleNamespace
 
+import pytest
 from pydantic import BaseModel
 
 from app.services.pi_agent_runtime import PiTextClient
@@ -247,6 +248,50 @@ def test_pi_client_maps_codex_provider_and_repairs_invalid_json(tmp_path) -> Non
     assert commands[0][-2:] == ["--thinking", "high"]
 
 
+def test_pi_client_applies_a_supported_service_tier(tmp_path) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, _pi_stdout('{"answer":"ok"}'), "")
+
+    PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        service_tier="priority",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    ).parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
+
+    command, kwargs = calls[0]
+    assert command[command.index("--extension") + 1].endswith(
+        "pi_runtime_settings_extension.ts"
+    )
+    assert kwargs["env"]["OPENCLASS_PI_SERVICE_TIER"] == "priority"
+
+
+@pytest.mark.parametrize(
+    ("provider", "service_tier"),
+    [("deepseek", "priority"), ("openai_codex", "unsupported")],
+)
+def test_pi_client_rejects_an_unsupported_service_tier(
+    provider: str,
+    service_tier: str,
+    tmp_path,
+) -> None:
+    with pytest.raises(RuntimeError, match="does not support this service tier"):
+        PiTextClient(
+            owner_user_id="user_test",
+            provider=provider,
+            model="test-model",
+            service_tier=service_tier,
+            binary="/test/pi",
+            runtime_root=tmp_path,
+        )
+
+
 def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypatch) -> None:
     captured: dict[str, object] = {}
     observed_activity = []
@@ -284,6 +329,7 @@ def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypat
         "provider": "deepseek",
         "model": "deepseek-v4-flash",
         "reasoning_effort": None,
+        "service_tier": None,
     }
     assert result.output_parsed.answer == "through pi"
     assert [event.status for event in observed_activity] == ["running", "completed"]

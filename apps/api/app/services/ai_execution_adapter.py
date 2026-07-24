@@ -346,6 +346,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         provider: str,
         model: str,
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -354,6 +355,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
             provider=provider,
             model=model,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     def parse_structured(
@@ -503,4 +505,5 @@ def build_ai_execution_adapter(
         provider=selection.provider,
         model=selection.model,
         reasoning_effort=selection.reasoning_effort,
+        service_tier=selection.service_tier,
     )
