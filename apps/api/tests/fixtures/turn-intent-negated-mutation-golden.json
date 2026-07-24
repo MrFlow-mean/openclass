@@ -1,0 +1,18 @@
+[
+  {
+    "message": "请修改板书中的这一节。",
+    "expected": true
+  },
+  {
+    "message": "请讲解这一节，不要修改板书。",
+    "expected": false
+  },
+  {
+    "message": "Explain this section without editing the board.",
+    "expected": false
+  },
+  {
+    "message": "不要修改标题，但请删除板书中的最后一段。",
+    "expected": true
+  }
+]

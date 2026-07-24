@@ -485,6 +485,20 @@ def test_turn_intent_requires_explicit_board_write_authorization() -> None:
     assert conversation.action == "chat_without_offer"
 
 
+def test_turn_intent_negated_mutation_golden_examples() -> None:
+    fixture_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "turn-intent-negated-mutation-golden.json"
+    )
+    examples = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    for example in examples:
+        assert turn_intent.has_explicit_document_mutation_request(example["message"]) is example[
+            "expected"
+        ], example["message"]
+
+
 def test_turn_intent_only_accepts_standalone_pending_offer_replies() -> None:
     confirmed = turn_intent.decide_board_write_action(
         message="可以，写进去吧",
