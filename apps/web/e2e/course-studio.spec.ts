@@ -596,6 +596,20 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(chatMenuBox.y + chatMenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
   expect(chatSubmenuBox.y + chatSubmenuBox.height).toBeLessThanOrEqual(chatButtonBox.y);
   expect(chatSubmenuBox.x + chatSubmenuBox.width).toBeLessThanOrEqual(viewport.width);
+  await chatModelSubmenu.getByRole("button", { name: "选择模型 5.6 Sol" }).click();
+  await page.getByTestId("codex-model-reasoning-row").click();
+  await page
+    .getByTestId("codex-model-reasoning-menu")
+    .getByRole("button", { name: "推理强度 高" })
+    .click();
+  await page.getByTestId("codex-model-speed-row").click();
+  await page
+    .getByTestId("codex-model-speed-menu")
+    .getByRole("button", { name: "速度 快速" })
+    .click();
+  await expect(chatModelButton).toHaveAccessibleName(
+    /模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+  );
   await chatModelButton.click();
   await expect(chatModelMenu).toBeHidden();
 
@@ -630,13 +644,9 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(reasoningMenuBox.x).toBeGreaterThanOrEqual(0);
   expect(reasoningMenuBox.y + reasoningMenuBox.height).toBeLessThanOrEqual(viewport.height);
   await reasoningMenu.getByRole("button", { name: "推理强度 高" }).click();
-  await page.getByTestId("source-catalog-model-speed-row").click();
-  await page
-    .getByTestId("source-catalog-model-speed-menu")
-    .getByRole("button", { name: "速度 快速" })
-    .click();
+  await expect(page.getByTestId("source-catalog-model-speed-row")).toHaveCount(0);
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 标准/
   );
   await catalogModelButton.click();
   await expect(catalogModelMenu).toBeHidden();
@@ -653,7 +663,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   await page.getByRole("button", { name: "History" }).click();
   await page.getByRole("button", { name: "Sources" }).click();
   await expect(catalogModelButton).toHaveAccessibleName(
-    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 快速/
+    /目录提取模型设置，当前 5\.6 Sol，推理强度 高，速度 标准/
   );
   await page.getByLabel(`查看资料目录 ${sourceTitle}`).click();
   await expect(page.getByRole("button", { name: new RegExp(`^1 ${chapterTitle}`) })).toBeVisible();
@@ -701,7 +711,7 @@ test("prefetches saved catalogs once and sends an authoritative chapter range", 
   expect(rebuildPostData).toContain('"provider":"openai_codex"');
   expect(rebuildPostData).toContain('"model":"gpt-5.6-sol"');
   expect(rebuildPostData).toContain('"reasoning_effort":"high"');
-  expect(rebuildPostData).toContain('"service_tier":"priority"');
+  expect(rebuildPostData).toContain('"service_tier":null');
   releaseDelayedSingleCatalog();
   await expect.poll(() => completedSingleCatalogResponses).toBe(2);
   await expect(page.getByRole("button", { name: new RegExp(`^1 重建后章节 ${unique}`) })).toBeVisible();
