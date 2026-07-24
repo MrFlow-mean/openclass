@@ -67,7 +67,7 @@ export function CourseStudio() {
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
-  const chatRequestInFlightRef = useRef(false);
+  const chatRequestInFlightLessonIdsRef = useRef<Set<string>>(new Set());
 
   const workspace = useCourseWorkspace();
   const {
@@ -146,8 +146,10 @@ export function CourseStudio() {
 
   function updateCoursePackage(nextPackage: CoursePackage, options?: CoursePackageApplyOptions) {
     const result = applyWorkspaceCoursePackage(nextPackage, options);
-    boardDraft.resetToLesson(result.activeLesson);
-    resetTransientUi();
+    if (!options?.preserveActiveTransientUi) {
+      boardDraft.resetToLesson(result.activeLesson);
+      resetTransientUi();
+    }
     return result;
   }
 
@@ -246,7 +248,7 @@ export function CourseStudio() {
     selectedTextModel,
     textModelReady,
     isPreviewMode: isPreviewMode || isDraftPreviewMode || lessonMerge.isActive,
-    chatRequestInFlightRef,
+    chatRequestInFlightLessonIdsRef,
     flushAutoSave,
     exitPreviewMode: exitAnyPreviewMode,
     updateCoursePackage,
@@ -255,8 +257,6 @@ export function CourseStudio() {
     clearSelection,
     setStreamingDocumentPreview: boardDraft.setStreamingDocumentPreview,
     setError,
-    setBusyAction,
-    busyAction,
   });
   const {
     chatInput,
@@ -286,7 +286,7 @@ export function CourseStudio() {
     setBusyAction,
     setError,
     flushAutoSave,
-    chatRequestInFlightRef,
+    chatRequestInFlightLessonIdsRef,
     onSubmitTranscript: (message) => {
       void handleSubmitChat({
         message,
@@ -528,7 +528,7 @@ export function CourseStudio() {
   }
 
   function handleFormulaInkSubmit(payload: FormulaInkEditorSubmitPayload) {
-    if (!activeLesson || lessonMerge.isActive || !textModelReady || isChatBusy || chatRequestInFlightRef.current) {
+    if (!activeLesson || lessonMerge.isActive || !textModelReady || isChatBusy) {
       return false;
     }
     const formulaSelection: SelectionRef = {

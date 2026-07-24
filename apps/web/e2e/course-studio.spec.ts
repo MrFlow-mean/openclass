@@ -813,6 +813,88 @@ test("restores each lesson's attached composer reference after switching tabs", 
   await expect(page.getByText(referencedText, { exact: false }).last()).toBeVisible();
 });
 
+test("allows another lesson to send while a lesson chat is still streaming", async ({ page }) => {
+  const unique = Date.now();
+  const firstTitle = `并发聊天页面一 ${unique}`;
+  const secondTitle = `并发聊天页面二 ${unique}`;
+  const requestedLessonIds: string[] = [];
+  let releasePendingRequests = () => {};
+  const pendingRequestsReleased = new Promise<void>((resolve) => {
+    releasePendingRequests = resolve;
+  });
+
+  // Reuse the served Studio while keeping all writes in the isolated E2E API.
+  await page.route("http://127.0.0.1:8000/api/**", async (route) => {
+    const request = route.request();
+    if (new URL(request.url()).pathname === "/api/ai-models") {
+      await route.fallback();
+      return;
+    }
+    const headers = { ...request.headers() };
+    delete headers.host;
+    delete headers["content-length"];
+    const response = await page.request.fetch(
+      request.url().replace("127.0.0.1:8000", "127.0.0.1:8110"),
+      {
+        method: request.method(),
+        headers,
+        data: request.postDataBuffer() ?? undefined,
+        failOnStatusCode: false,
+      }
+    );
+    await route.fulfill({ response });
+  });
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `并发聊天课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, firstTitle);
+  await page.getByLabel("新建页面").click();
+  await page.getByLabel("新页面名称").fill(secondTitle);
+  await page.getByLabel("确认").click();
+  await page.getByRole("button", { name: `${firstTitle} main` }).click();
+  await expect(page.getByPlaceholder("未命名讲义")).toHaveValue(firstTitle);
+
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    const lessonId = new URL(route.request().url()).pathname.split("/").at(-3) ?? "";
+    requestedLessonIds.push(lessonId);
+    await pendingRequestsReleased;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "concurrency test completed" }),
+    });
+  });
+
+  const firstComposer = page.getByPlaceholder("给 OpenClass 发消息...");
+  await firstComposer.fill(`第一页先发送 ${unique}`);
+  const firstRequest = page.waitForRequest(
+    (request) => request.url().includes("/chat/stream") && request.method() === "POST"
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const firstChatRequest = await firstRequest;
+  const firstLessonId = new URL(firstChatRequest.url()).pathname.split("/").at(-3) ?? "";
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+
+  await page.getByRole("button", { name: `${secondTitle} main` }).click();
+  const secondComposer = page.getByPlaceholder("给 OpenClass 发消息...");
+  await secondComposer.fill(`第二页并发发送 ${unique}`);
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
+  const secondRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/chat/stream") &&
+      request.method() === "POST" &&
+      new URL(request.url()).pathname.split("/").at(-3) !== firstLessonId
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await secondRequest;
+
+  await expect.poll(() => requestedLessonIds.length).toBe(2);
+  expect(new Set(requestedLessonIds).size).toBe(2);
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+
+  releasePendingRequests();
+});
+
 test("references board content into the geometry workspace and renders a generated scene", async ({ page }) => {
   const unique = Date.now();
   const referencedText = `在四边形 ABCD 中，AB 平行于 CD，连接 AC 与 BD ${unique}`;
