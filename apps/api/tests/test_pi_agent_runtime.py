@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +55,80 @@ def _pi_error_stdout(message: str) -> str:
     )
 
 
+def _pi_stdout_with_live_reasoning(content: str) -> str:
+    return "\n".join(
+        [
+            json.dumps({"type": "agent_start"}),
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "thinking_start",
+                        "contentIndex": 0,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "thinking_delta",
+                        "contentIndex": 0,
+                        "delta": "private reasoning that must not be persisted",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "thinking_end",
+                        "contentIndex": 0,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "text_start",
+                        "contentIndex": 1,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "contentIndex": 1,
+                        "delta": content,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "text_end",
+                        "contentIndex": 1,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": content}],
+                    },
+                }
+            ),
+            json.dumps({"type": "agent_end", "messages": []}),
+        ]
+    )
+
+
 def test_pi_client_runs_without_tools_or_discovered_resources(
     monkeypatch,
     tmp_path,
@@ -94,6 +170,86 @@ def test_pi_client_runs_without_tools_or_discovered_resources(
     assert kwargs["env"]["PI_TELEMETRY"] == "0"
     assert kwargs["timeout"] == 600
     assert str(kwargs["env"]["PI_CODING_AGENT_DIR"]).startswith(str(tmp_path))
+
+
+def test_pi_client_converts_live_json_events_into_public_activity(tmp_path) -> None:
+    observed = []
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _pi_stdout_with_live_reasoning('{"answer":"ok"}'),
+            "",
+        )
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    ).parse(
+        system_prompt="Answer.",
+        user_prompt="Question",
+        schema=_Answer,
+        on_activity=observed.append,
+    )
+
+    assert response.output_parsed.answer == "ok"
+    assert any(event.label == "OpenClass 正在推理" for event in observed)
+    assert any(event.label == "OpenClass 已完成推理" for event in observed)
+    assert any(event.label == "OpenClass 正在生成结果" for event in observed)
+    assert any(event.label == "OpenClass 已校验模型结果" for event in observed)
+    assert all("private reasoning" not in str(event.metadata) for event in observed)
+    assert all("private reasoning" not in str(event.metadata) for event in response.activity)
+
+
+def test_pi_client_publishes_activity_before_the_process_finishes(tmp_path) -> None:
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+import time
+
+sys.stdin.read()
+print(json.dumps({"type": "agent_start"}), flush=True)
+time.sleep(0.2)
+print(json.dumps({
+    "type": "message_update",
+    "assistantMessageEvent": {"type": "text_start", "contentIndex": 0},
+}), flush=True)
+time.sleep(0.2)
+print(json.dumps({
+    "type": "message_end",
+    "message": {"role": "assistant", "content": [{"type": "text", "text": "{\\\"answer\\\":\\\"ok\\\"}"}]},
+}), flush=True)
+print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_pi, 0o700)
+    observed: list[tuple[float, object]] = []
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary=str(fake_pi),
+        runtime_root=tmp_path / "runtime",
+    ).parse(
+        system_prompt="Answer.",
+        user_prompt="Question",
+        schema=_Answer,
+        on_activity=lambda event: observed.append((time.monotonic(), event)),
+    )
+    finished_at = time.monotonic()
+
+    assert response.output_parsed.answer == "ok"
+    assert observed
+    assert observed[0][0] < finished_at - 0.25
 
 
 def test_pi_client_accepts_a_bounded_request_timeout(monkeypatch, tmp_path) -> None:

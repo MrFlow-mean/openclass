@@ -393,6 +393,16 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         failed_label: str,
         activity_kind: str,
     ) -> StructuredExecutionResult:
+        activity_by_id: dict[str, AgentActivityEvent] = {}
+        activity_order: list[str] = []
+
+        def publish(event: AgentActivityEvent) -> None:
+            if event.id not in activity_by_id:
+                activity_order.append(event.id)
+            activity_by_id[event.id] = event
+            if on_activity is not None:
+                on_activity(event)
+
         lifecycle_event = AgentActivityEvent(
             turn_id=new_id("piworkflow"),
             stage="execute_role",
@@ -406,30 +416,31 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
                 "model": self.model,
             },
         )
-        if on_activity is not None:
-            on_activity(lifecycle_event)
+        publish(lifecycle_event)
         try:
             response = self._client.parse(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
                 image_inputs=image_inputs,
+                on_activity=publish,
             )
         except Exception:
             failed_event = lifecycle_event.model_copy(
                 update={"label": failed_label, "status": "failed"}
             )
-            if on_activity is not None:
-                on_activity(failed_event)
+            publish(failed_event)
             raise
         completed_event = lifecycle_event.model_copy(
             update={"label": completed_label, "status": "completed"}
         )
-        if on_activity is not None:
-            on_activity(completed_event)
+        publish(completed_event)
+        for event in response.activity:
+            if event.id not in activity_by_id:
+                publish(event)
         return StructuredExecutionResult(
             output_parsed=response.output_parsed,
-            activity=[completed_event],
+            activity=[activity_by_id[event_id] for event_id in activity_order],
         )
 
     def generate_board(

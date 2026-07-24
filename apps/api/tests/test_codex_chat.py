@@ -3988,6 +3988,7 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
     codex_store: SqliteCourseStore,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="# Existing\n\nOriginal content.")
+    observed_activity: list[AgentActivityEvent] = []
     monkeypatch.setattr(
         codex_chat,
         "_text_model_selection",
@@ -3998,6 +3999,15 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
         def parse_structured(self, **kwargs):
             schema = kwargs["schema"]
             if schema is codex_chat._StructuredExistingBoardTurn:
+                activity = AgentActivityEvent(
+                    turn_id="piturn_live",
+                    stage="build_context",
+                    label="OpenClass 正在推理",
+                    status="running",
+                    role="OpenClass",
+                    metadata={"kind": "reasoning"},
+                )
+                kwargs["on_activity"](activity)
                 parsed = schema(
                     chatbot_message="Here is the explanation.",
                     board_markdown="# Existing\n\nOriginal content.",
@@ -4023,6 +4033,7 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
             },
         ),
         user_id=TEST_USER_ID,
+        on_agent_activity=observed_activity.append,
     )
 
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
@@ -4032,3 +4043,4 @@ def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
     assert metadata["agent_backend"] == "pi"
     assert metadata["assistant_message_source"] == "pi"
     assert metadata["ai_provider"] == "openai_codex"
+    assert [event.label for event in observed_activity] == ["OpenClass 正在推理"]

@@ -1579,6 +1579,7 @@ def _process_structured_existing_board_turn(
     source_context: ExistingBoardSourceContext | None,
     attachment_context: str,
     on_delta: Callable[[str], None] | None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> ChatResponse:
     codex_board_text, preserved_visuals = _document_for_codex(
         initial_lesson.board_document
@@ -1621,6 +1622,7 @@ def _process_structured_existing_board_turn(
             ensure_ascii=False,
         ),
         schema=_StructuredExistingBoardTurn,
+        on_activity=on_agent_activity,
     )
     output = _StructuredExistingBoardTurn.model_validate(response.output_parsed)
     execution_source = (
@@ -2038,6 +2040,7 @@ def process_codex_chat_on_lesson(
                 source_context=source_context,
                 attachment_context=prepared_attachments.prompt_context,
                 on_delta=on_delta,
+                on_agent_activity=on_agent_activity,
             )
 
         codex_model = selected_model
