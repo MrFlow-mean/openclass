@@ -967,6 +967,33 @@ def process_blank_board_turn(
                 "codex_base_commit_id": generation_base_commit_id,
                 "requirement_retry": frozen_retry,
                 "board_generation_action": request.board_generation_action,
+                "verified_source_reference_used": bool(
+                    outcome.requirement.source_grounding.confirmed_references
+                ),
+                "verified_source_references": [
+                    reference.model_dump(mode="json")
+                    for reference in outcome.requirement.source_grounding.confirmed_references
+                ],
+                "verified_source_bundle_ids": [
+                    reference.evidence_bundle_id
+                    for reference in outcome.requirement.source_grounding.confirmed_references
+                    if reference.evidence_bundle_id
+                ],
+                "verified_source_chapter_ids": [
+                    reference.source_chapter_id
+                    for reference in outcome.requirement.source_grounding.confirmed_references
+                    if reference.source_chapter_id
+                ],
+                "verified_source_content_hashes": [
+                    reference.content_hash
+                    for reference in outcome.requirement.source_grounding.confirmed_references
+                    if reference.content_hash
+                ],
+                "verified_source_evidence_ids": [
+                    evidence.id
+                    for evidence in outcome.requirement.source_grounding.frozen_evidence
+                    if evidence.id
+                ],
                 **visual_insertion_metadata,
                 "agent_activity": [
                     event.model_dump(mode="json") for event in current_activity()

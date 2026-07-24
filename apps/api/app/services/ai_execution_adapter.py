@@ -240,6 +240,11 @@ Return the complete board as Markdown in `content_text` and a brief learner-faci
 code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
 heading hierarchy and keep sibling sections at the same level.
 
+If `learning_requirement.source_grounding.confirmed_references` is non-empty, add a visible final
+provenance section to the board. Copy each reference's source title and its available chapter title,
+page range, or source locator exactly from the verified payload. Provenance must be present in the
+Markdown document itself, not only in metadata or the learner-facing completion.
+
 If `visual_manifest` is present, handle every item exactly once and preserve its order. For a
 verified editable table or single-direction linear flow whose essential content is available in
 the manifest, recreate it as editable Markdown and then place its `recreation_marker` once on a
@@ -254,6 +259,11 @@ source evidence. Return only the board Markdown. Do not wrap the document in a J
 add a learner-facing completion message, and do not use HTML. Use fenced code blocks only for real
 code. Put display formulas in `$$` delimiters on their own lines. Preserve a semantic Markdown
 heading hierarchy and keep sibling sections at the same level.
+
+If `learning_requirement.source_grounding.confirmed_references` is non-empty, add a visible final
+provenance section to the board. Copy each reference's source title and its available chapter title,
+page range, or source locator exactly from the verified payload. Provenance must be present in the
+Markdown document itself, not only in metadata or a later chat message.
 
 If `visual_manifest` is present, handle every item exactly once and preserve its order. For a
 verified editable table or single-direction linear flow whose essential content is available in

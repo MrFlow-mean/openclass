@@ -166,6 +166,11 @@ heading tree is also the durable teaching scale used for later ordered explanati
 The frozen payload may include a `visual_manifest`. Every manifest item is verified evidence from
 the learner-selected source scope. Preserve manifest order and handle every item exactly once.
 
+If the frozen learning requirement contains confirmed source references, add a visible final
+provenance section to `board.md`. Copy every source title and its available chapter title, page
+range, or source locator exactly from the verified reference. Do not leave provenance only in
+metadata or the learner-facing response.
+
 For a manifest item without `recreation_marker`, write its `marker` exactly once as a standalone
 ordinary paragraph immediately after the paragraph that introduces it. OpenClass will materialize
 the backend-owned editable table or original asset.
@@ -1496,6 +1501,10 @@ def _generate_blank_board_with_adapter(
         raise CodexAppServerError("Board generation returned HTML instead of Markdown")
     if len(content.encode("utf-8")) > _board_max_bytes():
         raise CodexAppServerError("Board generation exceeds the configured size limit")
+    _validate_visible_source_provenance(
+        content=content,
+        requirement=prepared_requirement,
+    )
     evidence_by_id = {
         item.visual_id: item
         for item in prepared_requirement.source_grounding.frozen_visual_evidence
@@ -1517,6 +1526,29 @@ def _generate_blank_board_with_adapter(
         ),
         content,
     )
+
+
+def _validate_visible_source_provenance(
+    *,
+    content: str,
+    requirement: LearningRequirementSheet,
+) -> None:
+    for reference in requirement.source_grounding.confirmed_references:
+        source_title = reference.source_title.strip()
+        if source_title and source_title not in content:
+            raise CodexAppServerError(
+                "Source-grounded board omitted a verified source title"
+            )
+        location_labels = [
+            reference.chapter_title.strip(),
+            reference.page_range.strip(),
+            reference.source_locator.strip(),
+        ]
+        available_labels = [label for label in location_labels if label]
+        if available_labels and not any(label in content for label in available_labels):
+            raise CodexAppServerError(
+                "Source-grounded board omitted its verified chapter or range"
+            )
 
 
 def _run_codex_board_generation(
@@ -1775,6 +1807,50 @@ def _process_structured_existing_board_turn(
                 else None
             ),
             "verified_source_reference_used": source_context is not None,
+            "verified_source_references": (
+                [
+                    reference.model_dump(mode="json")
+                    for reference in source_context.requirement.source_grounding.confirmed_references
+                ]
+                if source_context is not None
+                else []
+            ),
+            "verified_source_bundle_ids": (
+                [
+                    reference.evidence_bundle_id
+                    for reference in source_context.requirement.source_grounding.confirmed_references
+                    if reference.evidence_bundle_id
+                ]
+                if source_context is not None
+                else []
+            ),
+            "verified_source_chapter_ids": (
+                [
+                    reference.source_chapter_id
+                    for reference in source_context.requirement.source_grounding.confirmed_references
+                    if reference.source_chapter_id
+                ]
+                if source_context is not None
+                else []
+            ),
+            "verified_source_content_hashes": (
+                [
+                    reference.content_hash
+                    for reference in source_context.requirement.source_grounding.confirmed_references
+                    if reference.content_hash
+                ]
+                if source_context is not None
+                else []
+            ),
+            "verified_source_evidence_ids": (
+                [
+                    evidence.id
+                    for evidence in source_context.requirement.source_grounding.frozen_evidence
+                    if evidence.id
+                ]
+                if source_context is not None
+                else []
+            ),
             "document_changed": changed,
             "document_write_authorized": document_write_authorized,
             "pending_board_write_offer_after": pending_write_offer_after,
