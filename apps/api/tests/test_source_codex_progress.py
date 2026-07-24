@@ -63,6 +63,79 @@ def test_pdf_tool_activity_advances_by_actual_scanned_pages(monkeypatch, tmp_pat
     assert "已渲染核对 5 页" in second_progress["detail"]
 
 
+def test_pi_source_tool_activity_advances_from_real_tool_arguments(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.pdf"
+    source_path.write_bytes(b"pdf")
+    monkeypatch.setattr(source_codex_progress, "_pdf_page_count", lambda _path: 100)
+    tracker = source_codex_progress.SourceCodexProgressTracker(source_path)
+
+    scanned = tracker.observe(
+        AgentActivityEvent(
+            id="pi_tool_1",
+            turn_id="turn_1",
+            stage="execute_role",
+            label="资料 Agent 已读取 PDF 页面",
+            status="completed",
+            role="pi",
+            metadata={
+                "kind": "dynamicToolCall",
+                "tool_name": "pdf_text",
+                "tool_args": {"first_page": 1, "last_page": 20},
+                "tool_details": {"first_page": 1, "last_page": 20},
+                "is_error": False,
+            },
+        )
+    )
+    saved = tracker.observe(
+        AgentActivityEvent(
+            id="pi_tool_2",
+            turn_id="turn_1",
+            stage="execute_role",
+            label="资料 Agent 已保存目录节点",
+            status="completed",
+            role="pi",
+            metadata={
+                "kind": "dynamicToolCall",
+                "tool_name": "catalog_append",
+                "tool_args": {},
+                "tool_details": {"node_count": 18},
+                "is_error": False,
+            },
+        )
+    )
+
+    assert scanned.progress == 35
+    assert scanned.event.metadata["source_progress"]["pages_scanned"] == 20
+    assert saved.progress == 55
+    assert saved.phase == "source_codex_mapping_nodes"
+    assert saved.event.metadata["source_progress"]["label"] == "正在保存目录节点：已保存 18 个"
+    assert "已保存 18 个目录节点" in saved.event.metadata["source_progress"]["detail"]
+
+    saved_from_args = tracker.observe(
+        AgentActivityEvent(
+            id="pi_tool_3",
+            turn_id="turn_1",
+            stage="execute_role",
+            label="资料 Agent 已保存目录节点",
+            status="completed",
+            role="pi",
+            metadata={
+                "kind": "dynamicToolCall",
+                "tool_name": "catalog_append",
+                "tool_args": {"nodes_json": '[{"key":"a"},{"key":"b"}]'},
+                "tool_details": {},
+                "is_error": False,
+            },
+        )
+    )
+
+    assert saved_from_args.event.metadata["source_progress"]["saved_nodes"] == 20
+    assert saved_from_args.event.metadata["source_progress"]["label"] == "正在保存目录节点：已保存 20 个"
+
+
 def test_full_pdf_extraction_reports_all_pages_without_completing_catalog(
     monkeypatch,
     tmp_path: Path,

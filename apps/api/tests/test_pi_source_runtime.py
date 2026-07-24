@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,69 @@ def test_pi_source_client_exposes_only_openclass_source_tools(
     assert response.activity[0].metadata["source_tool_policy"] == (
         "openclass_read_only_directory_tools"
     )
+
+
+def test_pi_source_client_streams_completed_tool_activity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    source = tmp_path / "source.txt"
+    source.write_text("One\n", encoding="utf-8")
+    script = """
+import json
+import pathlib
+import sys
+
+sys.stdin.read()
+print(json.dumps({
+    "type": "tool_execution_start",
+    "toolCallId": "tool_1",
+    "toolName": "text_read",
+    "args": {"start_line": 1, "end_line": 1},
+}), flush=True)
+print(json.dumps({
+    "type": "tool_execution_end",
+    "toolCallId": "tool_1",
+    "toolName": "text_read",
+    "result": {"details": {"start_line": 1, "end_line": 1}},
+    "isError": False,
+}), flush=True)
+pathlib.Path("scratch/catalog.json").write_text(
+    json.dumps({"complete": True, "nodes": ["One"]}),
+    encoding="utf-8",
+)
+"""
+    client = PiSourceTextClient(
+        "user_test",
+        binary=sys.executable,
+        runtime_root=tmp_path / "runtime",
+    )
+    monkeypatch.setattr(
+        client,
+        "_command",
+        lambda **_kwargs: [sys.executable, "-u", "-c", script],
+    )
+    observed = []
+
+    response = client.parse_source_file(
+        source_path=source,
+        provider="openai_codex",
+        model="gpt-test",
+        system_prompt="Build a directory.",
+        user_prompt="Inspect the source.",
+        schema=_Catalog,
+        output_artifact_path="scratch/catalog.json",
+        inspection_scope="directory_only",
+        on_activity=observed.append,
+    )
+
+    live = next(event for event in observed if event.metadata.get("tool_name") == "text_read")
+    assert live.status == "completed"
+    assert live.metadata["kind"] == "dynamicToolCall"
+    assert live.metadata["tool_args"] == {"start_line": 1, "end_line": 1}
+    assert live.metadata["tool_details"] == {"start_line": 1, "end_line": 1}
+    assert response.output_parsed.nodes == ["One"]
 
 
 def test_pi_source_client_retries_a_mechanically_rejected_artifact(

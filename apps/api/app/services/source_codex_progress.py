@@ -51,6 +51,7 @@ class SourceCodexProgressTracker:
         self.total_pages = _pdf_page_count(source_path) if source_path.suffix.lower() == ".pdf" else 0
         self.scanned_pages: set[int] = set()
         self.rendered_pages: set[int] = set()
+        self.saved_nodes = 0
         self.completed_tool_actions = 0
         self.progress = 30
         self.phase = "source_codex_investigation"
@@ -74,6 +75,13 @@ class SourceCodexProgressTracker:
             scanned, rendered = _pages_from_command(command, total_pages=self.total_pages)
             self.scanned_pages.update(scanned)
             self.rendered_pages.update(rendered)
+
+        if (
+            event.status == "completed"
+            and str(event.metadata.get("kind") or "") == "dynamicToolCall"
+            and not bool(event.metadata.get("is_error"))
+        ):
+            self._apply_source_tool_progress(event)
 
         snapshot = _structured_progress(event)
         structured_detail = ""
@@ -101,6 +109,8 @@ class SourceCodexProgressTracker:
             detail_parts.append(f"文件共 {self.total_pages} 页")
         if self.rendered_pages:
             detail_parts.append(f"已渲染核对 {len(self.rendered_pages)} 页")
+        if self.saved_nodes:
+            detail_parts.append(f"已保存 {self.saved_nodes} 个目录节点")
         if self.completed_tool_actions:
             detail_parts.append(f"已完成 {self.completed_tool_actions} 次工具检查")
 
@@ -112,6 +122,7 @@ class SourceCodexProgressTracker:
             "pages_scanned": len(self.scanned_pages),
             "total_pages": self.total_pages,
             "pages_rendered": len(self.rendered_pages),
+            "saved_nodes": self.saved_nodes,
             "completed_tool_actions": self.completed_tool_actions,
         }
         decorated = event.model_copy(
@@ -122,6 +133,61 @@ class SourceCodexProgressTracker:
             progress=self.progress,
             phase=self.phase,
         )
+
+    def _apply_source_tool_progress(self, event: AgentActivityEvent) -> None:
+        tool_name = str(event.metadata.get("tool_name") or "")
+        tool_args = event.metadata.get("tool_args")
+        tool_details = event.metadata.get("tool_details")
+        args = tool_args if isinstance(tool_args, dict) else {}
+        details = tool_details if isinstance(tool_details, dict) else {}
+        if tool_name == "source_info":
+            self.progress = max(self.progress, 31)
+            self.label = "资料 Agent 已读取文件信息，正在定位目录"
+        elif tool_name == "catalog_start":
+            self.progress = max(self.progress, 32)
+            self.label = "资料 Agent 已建立目录检查点，正在读取目录页"
+        elif tool_name == "pdf_text":
+            self.scanned_pages.update(
+                _bounded_page_range(
+                    args.get("first_page"),
+                    args.get("last_page"),
+                    total_pages=self.total_pages,
+                )
+            )
+        elif tool_name == "pdf_page_image":
+            rendered = _bounded_page_range(
+                args.get("page"),
+                args.get("page"),
+                total_pages=self.total_pages,
+            )
+            self.scanned_pages.update(rendered)
+            self.rendered_pages.update(rendered)
+        elif tool_name == "catalog_append":
+            node_count = details.get("node_count")
+            if isinstance(node_count, int) and not isinstance(node_count, bool):
+                self.saved_nodes = max(self.saved_nodes, node_count)
+            else:
+                appended_nodes = _catalog_append_node_count(args.get("nodes_json"))
+                if appended_nodes:
+                    self.saved_nodes += appended_nodes
+            self.progress = max(self.progress, _PHASE_BANDS["map_nodes"][0])
+            self.phase = "source_codex_mapping_nodes"
+            self.label = (
+                f"正在保存目录节点：已保存 {self.saved_nodes} 个"
+                if self.saved_nodes
+                else "正在保存目录节点"
+            )
+        elif tool_name == "write_catalog":
+            self.progress = max(self.progress, 89)
+            self.phase = "source_codex_writing_catalog"
+            self.label = "资料 Agent 已写入目录，正在自检"
+
+        if self.total_pages and self.scanned_pages:
+            candidate = 30 + round(25 * len(self.scanned_pages) / self.total_pages)
+            self.progress = max(self.progress, min(55, candidate))
+            if _JOB_PHASE_RANK[self.phase] <= _JOB_PHASE_RANK["source_codex_scanning_pages"]:
+                self.phase = "source_codex_scanning_pages"
+                self.label = f"正在扫描并核对 PDF：{len(self.scanned_pages)}/{self.total_pages} 页"
 
     def _apply_mechanical_progress(self, *, command: str, event: AgentActivityEvent) -> None:
         if self.total_pages and self.scanned_pages:
@@ -157,6 +223,16 @@ def _pdf_page_count(path: Path) -> int:
         return len(PdfReader(str(path)).pages)
     except Exception:
         return 0
+
+
+def _catalog_append_node_count(value: object) -> int:
+    if not isinstance(value, str) or not value.strip():
+        return 0
+    try:
+        nodes = json.loads(value)
+    except json.JSONDecodeError:
+        return 0
+    return len(nodes) if isinstance(nodes, list) else 0
 
 
 def _command_succeeded(event: AgentActivityEvent) -> bool:
@@ -243,3 +319,17 @@ def _pages_from_command(command: str, *, total_pages: int) -> tuple[set[int], se
         pages.update(range(1, total_pages + 1))
 
     return pages, set(pages) if uses_render else set()
+
+
+def _bounded_page_range(start: object, end: object, *, total_pages: int) -> set[int]:
+    if (
+        total_pages <= 0
+        or not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+    ):
+        return set()
+    first = max(1, start)
+    last = min(total_pages, end)
+    return set(range(first, last + 1)) if first <= last else set()
