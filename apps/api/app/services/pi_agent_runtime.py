@@ -347,6 +347,7 @@ def _run_streaming_pi_process(
     command: list[str],
     *,
     input_text: str,
+    image_paths: list[Path],
     cwd: Path,
     env: dict[str, str],
     timeout: int,
@@ -365,12 +366,52 @@ def _run_streaming_pi_process(
     )
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
+    retry_configuration_ready = threading.Event()
+    agent_finished = threading.Event()
+    protocol_failure = threading.Event()
+    protocol_errors: list[str] = []
+
+    def observe_protocol_line(line: str) -> None:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        if (
+            payload.get("type") == "response"
+            and payload.get("id") == "openclass-disable-auto-retry"
+        ):
+            if payload.get("success") is True:
+                retry_configuration_ready.set()
+            else:
+                protocol_errors.append(
+                    str(payload.get("error") or "Pi rejected the retry configuration")
+                )
+                protocol_failure.set()
+            return
+        if payload.get("type") == "auto_retry_start":
+            protocol_errors.append(
+                "Pi model request failed: "
+                + str(payload.get("errorMessage") or "internal retry was attempted")
+            )
+            protocol_failure.set()
+            return
+        if payload.get("type") == "response" and payload.get("id") == "openclass-prompt":
+            if payload.get("success") is not True:
+                protocol_errors.append(str(payload.get("error") or "Pi rejected the prompt"))
+                protocol_failure.set()
+            return
+        if payload.get("type") == "agent_end":
+            agent_finished.set()
 
     def read_stdout() -> None:
         assert process.stdout is not None
         for line in process.stdout:
             stdout_lines.append(line)
-            recorder.observe_line(line)
+            observe_protocol_line(line)
+            if not protocol_failure.is_set():
+                recorder.observe_line(line)
 
     def read_stderr() -> None:
         assert process.stderr is not None
@@ -381,13 +422,9 @@ def _run_streaming_pi_process(
     stdout_thread.start()
     stderr_thread.start()
     assert process.stdin is not None
-    try:
-        process.stdin.write(input_text)
-        process.stdin.close()
-    except BrokenPipeError:
-        pass
     deadline = time.monotonic() + timeout
-    while process.poll() is None:
+
+    def abort_if_needed() -> None:
         if is_cancelled is not None and is_cancelled():
             _terminate_process(process)
             stdout_thread.join()
@@ -406,8 +443,78 @@ def _run_streaming_pi_process(
                 output="".join(stdout_lines),
                 stderr="".join(stderr_lines),
             )
+
+    def write_rpc_command(payload: dict[str, Any]) -> None:
+        process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+
+    try:
+        write_rpc_command(
+            {
+                "id": "openclass-disable-auto-retry",
+                "type": "set_auto_retry",
+                "enabled": False,
+            }
+        )
+        while (
+            process.poll() is None
+            and not retry_configuration_ready.is_set()
+            and not protocol_failure.is_set()
+        ):
+            abort_if_needed()
+            time.sleep(PI_PROCESS_POLL_SECONDS)
+        if protocol_failure.is_set():
+            raise RuntimeError(protocol_errors[-1])
+        if not retry_configuration_ready.is_set():
+            raise RuntimeError("Pi exited before confirming the retry configuration")
+
+        rpc_images = []
+        for image_path in image_paths:
+            mime_type = next(
+                mime
+                for mime, suffix in _IMAGE_SUFFIXES.items()
+                if suffix == image_path.suffix
+            )
+            rpc_images.append(
+                {
+                    "type": "image",
+                    "data": base64.b64encode(image_path.read_bytes()).decode("ascii"),
+                    "mimeType": mime_type,
+                }
+            )
+        prompt_command: dict[str, Any] = {
+            "id": "openclass-prompt",
+            "type": "prompt",
+            "message": input_text,
+        }
+        if rpc_images:
+            prompt_command["images"] = rpc_images
+        write_rpc_command(prompt_command)
+
+        while (
+            process.poll() is None
+            and not agent_finished.is_set()
+            and not protocol_failure.is_set()
+        ):
+            abort_if_needed()
+            time.sleep(PI_PROCESS_POLL_SECONDS)
+        if protocol_failure.is_set():
+            _terminate_process(process)
+            raise RuntimeError(protocol_errors[-1])
+        if agent_finished.is_set() and process.poll() is None:
+            process.stdin.close()
+    except BrokenPipeError:
+        pass
+    except BaseException:
+        _terminate_process(process)
+        stdout_thread.join()
+        stderr_thread.join()
+        raise
+
+    while process.poll() is None:
+        abort_if_needed()
         try:
-            process.wait(timeout=min(PI_PROCESS_POLL_SECONDS, remaining))
+            process.wait(timeout=PI_PROCESS_POLL_SECONDS)
         except subprocess.TimeoutExpired:
             continue
     returncode = int(process.returncode or 0)
@@ -492,7 +599,7 @@ def _pi_request_timeout_seconds() -> int:
 
 
 def _assistant_text(stdout: str) -> str:
-    final_text = ""
+    final_message: dict[str, Any] | None = None
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -503,15 +610,17 @@ def _assistant_text(stdout: str) -> str:
         message = event.get("message")
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
-        error_message = message.get("errorMessage")
-        if isinstance(error_message, str) and error_message.strip():
-            raise RuntimeError(f"Pi model request failed: {error_message.strip()}")
-        content = message.get("content")
-        if isinstance(content, str):
-            final_text = content.strip()
-            continue
-        if not isinstance(content, list):
-            continue
+        final_message = message
+    if final_message is None:
+        raise RuntimeError("Pi completed without an assistant response")
+    error_message = final_message.get("errorMessage")
+    if isinstance(error_message, str) and error_message.strip():
+        raise RuntimeError(f"Pi model request failed: {error_message.strip()}")
+    final_text = ""
+    content = final_message.get("content")
+    if isinstance(content, str):
+        final_text = content.strip()
+    elif isinstance(content, list):
         text_parts = [
             item.get("text", "")
             for item in content
@@ -558,7 +667,13 @@ class PiTextClient:
         self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
         self._process_runner = process_runner
 
-    def _command(self, *, system_prompt: str, image_paths: list[Path] | None = None) -> list[str]:
+    def _command(
+        self,
+        *,
+        system_prompt: str,
+        mode: str = "json",
+        image_paths: list[Path] | None = None,
+    ) -> list[str]:
         command = [
             self.binary,
             "--provider",
@@ -566,7 +681,7 @@ class PiTextClient:
             "--model",
             self.model,
             "--mode",
-            "json",
+            mode,
             "--no-session",
             "--no-tools",
             "--no-extensions",
@@ -628,11 +743,16 @@ class PiTextClient:
                 on_text_delta=on_text_delta,
             )
             try:
-                command = self._command(system_prompt=system_prompt, image_paths=image_paths)
+                command = self._command(
+                    system_prompt=system_prompt,
+                    mode="rpc" if self._process_runner is None else "json",
+                    image_paths=image_paths if self._process_runner is not None else None,
+                )
                 if self._process_runner is None:
                     result = _run_streaming_pi_process(
                         command,
                         input_text=user_prompt,
+                        image_paths=image_paths,
                         cwd=temporary_path,
                         env=environment,
                         timeout=timeout_seconds,
