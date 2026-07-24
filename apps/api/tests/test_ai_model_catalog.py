@@ -59,8 +59,21 @@ def test_catalog_exposes_pi_compatible_and_shared_deepseek_text_models(monkeypat
     )
     assert catalog.defaults["text"].reasoning_effort is None
     assert catalog.defaults["text"].service_tier is None
-    assert catalog.text[0].supported_reasoning_efforts == []
-    assert catalog.text[0].service_tiers == []
+    assert [
+        option.reasoning_effort
+        for option in catalog.text[0].supported_reasoning_efforts
+    ] == ["minimal", "low", "medium", "high", "xhigh"]
+    assert [tier.id for tier in catalog.text[0].service_tiers] == ["priority"]
+    assert all(
+        option.supported_reasoning_efforts and option.service_tiers
+        for option in catalog.text
+        if option.provider == "openai_codex"
+    )
+    assert all(
+        not option.supported_reasoning_efforts and not option.service_tiers
+        for option in catalog.text
+        if option.provider == "deepseek"
+    )
 
 
 def test_catalog_uses_pi_default_without_an_environment_override(

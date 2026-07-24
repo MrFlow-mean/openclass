@@ -27,6 +27,20 @@ PI_OPENAI_CODEX_MODELS = (
     ("gpt-5.4-mini", "OpenAI GPT-5.4 Mini"),
     ("gpt-5.3-codex-spark", "OpenAI GPT-5.3 Codex Spark"),
 )
+PI_OPENAI_CODEX_REASONING_EFFORTS = (
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+PI_OPENAI_CODEX_SERVICE_TIERS = (
+    {
+        "id": "priority",
+        "name": "Priority",
+        "description": "Faster processing with higher usage.",
+    },
+)
 
 
 def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
@@ -109,7 +123,15 @@ def _configured_secret(name: str) -> bool:
 
 def _pi_text_models() -> tuple[dict[str, Any], ...]:
     return tuple(
-        {"model": model, "displayName": label}
+        {
+            "model": model,
+            "displayName": label,
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": effort}
+                for effort in PI_OPENAI_CODEX_REASONING_EFFORTS
+            ],
+            "serviceTiers": [dict(tier) for tier in PI_OPENAI_CODEX_SERVICE_TIERS],
+        }
         for model, label in PI_OPENAI_CODEX_MODELS
     )
 
