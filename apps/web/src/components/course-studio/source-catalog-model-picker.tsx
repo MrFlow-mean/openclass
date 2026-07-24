@@ -51,6 +51,7 @@ export function SourceCatalogModelPicker({
           testIdPrefix="source-catalog-model"
           preferredPlacement="below"
           preferredSubmenuSide="left"
+          allowSpeedSelection={false}
         />
       </div>
     </div>
