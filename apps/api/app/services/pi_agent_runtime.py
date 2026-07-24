@@ -24,7 +24,15 @@ from app.services.structured_output import (
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 PiProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
-PI_REQUEST_TIMEOUT_SECONDS = 5 * 60
+PI_REQUEST_TIMEOUT_SECONDS = 10 * 60
+PI_TRANSIENT_RETRY_ATTEMPTS = 1
+PI_TRANSIENT_ERROR_MARKERS = (
+    "websocket error",
+    "connection reset",
+    "connection closed",
+    "connection lost",
+    "network error",
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +130,11 @@ def _assistant_text(stdout: str) -> str:
     return final_text
 
 
+def _is_transient_pi_error(error: RuntimeError) -> bool:
+    message = str(error).casefold()
+    return any(marker in message for marker in PI_TRANSIENT_ERROR_MARKERS)
+
+
 class PiTextClient:
     """Tool-free Pi runtime used behind OpenClass workflow validation."""
 
@@ -171,7 +184,7 @@ class PiTextClient:
             command.extend(["--thinking", self.reasoning_effort])
         return command
 
-    def _run(self, *, system_prompt: str, user_prompt: str) -> str:
+    def _run_once(self, *, system_prompt: str, user_prompt: str) -> str:
         load_root_dotenv()
         agent_dir = pi_agent_directory(
             owner_user_id=self.owner_user_id,
@@ -212,6 +225,25 @@ class PiTextClient:
                 + (f": {detail}" if detail else f" with exit code {result.returncode}")
             )
         return _assistant_text(result.stdout)
+
+    def _run(self, *, system_prompt: str, user_prompt: str) -> str:
+        for attempt in range(PI_TRANSIENT_RETRY_ATTEMPTS + 1):
+            try:
+                return self._run_once(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
+            except RuntimeError as error:
+                if attempt >= PI_TRANSIENT_RETRY_ATTEMPTS or not _is_transient_pi_error(error):
+                    raise
+                ai_usage_logger.log_event(
+                    "pi_transient_request_retry",
+                    provider=self.provider,
+                    model=self.model,
+                    attempt=attempt + 1,
+                    error=str(error),
+                )
+        raise RuntimeError("Pi model request failed after a transient retry")
 
     def parse(
         self,
