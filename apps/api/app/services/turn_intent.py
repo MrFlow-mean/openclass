@@ -124,21 +124,27 @@ def has_explicit_document_mutation_request(
         r"(?:板书|文档|讲义|章节|小节|标题|段落|表格|列表|公式|图片|这段|选中内容|"
         r"board|document|lesson|section|heading|title|paragraph|table|list|formula|image)"
     )
+    negation = r"(?:不要|不用|无需|不需要|请勿|别|禁止|don'?t|donot|without)"
+    mutation_candidate = re.sub(
+        rf"{negation}(?:再)?(?:把|将|对)?(?:{action}.{{0,32}}?{target}|{target}.{{0,32}}?{action})",
+        "",
+        normalized,
+    )
     if re.search(
         rf"(?:是否应该|要不要|需不需要|有没有必要).{{0,16}}(?:{action}|{target})",
-        normalized,
+        mutation_candidate,
     ):
         return False
     if re.search(
         rf"(?:如何|怎么|怎样|为什么|how|why).{{0,32}}(?:{action}|{target})",
-        normalized,
+        mutation_candidate,
     ):
         return False
-    if re.search(rf"{action}.{{0,256}}{target}", normalized) or re.search(
-        rf"{target}.{{0,256}}{action}", normalized
+    if re.search(rf"{action}.{{0,256}}{target}", mutation_candidate) or re.search(
+        rf"{target}.{{0,256}}{action}", mutation_candidate
     ):
         return True
-    return has_board_selection and bool(re.search(action, normalized))
+    return has_board_selection and bool(re.search(action, mutation_candidate))
 
 
 def decide_board_write_action(
