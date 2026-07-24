@@ -1878,11 +1878,7 @@ test("does not show a second board-generation confirmation after learning requir
   await page.route("**/api/lessons/*/evidence/pending", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "null" });
   });
-  const initialEvidenceResponse = page.waitForResponse(
-    (response) => response.url().includes("/evidence/pending") && response.request().method() === "GET"
-  );
   await createLessonFromEmptyStudio(page, `无资料生成测试页面 ${unique}`);
-  await initialEvidenceResponse;
 
   await page.route("**/api/lessons/*/chat/stream", async (route) => {
     const authHeader = route.request().headers().authorization;
@@ -1946,7 +1942,12 @@ test("does not show a second board-generation confirmation after learning requir
   });
 
   await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
+  const chatStreamResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/chat/stream") && response.request().method() === "POST"
+  );
   await page.getByRole("button", { name: "发送消息" }).click();
+  await chatStreamResponse;
 
   await expect(page.getByText("学习需求已清晰")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "开始生成板书" })).toHaveCount(0);
