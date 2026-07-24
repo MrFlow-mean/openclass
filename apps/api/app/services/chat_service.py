@@ -16,6 +16,7 @@ def process_chat_on_lesson(
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
+    on_document_delta: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     commit_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
@@ -27,6 +28,7 @@ def process_chat_on_lesson(
             on_delta=on_delta,
             on_requirement_update=on_requirement_update,
             on_agent_activity=on_agent_activity,
+            on_document_delta=on_document_delta,
             is_cancelled=is_cancelled,
         )
 

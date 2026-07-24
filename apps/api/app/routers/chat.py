@@ -150,6 +150,15 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             emit("chat_delta", {"delta": char})
         chat_delta_emitted = True
 
+    def emit_document_delta(delta: str) -> None:
+        nonlocal document_delta_emitted
+        if not delta:
+            return
+        state.last_phase = "document"
+        log_first_delta_once(metric="document", role="pi", field="board.md")
+        emit("document_delta", {"delta": delta})
+        document_delta_emitted = True
+
     def emit_requirement_update(payload: dict[str, object]) -> None:
         state.last_phase = "learning_requirement"
         emit("requirement_update", payload)
@@ -202,6 +211,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                     on_delta=emit_codex_delta,
                     on_requirement_update=emit_requirement_update,
                     on_agent_activity=emit_agent_activity_event,
+                    on_document_delta=emit_document_delta,
                     is_cancelled=cancel_event.is_set,
                 )
                 state.process_returned_ms = _elapsed_ms_since(state.started_at)

@@ -302,16 +302,28 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
     assert first_document_delta_events[0]["field"] == "board.md"
 
 
-def test_chat_stream_emits_only_final_validated_board_document(monkeypatch) -> None:
-    def process_with_final_board(*args, **kwargs) -> ChatResponse:
+def test_chat_stream_emits_live_document_deltas_without_replaying_final_board(monkeypatch) -> None:
+    logged_events: list[dict] = []
+
+    def process_with_live_board(*args, **kwargs) -> ChatResponse:
+        kwargs["on_document_delta"]("# 实时板书\n\n")
+        kwargs["on_document_delta"]("这是模型正在生成的内容。")
         return _chat_response(
             "lesson_stream_test",
             chatbot_message="",
-            document_text="# 最终保存版\n\n这里只显示聊天处理完成后的板书。",
+            document_text="# 实时板书\n\n这是模型正在生成的内容。",
             board_document_operation_status="succeeded",
         )
 
-    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_final_board)
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_live_board)
+    monkeypatch.setattr(
+        chat_router.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append(
+            {"event_type": event_type, **payload}
+        )
+        or payload,
+    )
 
     events = _collect_events(
         chat_router._chat_stream_events(
@@ -322,8 +334,18 @@ def test_chat_stream_emits_only_final_validated_board_document(monkeypatch) -> N
     )
 
     document_text = _joined_delta(events, "document_delta")
-    assert document_text == "# 最终保存版\n\n这里只显示聊天处理完成后的板书。"
-    assert "中间草稿" not in document_text
+    assert document_text == "# 实时板书\n\n这是模型正在生成的内容。"
+    assert [event for event, _payload in events].count("document_delta") == 2
+    assert [event for event, _payload in events].index("document_delta") < [
+        event for event, _payload in events
+    ].index("final")
+    first_document_delta = next(
+        event
+        for event in logged_events
+        if event["stream_event"] == "first_document_delta_sent"
+    )
+    assert first_document_delta["role"] == "pi"
+    assert first_document_delta["field"] == "board.md"
 
 
 def test_chat_stream_does_not_synthesize_chat_delta_for_silent_board_generation(monkeypatch) -> None:
