@@ -312,9 +312,12 @@ def test_pi_adapter_generates_board_as_direct_markdown(monkeypatch) -> None:
         model="gpt-5.5",
     )
     captured: dict[str, object] = {}
+    document_deltas: list[str] = []
 
     def complete_text(**kwargs):
         captured.update(kwargs)
+        kwargs["on_text_delta"]("# Generated board\n\n")
+        kwargs["on_text_delta"]("A direct Markdown document.")
         return SimpleNamespace(
             output_text="# Generated board\n\nA direct Markdown document.",
             activity=[],
@@ -328,10 +331,12 @@ def test_pi_adapter_generates_board_as_direct_markdown(monkeypatch) -> None:
         ),
         is_cancelled=lambda: False,
         on_activity=None,
+        on_document_delta=document_deltas.append,
     )
 
     assert content == "# Generated board\n\nA direct Markdown document."
     assert result.final_response == ""
+    assert "".join(document_deltas) == content
     assert "Return only the board Markdown" in captured["system_prompt"]
     assert "visible final\nprovenance section" in captured["system_prompt"]
     assert "JSON object" in captured["system_prompt"]

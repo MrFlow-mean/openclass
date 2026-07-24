@@ -62,6 +62,7 @@ class AIExecutionAdapter(Protocol):
         *,
         is_cancelled: Callable[[], bool] | None,
         on_activity: Callable[[AgentActivityEvent], None] | None,
+        on_document_delta: Callable[[str], None] | None = None,
     ) -> tuple[BoardGenerationExecutionResult, str]: ...
 
     def complete_text(
@@ -172,7 +173,9 @@ class CodexAIExecutionAdapter:
         *,
         is_cancelled: Callable[[], bool] | None,
         on_activity: Callable[[AgentActivityEvent], None] | None,
+        on_document_delta: Callable[[str], None] | None = None,
     ) -> tuple[BoardGenerationExecutionResult, str]:
+        del on_document_delta
         if self._board_runner is None:
             raise RuntimeError("This AI adapter has no board-generation runner")
         return self._board_runner(
@@ -310,7 +313,9 @@ class DeepSeekAIExecutionAdapter:
         *,
         is_cancelled: Callable[[], bool] | None,
         on_activity: Callable[[AgentActivityEvent], None] | None,
+        on_document_delta: Callable[[str], None] | None = None,
     ) -> tuple[BoardGenerationExecutionResult, str]:
+        del on_document_delta
         if is_cancelled is not None and is_cancelled():
             raise RuntimeError(f"{self.runtime_label} board generation was cancelled")
         response = self.parse_structured(
@@ -514,6 +519,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         *,
         is_cancelled: Callable[[], bool] | None,
         on_activity: Callable[[AgentActivityEvent], None] | None,
+        on_document_delta: Callable[[str], None] | None = None,
     ) -> tuple[BoardGenerationExecutionResult, str]:
         if is_cancelled is not None and is_cancelled():
             raise RuntimeError(f"{self.runtime_label} board generation was cancelled")
@@ -534,6 +540,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
             image_inputs=request.image_inputs,
             on_activity=on_activity,
             is_cancelled=is_cancelled,
+            on_text_delta=on_document_delta,
         )
         content = response.output_text.strip()
         if not content:
