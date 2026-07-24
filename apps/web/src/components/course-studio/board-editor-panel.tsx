@@ -15,6 +15,7 @@ type BoardEditorPanelProps = {
   document: BoardDocument;
   isPreviewMode: boolean;
   isDraftPreviewMode: boolean;
+  isDraftPreviewStreaming: boolean;
   isMergeMode: boolean;
   previewCommit: CommitRecord | null;
   toolbarCollapsed: boolean;
@@ -106,6 +107,7 @@ export function BoardEditorPanel({
   document,
   isPreviewMode,
   isDraftPreviewMode,
+  isDraftPreviewStreaming,
   isMergeMode,
   previewCommit,
   toolbarCollapsed,
@@ -143,15 +145,25 @@ export function BoardEditorPanel({
         </div>
       ) : null}
       {!isPreviewMode && isDraftPreviewMode ? (
-        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800">
-          正在预览未保存的生成草稿。生成未成功落库，当前内容不会自动保存。
-          <button
-            type="button"
-            className="ml-3 rounded-md border border-amber-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-800"
-            onClick={onExitPreviewMode}
-          >
-            回到当前版本
-          </button>
+        <div
+          className={
+            isDraftPreviewStreaming
+              ? "shrink-0 border-b border-blue-200 bg-blue-50 px-5 py-3 text-sm text-blue-800"
+              : "shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800"
+          }
+        >
+          {isDraftPreviewStreaming
+            ? "正在预览生成中的板书，成功完成后会自动保存。"
+            : "正在预览未保存的生成草稿。生成未成功落库，当前内容不会自动保存。"}
+          {!isDraftPreviewStreaming ? (
+            <button
+              type="button"
+              className="ml-3 rounded-md border border-amber-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-800"
+              onClick={onExitPreviewMode}
+            >
+              回到当前版本
+            </button>
+          ) : null}
         </div>
       ) : null}
       {isMergeMode ? (

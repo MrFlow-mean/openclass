@@ -845,6 +845,7 @@ export function CourseStudio() {
           document={displayedDocument}
           isPreviewMode={isPreviewMode}
           isDraftPreviewMode={isDraftPreviewMode}
+          isDraftPreviewStreaming={isDraftPreviewMode && isChatBusy}
           isMergeMode={lessonMerge.isActive}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
