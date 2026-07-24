@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel
 
-from app.models import AgentActivityEvent, new_id
+from app.models import AgentActivityEvent, new_id, now_iso
 from app.services.ai_logging import ai_usage_logger
 from app.services.config import DATA_DIR, load_root_dotenv
 from app.services.structured_output import (
@@ -34,12 +36,270 @@ PI_TRANSIENT_ERROR_MARKERS = (
     "network error",
 )
 PI_OPENAI_CODEX_SERVICE_TIERS = {"priority"}
+PI_ACTIVITY_EMIT_CHARACTER_INTERVAL = 120
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class PiStructuredResponse:
     output_parsed: BaseModel
     activity: list[AgentActivityEvent]
+
+
+class _PiActivityRecorder:
+    """Convert Pi's JSON event stream into public, durable activity updates.
+
+    Pi can emit private reasoning text token by token. OpenClass deliberately
+    exposes truthful lifecycle and volume updates without persisting that raw
+    private reasoning.
+    """
+
+    def __init__(
+        self,
+        *,
+        turn_id: str,
+        request_id: str,
+        provider: str,
+        model: str,
+        callback: Callable[[AgentActivityEvent], None] | None,
+    ) -> None:
+        self.turn_id = turn_id
+        self.request_id = request_id
+        self.provider = provider
+        self.model = model
+        self.callback = callback
+        self._events: dict[str, AgentActivityEvent] = {}
+        self._order: list[str] = []
+        self._character_counts: dict[str, int] = {}
+        self._last_emitted_counts: dict[str, int] = {}
+
+    @property
+    def events(self) -> list[AgentActivityEvent]:
+        return [self._events[event_id] for event_id in self._order]
+
+    def _event_id(self, kind: str, content_index: object = 0) -> str:
+        return f"{self.request_id}:{kind}:{content_index}"
+
+    def _publish(
+        self,
+        *,
+        event_id: str,
+        label: str,
+        status: str,
+        kind: str,
+        detail: str,
+        force: bool = True,
+    ) -> None:
+        existing = self._events.get(event_id)
+        event = AgentActivityEvent(
+            id=event_id,
+            turn_id=self.turn_id,
+            stage="build_context" if kind == "reasoning" else "execute_role",
+            label=label,
+            status=status,
+            role="OpenClass",
+            metadata={
+                "kind": kind,
+                "detail": detail,
+                "agent_backend": "pi",
+                "provider": self.provider,
+                "model": self.model,
+            },
+            created_at=existing.created_at if existing is not None else now_iso(),
+        )
+        if existing is None:
+            self._order.append(event_id)
+        self._events[event_id] = event
+        if self.callback is None:
+            return
+        character_count = self._character_counts.get(event_id, 0)
+        last_emitted = self._last_emitted_counts.get(event_id, 0)
+        if not force and character_count - last_emitted < PI_ACTIVITY_EMIT_CHARACTER_INTERVAL:
+            return
+        self._last_emitted_counts[event_id] = character_count
+        try:
+            self.callback(event)
+        except Exception:
+            logger.exception("Failed to publish live Pi activity")
+
+    def observe_line(self, line: str) -> None:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        event_type = str(payload.get("type") or "")
+        runtime_id = self._event_id("runtime")
+        if event_type == "agent_start":
+            self._publish(
+                event_id=runtime_id,
+                label="OpenClass 已连接模型",
+                status="running",
+                kind="model_runtime",
+                detail=f"正在使用 {self.provider} / {self.model} 处理当前步骤。",
+            )
+            return
+        if event_type == "agent_end":
+            self._publish(
+                event_id=runtime_id,
+                label="OpenClass 已完成模型运行",
+                status="completed",
+                kind="model_runtime",
+                detail=f"{self.provider} / {self.model} 已返回本步骤结果。",
+            )
+            return
+        if event_type != "message_update":
+            return
+        update = payload.get("assistantMessageEvent")
+        if not isinstance(update, dict):
+            return
+        update_type = str(update.get("type") or "")
+        content_index = update.get("contentIndex", 0)
+        if update_type.startswith("thinking_"):
+            self._observe_content_update(
+                update=update,
+                update_type=update_type,
+                event_id=self._event_id("reasoning", content_index),
+                kind="reasoning",
+                running_label="OpenClass 正在推理",
+                completed_label="OpenClass 已完成推理",
+                noun="推理",
+            )
+        elif update_type.startswith("text_"):
+            self._observe_content_update(
+                update=update,
+                update_type=update_type,
+                event_id=self._event_id("output", content_index),
+                kind="model_output",
+                running_label="OpenClass 正在生成结果",
+                completed_label="OpenClass 已生成模型结果",
+                noun="结果",
+            )
+
+    def _observe_content_update(
+        self,
+        *,
+        update: dict[str, Any],
+        update_type: str,
+        event_id: str,
+        kind: str,
+        running_label: str,
+        completed_label: str,
+        noun: str,
+    ) -> None:
+        if update_type.endswith("_delta"):
+            delta = update.get("delta")
+            if isinstance(delta, str):
+                self._character_counts[event_id] = (
+                    self._character_counts.get(event_id, 0) + len(delta)
+                )
+        character_count = self._character_counts.get(event_id, 0)
+        if update_type.endswith("_end"):
+            detail = f"模型{noun}阶段已完成"
+            if character_count:
+                detail += f"，共接收 {character_count} 个字符"
+            self._publish(
+                event_id=event_id,
+                label=completed_label,
+                status="completed",
+                kind=kind,
+                detail=f"{detail}。",
+            )
+            return
+        privacy_note = (
+            "；逐字私有思维不写入聊天记录"
+            if kind == "reasoning"
+            else ""
+        )
+        detail = f"模型正在生成{noun}"
+        if character_count:
+            detail += f"，已接收 {character_count} 个字符"
+        self._publish(
+            event_id=event_id,
+            label=running_label,
+            status="running",
+            kind=kind,
+            detail=f"{detail}{privacy_note}。",
+            force=not update_type.endswith("_delta"),
+        )
+
+    def fail(self, detail: str) -> None:
+        self._publish(
+            event_id=self._event_id("runtime"),
+            label="OpenClass 模型运行未完成",
+            status="failed",
+            kind="model_runtime",
+            detail=detail,
+        )
+
+
+def _run_streaming_pi_process(
+    command: list[str],
+    *,
+    input_text: str,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    recorder: _PiActivityRecorder,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        cwd=cwd,
+        env=env,
+    )
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def read_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stdout_lines.append(line)
+            recorder.observe_line(line)
+
+    def read_stderr() -> None:
+        assert process.stderr is not None
+        stderr_lines.extend(process.stderr)
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    assert process.stdin is not None
+    try:
+        process.stdin.write(input_text)
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+        recorder.fail(f"模型请求在 {timeout} 秒后超时。")
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output="".join(stdout_lines),
+            stderr="".join(stderr_lines),
+        ) from exc
+    stdout_thread.join()
+    stderr_thread.join()
+    return subprocess.CompletedProcess(
+        command,
+        returncode,
+        "".join(stdout_lines),
+        "".join(stderr_lines),
+    )
 
 
 def pi_runtime_available() -> bool:
@@ -177,7 +437,7 @@ class PiTextClient:
         self.service_tier = _validated_service_tier(provider, service_tier)
         self.binary = resolved_binary
         self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
-        self._process_runner = process_runner or subprocess.run
+        self._process_runner = process_runner
 
     def _command(self, *, system_prompt: str) -> list[str]:
         command = [
@@ -205,7 +465,15 @@ class PiTextClient:
             command.extend(["--extension", str(_runtime_settings_extension_path())])
         return command
 
-    def _run_once(self, *, system_prompt: str, user_prompt: str) -> str:
+    def _run_once(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        turn_id: str,
+        request_id: str,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> str:
         load_root_dotenv()
         agent_dir = pi_agent_directory(
             owner_user_id=self.owner_user_id,
@@ -226,39 +494,92 @@ class PiTextClient:
             environment["OPENCLASS_PI_SERVICE_TIER"] = self.service_tier
         with tempfile.TemporaryDirectory(prefix="turn-", dir=workspace_root) as temporary:
             timeout_seconds = _pi_request_timeout_seconds()
+            recorder = _PiActivityRecorder(
+                turn_id=turn_id,
+                request_id=request_id,
+                provider=self.provider,
+                model=self.model,
+                callback=on_activity,
+            )
             try:
-                result = self._process_runner(
-                    self._command(system_prompt=system_prompt),
-                    input=user_prompt,
-                    text=True,
-                    capture_output=True,
-                    cwd=temporary,
-                    env=environment,
-                    timeout=timeout_seconds,
-                    check=False,
-                )
+                command = self._command(system_prompt=system_prompt)
+                if self._process_runner is None:
+                    result = _run_streaming_pi_process(
+                        command,
+                        input_text=user_prompt,
+                        cwd=Path(temporary),
+                        env=environment,
+                        timeout=timeout_seconds,
+                        recorder=recorder,
+                    )
+                else:
+                    result = self._process_runner(
+                        command,
+                        input=user_prompt,
+                        text=True,
+                        capture_output=True,
+                        cwd=temporary,
+                        env=environment,
+                        timeout=timeout_seconds,
+                        check=False,
+                    )
+                    for line in result.stdout.splitlines():
+                        recorder.observe_line(line)
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(
                     f"Pi model request timed out after {timeout_seconds} seconds"
                 ) from exc
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
+            recorder.fail("模型进程返回失败状态。")
             raise RuntimeError(
                 "Pi model request failed"
                 + (f": {detail}" if detail else f" with exit code {result.returncode}")
             )
-        return _assistant_text(result.stdout)
+        try:
+            return _assistant_text(result.stdout)
+        except RuntimeError:
+            recorder.fail("模型没有返回可用的助手结果。")
+            raise
 
-    def _run(self, *, system_prompt: str, user_prompt: str) -> str:
+    def _run(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        turn_id: str,
+        request_kind: str,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> str:
         for attempt in range(PI_TRANSIENT_RETRY_ATTEMPTS + 1):
             try:
                 return self._run_once(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
+                    turn_id=turn_id,
+                    request_id=f"{turn_id}:{request_kind}:{attempt + 1}",
+                    on_activity=on_activity,
                 )
             except RuntimeError as error:
                 if attempt >= PI_TRANSIENT_RETRY_ATTEMPTS or not _is_transient_pi_error(error):
                     raise
+                if on_activity is not None:
+                    on_activity(
+                        AgentActivityEvent(
+                            turn_id=turn_id,
+                            stage="execute_role",
+                            label="模型连接中断，正在重试",
+                            status="running",
+                            role="OpenClass",
+                            metadata={
+                                "kind": "model_retry",
+                                "detail": f"正在进行第 {attempt + 2} 次模型请求。",
+                                "agent_backend": "pi",
+                                "provider": self.provider,
+                                "model": self.model,
+                            },
+                        )
+                    )
                 ai_usage_logger.log_event(
                     "pi_transient_request_retry",
                     provider=self.provider,
@@ -275,10 +596,24 @@ class PiTextClient:
         user_prompt: str,
         schema: type[StructuredModel],
         image_inputs: list[str] | None = None,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
     ) -> PiStructuredResponse:
         if image_inputs:
             raise RuntimeError("The selected Pi runtime does not accept image inputs yet")
         turn_id = new_id("piturn")
+        activity_by_id: dict[str, AgentActivityEvent] = {}
+        activity_order: list[str] = []
+
+        def record_activity(event: AgentActivityEvent) -> None:
+            if event.id not in activity_by_id:
+                activity_order.append(event.id)
+            activity_by_id[event.id] = event
+            if on_activity is not None:
+                on_activity(event)
+
+        def current_activity() -> list[AgentActivityEvent]:
+            return [activity_by_id[event_id] for event_id in activity_order]
+
         schema_text = json.dumps(
             schema.model_json_schema(),
             ensure_ascii=False,
@@ -293,10 +628,40 @@ class PiTextClient:
         output_text = self._run(
             system_prompt=structured_system_prompt,
             user_prompt=user_prompt,
+            turn_id=turn_id,
+            request_kind="primary",
+            on_activity=record_activity,
         )
+        validation_event = AgentActivityEvent(
+            turn_id=turn_id,
+            stage="verify",
+            label="OpenClass 正在校验模型结果",
+            status="running",
+            role="OpenClass",
+            metadata={
+                "kind": "structured_validation",
+                "detail": f"正在按照 {schema.__name__} 的结构要求检查结果。",
+                "agent_backend": "pi",
+                "provider": self.provider,
+                "model": self.model,
+            },
+        )
+        record_activity(validation_event)
         try:
             parsed = schema.model_validate(json_object(output_text))
         except Exception as first_error:
+            record_activity(
+                validation_event.model_copy(
+                    update={
+                        "label": "模型结果需要结构修复",
+                        "status": "blocked",
+                        "metadata": {
+                            **validation_event.metadata,
+                            "detail": "首次结果未满足结构要求，正在请求模型修复。",
+                        },
+                    }
+                )
+            )
             initial_issues = validation_issues(first_error)
             repaired_text = self._run(
                 system_prompt=structured_system_prompt,
@@ -304,6 +669,9 @@ class PiTextClient:
                     f"{user_prompt}\n\nPrevious response:\n{output_text}\n\n"
                     f"{validation_repair_prompt(first_error)}"
                 ),
+                turn_id=turn_id,
+                request_kind="repair",
+                on_activity=record_activity,
             )
             try:
                 parsed = schema.model_validate(json_object(repaired_text))
@@ -325,6 +693,18 @@ class PiTextClient:
                 turn_id=turn_id,
                 initial_validation_issues=initial_issues,
             )
+        record_activity(
+            validation_event.model_copy(
+                update={
+                    "label": "OpenClass 已校验模型结果",
+                    "status": "completed",
+                    "metadata": {
+                        **validation_event.metadata,
+                        "detail": "模型结果已通过结构校验。",
+                    },
+                }
+            )
+        )
         ai_usage_logger.log_event(
             "pi_request_completed",
             provider=self.provider,
@@ -332,18 +712,7 @@ class PiTextClient:
             turn_id=turn_id,
             output_character_count=len(output_text),
         )
-        activity = [
-            AgentActivityEvent(
-                turn_id=turn_id,
-                stage="execute_role",
-                label="Pi completed the model request",
-                status="completed",
-                role="pi",
-                metadata={
-                    "agent_backend": "pi",
-                    "provider": self.provider,
-                    "model": self.model,
-                },
-            )
-        ]
-        return PiStructuredResponse(output_parsed=parsed, activity=activity)
+        return PiStructuredResponse(
+            output_parsed=parsed,
+            activity=current_activity(),
+        )
