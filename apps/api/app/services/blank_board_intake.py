@@ -613,9 +613,9 @@ def process_blank_board_turn(
             label=(
                 "Learning requirement update"
                 if outcome.requirement_changed
-                else "Codex conversation"
+                else "Agent conversation"
             ),
-            message="Codex completed the blank-board intake turn.",
+            message="The agent completed the blank-board intake turn.",
             metadata=_intake_metadata(
                 request=request,
                 outcome=outcome,
@@ -676,9 +676,8 @@ def process_blank_board_turn(
                 "kind": "learning_requirement_completed",
                 "user_message": request.message,
                 "assistant_message": outcome.chatbot_message,
-                "assistant_message_source": (
-                    "codex" if provider == "openai_codex" else provider
-                ),
+                "assistant_message_source": _activity_backend(current_activity()),
+                "agent_backend": _activity_backend(current_activity()),
                 "requirement_run_id": run_id,
                 "requirement_version_id": ready_version_id,
                 "requirement_phase": "ready",
@@ -699,9 +698,8 @@ def process_blank_board_turn(
                 "kind": "learning_requirement_frozen",
                 "user_message": request.message,
                 "assistant_message": outcome.chatbot_message,
-                "assistant_message_source": (
-                    "codex" if provider == "openai_codex" else provider
-                ),
+                "assistant_message_source": _activity_backend(current_activity()),
+                "agent_backend": _activity_backend(current_activity()),
                 "requirement_run_id": run_id,
                 "requirement_version_id": frozen_version_id,
                 "requirement_parent_version_id": ready_version_id,
@@ -882,8 +880,8 @@ def process_blank_board_turn(
         commit_operations(
             current_lesson,
             operations=[],
-            label="Codex board generation",
-            message="Codex generated the board from a frozen learning requirement.",
+            label="Agent board generation",
+            message="The agent generated the board from a frozen learning requirement.",
             new_document=next_document,
             metadata={
                 "kind": "board_document_generation",
@@ -893,9 +891,8 @@ def process_blank_board_turn(
                     if request.post_generation_action == "auto_explain"
                     else final_chatbot_message
                 ),
-                "assistant_message_source": (
-                    "codex" if provider == "openai_codex" else provider
-                ),
+                "assistant_message_source": _activity_backend(current_activity()),
+                "agent_backend": _activity_backend(current_activity()),
                 "follow_up_suggestions": generation_follow_up_suggestions,
                 "document_changed": True,
                 "board_state_before": "empty",
@@ -1033,7 +1030,7 @@ def process_blank_board_turn(
         board_task_questions=[],
         board_decision=BoardDecision(
             action="edit_board",
-            reason="Codex generated the board from the frozen learning requirement.",
+            reason="The agent generated the board from the frozen learning requirement.",
         ),
         requirement_cleared=True,
         board_document_operation_status="succeeded",
@@ -1121,6 +1118,16 @@ def _latest_requirement_run_id(lesson: Lesson) -> str | None:
     return _active_requirement_state_from_history(lesson).run_id
 
 
+def _activity_backend(activity: list[AgentActivityEvent]) -> str:
+    for event in reversed(activity):
+        backend = str(event.metadata.get("agent_backend") or "").strip().lower()
+        if backend:
+            return backend
+        if event.role in {"pi", "deepseek", "codex"}:
+            return event.role
+    return "agent"
+
+
 def _intake_metadata(
     *,
     request: ChatRequest,
@@ -1138,7 +1145,8 @@ def _intake_metadata(
         ),
         "user_message": request.message,
         "assistant_message": outcome.chatbot_message,
-        "assistant_message_source": "codex",
+        "assistant_message_source": _activity_backend(activity),
+        "agent_backend": _activity_backend(activity),
         "follow_up_suggestions": outcome.follow_up_suggestions,
         "document_changed": False,
         "board_state_before": "empty",
@@ -1306,7 +1314,7 @@ def _record_generation_failure(
             "frozen_requirement_payload": requirement.model_dump(mode="json"),
             "teaching_plan": teaching_plan,
             "assistant_message": assistant_message,
-            "assistant_message_source": "codex",
+            "assistant_message_source": "agent",
             "active_requirement_sheet_after": requirement.model_dump(mode="json"),
             "learning_clarification_after": clarification.model_dump(mode="json"),
             "requirement_cleared": False,

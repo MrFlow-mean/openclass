@@ -26,7 +26,7 @@ from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_catalog import (
     SourceCodexCatalogError,
-    generate_directory_only_catalog,
+    generate_codex_direct_catalog,
 )
 from app.services.source_directory_extractor import (
     CatalogProgressCallback,
@@ -225,12 +225,10 @@ class SourceDirectoryProcessor:
 
             if self.normalizer_factory is None:
                 # The production catalog path has exactly one semantic owner:
-                # Source Codex owns only directory-page discovery, exact PDF P,
-                # and the expandable directory tree. The host mechanically
-                # validates and persists that exact contract without inspecting
-                # body ranges or deriving directory semantics.
+                # Pi owns directory and bounded range investigation. The host
+                # mechanically validates and persists its exact typed artifact.
                 _report(progress_callback, "source_codex_investigation", 30)
-                direct_catalog = generate_directory_only_catalog(
+                direct_catalog = generate_codex_direct_catalog(
                     record=record,
                     source_path=path,
                     source_content_hash=content_hash,
@@ -239,59 +237,26 @@ class SourceDirectoryProcessor:
                 )
                 chapters = list(direct_catalog.chapters)
                 execution_metadata = dict(direct_catalog.audit_metadata)
-                if execution_metadata.get("catalog_task_contract") != (
-                    "directory_pages_offset_tree_v1"
-                ):
-                    raise SourceDirectoryProcessingError(
-                        "Source Codex did not return the required directory-only task contract."
-                    )
-                if any(
-                    chapter.range is not None
-                    or chapter.catalog_evidence
-                    or chapter.mapping_status == "verified"
-                    for chapter in chapters
-                ):
-                    raise SourceDirectoryProcessingError(
-                        "A directory-only catalog must not publish body ranges or body evidence."
-                    )
                 stage_history = [*run.stage_history, "source_codex_investigation"]
-                pdf_task = execution_metadata.get("pdf_directory_task")
-                directory_pages = (
-                    pdf_task.get("directory_pages", [])
-                    if isinstance(pdf_task, dict)
-                    else []
+                has_authoritative_ranges = any(
+                    chapter.mapping_status == "verified"
+                    and chapter.range is not None
+                    and chapter.catalog_evidence
+                    for chapter in chapters
                 )
-                anchor_pages = (
-                    [
-                        anchor.get("pdf_file_page")
-                        for anchor in pdf_task.get("anchors", [])
-                        if isinstance(anchor, dict)
-                    ]
-                    if isinstance(pdf_task, dict)
-                    else []
-                )
-                inspected_pdf_pages = {
-                    page
-                    for page in [
-                        *directory_pages,
-                        *(page for page in anchor_pages if isinstance(page, int)),
-                    ]
-                    if isinstance(page, int)
-                }
-                stage_history.append("directory_pages_offset_tree_verified")
+                stage_history.append("directory_and_ranges_verified")
                 run = self.store.save_catalog_run(
                     run.model_copy(
                         update={
                             "stage_history": stage_history,
                             "metadata": {**run.metadata, **execution_metadata},
-                            "inspected_page_count": len(inspected_pdf_pages),
                         }
                     )
                 )
                 turn_count = direct_catalog.turn_count
                 warnings = []
                 if not chapters:
-                    warnings.append("Source Codex returned an empty directory list.")
+                    warnings.append("The source agent returned an empty directory list.")
                 catalog_complete = True
                 structure_execution_metadata = {
                     key: value

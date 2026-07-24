@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.models import AgentActivityEvent, AIModelSelection, LearningRequirementSheet, new_id
 from app.services.codex_app_server import CodexAppServerTextClient
 from app.services.deepseek_api import DeepSeekTextClient
+from app.services.pi_agent_runtime import PiTextClient
 
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
@@ -201,20 +202,20 @@ class CodexAIExecutionAdapter:
         )
 
 
-class _DeepSeekBoardResponse(BaseModel):
+class _StructuredBoardResponse(BaseModel):
     content_text: str
     chatbot_message: str
 
 
 @dataclass(frozen=True)
-class DeepSeekBoardGenerationResult:
+class StructuredBoardGenerationResult:
     thread_id: str
     turn_id: str | None
     final_response: str
     activity: list[AgentActivityEvent] = field(default_factory=list)
 
 
-DEEPSEEK_BOARD_GENERATION_INSTRUCTIONS = """
+STRUCTURED_BOARD_GENERATION_INSTRUCTIONS = """
 You are the board-writing capability inside OpenClass. Generate a self-contained learning board
 from only the supplied frozen learning requirement, teaching plan, and verified source evidence.
 Return the complete board as Markdown in `content_text` and a brief learner-facing completion in
@@ -232,6 +233,9 @@ introduces it. Never write both markers for one item and never invent missing vi
 
 class DeepSeekAIExecutionAdapter:
     """Shared DeepSeek implementation of the provider-neutral execution contract."""
+
+    runtime_label = "DeepSeek"
+    turn_id_prefix = "deepseekturn"
 
     def __init__(self, *, model: str) -> None:
         self.model = model
@@ -266,9 +270,9 @@ class DeepSeekAIExecutionAdapter:
         on_activity: Callable[[AgentActivityEvent], None] | None,
     ) -> tuple[BoardGenerationExecutionResult, str]:
         if is_cancelled is not None and is_cancelled():
-            raise RuntimeError("DeepSeek board generation was cancelled")
+            raise RuntimeError(f"{self.runtime_label} board generation was cancelled")
         response = self.parse_structured(
-            system_prompt=DEEPSEEK_BOARD_GENERATION_INSTRUCTIONS,
+            system_prompt=STRUCTURED_BOARD_GENERATION_INSTRUCTIONS,
             user_prompt=(
                 "Frozen board-generation payload:\n"
                 + json.dumps(
@@ -281,17 +285,23 @@ class DeepSeekAIExecutionAdapter:
                     separators=(",", ":"),
                 )
             ),
-            schema=_DeepSeekBoardResponse,
+            schema=_StructuredBoardResponse,
             image_inputs=request.image_inputs,
         )
-        output = _DeepSeekBoardResponse.model_validate(response.output_parsed)
+        output = _StructuredBoardResponse.model_validate(response.output_parsed)
         if not output.content_text.strip():
-            raise RuntimeError("DeepSeek board generation returned empty content")
+            raise RuntimeError(
+                f"{self.runtime_label} board generation returned empty content"
+            )
         for event in response.activity:
             if on_activity is not None:
                 on_activity(event)
-        turn_id = response.activity[0].turn_id if response.activity else new_id("deepseekturn")
-        result = DeepSeekBoardGenerationResult(
+        turn_id = (
+            response.activity[0].turn_id
+            if response.activity
+            else new_id(self.turn_id_prefix)
+        )
+        result = StructuredBoardGenerationResult(
             thread_id=turn_id,
             turn_id=turn_id,
             final_response=output.chatbot_message.strip(),
@@ -323,6 +333,159 @@ class DeepSeekAIExecutionAdapter:
         raise RuntimeError("The selected DeepSeek text model does not accept image inputs")
 
 
+class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
+    """Pi implementation with OpenClass retaining workflow and write validation."""
+
+    runtime_label = "Pi"
+    turn_id_prefix = "piturn"
+
+    def __init__(
+        self,
+        *,
+        owner_user_id: str,
+        provider: str,
+        model: str,
+        reasoning_effort: str | None = None,
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self._client = PiTextClient(
+            owner_user_id=owner_user_id,
+            provider=provider,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+
+    def parse_structured(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredModel],
+        image_inputs: list[str] | None = None,
+        allow_live_web_search: bool = False,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
+    ) -> StructuredExecutionResult:
+        return self._parse_with_visible_activity(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            image_inputs=image_inputs,
+            on_activity=on_activity,
+            running_label="OpenClass 正在处理当前步骤",
+            completed_label="OpenClass 已完成当前步骤",
+            failed_label="OpenClass 当前步骤未完成",
+            activity_kind="structured_model_step",
+        )
+
+    def _parse_with_visible_activity(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredModel],
+        image_inputs: list[str] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+        running_label: str,
+        completed_label: str,
+        failed_label: str,
+        activity_kind: str,
+    ) -> StructuredExecutionResult:
+        lifecycle_event = AgentActivityEvent(
+            turn_id=new_id("piworkflow"),
+            stage="execute_role",
+            label=running_label,
+            status="running",
+            role="OpenClass",
+            metadata={
+                "kind": activity_kind,
+                "agent_backend": "pi",
+                "provider": self.provider,
+                "model": self.model,
+            },
+        )
+        if on_activity is not None:
+            on_activity(lifecycle_event)
+        try:
+            response = self._client.parse(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                image_inputs=image_inputs,
+            )
+        except Exception:
+            failed_event = lifecycle_event.model_copy(
+                update={"label": failed_label, "status": "failed"}
+            )
+            if on_activity is not None:
+                on_activity(failed_event)
+            raise
+        completed_event = lifecycle_event.model_copy(
+            update={"label": completed_label, "status": "completed"}
+        )
+        if on_activity is not None:
+            on_activity(completed_event)
+        return StructuredExecutionResult(
+            output_parsed=response.output_parsed,
+            activity=[completed_event],
+        )
+
+    def generate_board(
+        self,
+        request: BoardGenerationExecutionRequest,
+        *,
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> tuple[BoardGenerationExecutionResult, str]:
+        if is_cancelled is not None and is_cancelled():
+            raise RuntimeError(f"{self.runtime_label} board generation was cancelled")
+        response = self._parse_with_visible_activity(
+            system_prompt=STRUCTURED_BOARD_GENERATION_INSTRUCTIONS,
+            user_prompt=(
+                "Frozen board-generation payload:\n"
+                + json.dumps(
+                    {
+                        "learning_requirement": request.requirement.model_dump(mode="json"),
+                        "teaching_plan": request.teaching_plan,
+                        "visual_manifest": request.visual_manifest,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ),
+            schema=_StructuredBoardResponse,
+            image_inputs=request.image_inputs,
+            on_activity=on_activity,
+            running_label="OpenClass 正在生成板书",
+            completed_label="OpenClass 已生成板书",
+            failed_label="OpenClass 板书生成未完成",
+            activity_kind="board_generation",
+        )
+        output = _StructuredBoardResponse.model_validate(response.output_parsed)
+        if not output.content_text.strip():
+            raise RuntimeError(
+                f"{self.runtime_label} board generation returned empty content"
+            )
+        turn_id = response.activity[0].turn_id
+        result = StructuredBoardGenerationResult(
+            thread_id=turn_id,
+            turn_id=turn_id,
+            final_response=output.chatbot_message.strip(),
+            activity=response.activity,
+        )
+        return result, output.content_text
+
+    def analyze_image_batch(
+        self,
+        *,
+        prompt: str,
+        image_inputs: list[str],
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> str:
+        raise RuntimeError("The selected Pi runtime does not accept image inputs yet")
+
+
 def build_ai_execution_adapter(
     selection: AIModelSelection,
     *,
@@ -330,15 +493,14 @@ def build_ai_execution_adapter(
     board_runner: BoardRunner | None = None,
     image_analysis_runner: ImageAnalysisRunner | None = None,
 ) -> AIExecutionAdapter:
-    if selection.provider == "openai_codex":
-        return CodexAIExecutionAdapter(
-            owner_user_id=owner_user_id,
-            model=selection.model,
-            reasoning_effort=selection.reasoning_effort,
-            service_tier=selection.service_tier,
-            board_runner=board_runner,
-            image_analysis_runner=image_analysis_runner,
-        )
-    if selection.provider == "deepseek":
-        return DeepSeekAIExecutionAdapter(model=selection.model)
-    raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
+    del board_runner, image_analysis_runner
+    if selection.provider not in {"openai_codex", "deepseek"}:
+        raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
+    # Runtime selection is server-owned. Cached clients and stored records may
+    # still carry agent_backend="codex", but no text task routes back to Codex.
+    return PiAIExecutionAdapter(
+        owner_user_id=owner_user_id,
+        provider=selection.provider,
+        model=selection.model,
+        reasoning_effort=selection.reasoning_effort,
+    )

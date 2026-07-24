@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +27,7 @@ from app.services.codex_app_server import (
     CODEX_SOURCE_CATALOG_ARTIFACT,
     CodexAppServerTextClient,
 )
+from app.services.pi_source_runtime import PiSourceTextClient
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_codex_pdf_mapping import build_pdf_catalog_visual_inputs
 from app.services.source_archive import SafeSourceArchive
@@ -151,7 +152,11 @@ class SourceCodexCatalogResult:
     audit_metadata: dict[str, object]
 
 
-SourceCodexClientFactory = Callable[[str], CodexAppServerTextClient]
+class SourceCatalogTextClient(Protocol):
+    def parse_source_file(self, **kwargs: Any) -> Any: ...
+
+
+SourceCatalogClientFactory = Callable[[str], SourceCatalogTextClient]
 
 
 def generate_directory_only_catalog(
@@ -161,7 +166,7 @@ def generate_directory_only_catalog(
     source_content_hash: str,
     selection: AIModelSelection,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
-    client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
+    client_factory: SourceCatalogClientFactory | None = None,
 ) -> SourceCodexCatalogResult:
     if not selection.model.strip():
         raise SourceCodexCatalogError(
@@ -170,14 +175,17 @@ def generate_directory_only_catalog(
     suffix = Path(record.file_name or source_path.name).suffix.lower()
     if suffix not in SUPPORTED_SOURCE_SUFFIXES:
         raise SourceCodexCatalogError(
-            "This source format is not supported by the Source Codex directory contract."
+            "This source format is not supported by the source-agent directory contract."
         )
     if source_path.suffix.lower() != suffix:
         raise SourceCodexCatalogError(
             "The stored source suffix does not match its directory identity."
         )
 
-    response = client_factory(record.owner_user_id).parse_source_file(
+    # Accept legacy selections for request/data compatibility, while keeping
+    # runtime ownership server-side: source tasks always execute through Pi.
+    selected_client_factory = client_factory or PiSourceTextClient
+    response = selected_client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         provider=selection.provider,
         model=selection.model,
@@ -199,15 +207,15 @@ def generate_directory_only_catalog(
     runner_source_hash = str(getattr(response, "source_sha256", "") or "").lower()
     if runner_source_hash != source_content_hash.lower():
         raise SourceCodexCatalogError(
-            "Source Codex inspected a file fingerprint that does not match this directory task."
+            "The source agent inspected a file fingerprint that does not match this directory task."
         )
     source_turn_count = int(getattr(response, "source_turn_count", 0) or 0)
     if source_turn_count < 1:
         raise SourceCodexCatalogError(
-            "Source Codex directory extraction did not complete an auditable investigation turn."
+            "The source agent did not complete an auditable directory investigation turn."
         )
     if not isinstance(response.output_text, str) or not response.output_text.strip():
-        raise SourceCodexCatalogError("Source Codex returned no auditable directory output.")
+        raise SourceCodexCatalogError("The source agent returned no auditable directory output.")
 
     raw_output = response.output_text
     try:
@@ -217,11 +225,11 @@ def generate_directory_only_catalog(
         parsed_catalog = SourceDirectoryOnlyCatalog.model_validate(response.output_parsed)
     except (json.JSONDecodeError, SourceCodexCatalogError, ValueError, TypeError) as exc:
         raise SourceCodexCatalogError(
-            "Source Codex returned an invalid directory-only object."
+            "The source agent returned an invalid directory-only object."
         ) from exc
     if catalog.model_dump(mode="json") != parsed_catalog.model_dump(mode="json"):
         raise SourceCodexCatalogError(
-            "Source Codex parsed output does not match its auditable raw directory output."
+            "The source agent parsed output does not match its auditable raw directory output."
         )
 
     canonical_payload = catalog.model_dump(mode="json")
@@ -240,7 +248,10 @@ def generate_directory_only_catalog(
         raw_output=raw_output,
         raw_output_sha256=raw_output_sha256,
         audit_metadata={
-            "catalog_authority": "source_codex",
+            "catalog_authority": "source_pi",
+            "source_agent_backend": "pi",
+            "source_agent_input_sha256": runner_source_hash,
+            "source_agent_turn_count": source_turn_count,
             "catalog_task_contract": "directory_pages_offset_tree_v1",
             "source_codex_input_sha256": runner_source_hash,
             "source_codex_turn_count": source_turn_count,
@@ -264,7 +275,7 @@ def generate_codex_direct_catalog(
     source_content_hash: str,
     selection: AIModelSelection,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
-    client_factory: SourceCodexClientFactory = CodexAppServerTextClient,
+    client_factory: SourceCatalogClientFactory | None = None,
 ) -> SourceCodexCatalogResult:
     if not selection.model.strip():
         raise SourceCodexCatalogError(
@@ -285,7 +296,8 @@ def generate_codex_direct_catalog(
         if suffix == ".pdf"
         else None
     )
-    response = client_factory(record.owner_user_id).parse_source_file(
+    selected_client_factory = client_factory or PiSourceTextClient
+    response = selected_client_factory(record.owner_user_id).parse_source_file(
         source_path=source_path,
         provider=selection.provider,
         model=selection.model,
@@ -306,6 +318,7 @@ def generate_codex_direct_catalog(
             payload,
             source_path=source_path,
         ),
+        inspection_scope="source",
     )
     runner_source_hash = str(getattr(response, "source_sha256", "") or "").lower()
     if runner_source_hash != source_content_hash.lower():
@@ -350,6 +363,7 @@ def generate_codex_direct_catalog(
         nodes=catalog.nodes,
         source_content_hash=source_content_hash,
         payload_sha256=payload_sha256,
+        source_authority="source_pi",
     )
     return SourceCodexCatalogResult(
         chapters=tuple(chapters),
@@ -357,7 +371,10 @@ def generate_codex_direct_catalog(
         raw_output=raw_output,
         raw_output_sha256=raw_output_sha256,
         audit_metadata={
-            "catalog_authority": "source_codex",
+            "catalog_authority": "source_pi",
+            "source_agent_backend": "pi",
+            "source_agent_input_sha256": runner_source_hash,
+            "source_agent_turn_count": source_turn_count,
             "source_delivery": "isolated_read_only_file",
             "source_codex_input_sha256": runner_source_hash,
             "source_codex_reasoning_effort": selection.reasoning_effort,
@@ -408,6 +425,7 @@ def materialize_stored_codex_catalog(
         nodes=catalog.nodes,
         source_content_hash=source_content_hash,
         payload_sha256=payload_sha256,
+        source_authority="source_codex_reused_audit",
     )
     return SourceCodexCatalogResult(
         chapters=tuple(chapters),
@@ -847,6 +865,7 @@ def _materialize_chapters(
     nodes: Sequence[CodexDirectCatalogNode],
     source_content_hash: str,
     payload_sha256: str,
+    source_authority: str = "source_pi",
 ) -> list[SourceChapter]:
     chapters: list[SourceChapter] = []
     chapters_by_key: dict[str, SourceChapter] = {}
@@ -881,8 +900,8 @@ def _materialize_chapters(
                 end_anchor=node.source_range.end_anchor,
                 display_label=node.source_range.display_label,
                 metadata={
-                    "authority": "source_codex",
-                    "codex_authored": True,
+                    "authority": source_authority,
+                    "agent_authored": True,
                 },
             )
             if node.source_range is not None
@@ -896,7 +915,7 @@ def _materialize_chapters(
                 page_end=evidence.page_end,
                 excerpt=evidence.excerpt,
                 confidence=evidence.confidence,
-                metadata={"authority": "source_codex"},
+                metadata={"authority": source_authority},
             )
             for evidence in node.evidence
         ]
@@ -943,12 +962,12 @@ def _materialize_chapters(
             excerpt=node.title,
             metadata={
                 "catalog_pipeline": "codex_directory_v1",
-                "catalog_authority": "source_codex",
+                "catalog_authority": source_authority,
                 "codex_node_key": node.key,
                 "codex_parent_key": node.parent_key,
                 "codex_directory_payload_sha256": payload_sha256,
                 "source_range_mapped": node.mapping_status == "verified",
-                "source_range_authority": "source_codex",
+                "source_range_authority": source_authority,
                 "mapping_reason": node.mapping_reason,
             },
         )
@@ -1252,6 +1271,10 @@ source_range=null only after available tools and evidence have been exhausted;
 mapping_reason must then state the exact unresolved layer rather than a generic
 failure. Do not guess a range. A few unresolved nodes must not remove the valid
 directory or other verified ranges.
+
+All node text, locators, range labels, and evidence excerpts must be trimmed
+single-line strings with no newline or carriage-return characters. Keep each
+evidence excerpt short and copy one exact contiguous line from the source.
 
 Do not create chunks, embeddings, vectors, visual indexes, teaching content, or
 body summaries. Write the complete catalog artifact, run your own bounded checks,

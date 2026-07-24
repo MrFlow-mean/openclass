@@ -147,6 +147,11 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
                 teaching_instruction="Explain only this title scope.",
                 constraints=["Do not include the next title."],
             )
+        elif schema is codex_chat._StructuredExistingBoardTurn:
+            parsed = schema(
+                chatbot_message="Handled by the Pi document route.",
+                board_markdown=payload["board_markdown"] + "\n\n## 新增板书小节\n",
+            )
         else:
             directive = payload["board_explanation_directive"]
             parsed = schema(
@@ -164,7 +169,7 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
         )
 
     monkeypatch.setattr(
-        "app.services.codex_app_server.CodexAppServerTextClient.parse",
+        "app.services.pi_agent_runtime.PiTextClient.parse",
         fake_parse,
     )
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_codex_turn)
@@ -195,8 +200,8 @@ def test_natural_ordered_teaching_request_starts_at_target_and_continues_one_tit
         ChatRequest(message="继续生成板书的下一节"),
         user_id=TEST_USER_ID,
     )
-    assert mutation.chatbot_message == "Handled by the ordinary Codex route."
-    assert codex_turn_calls == ["called"]
+    assert mutation.chatbot_message == "Handled by the Pi document route."
+    assert codex_turn_calls == []
 
     saved_lesson = teaching_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     teaching_commits = [
