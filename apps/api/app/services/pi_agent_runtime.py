@@ -33,6 +33,7 @@ PI_TRANSIENT_ERROR_MARKERS = (
     "connection lost",
     "network error",
 )
+PI_OPENAI_CODEX_SERVICE_TIERS = {"priority"}
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,22 @@ def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
 
 def _pi_provider(provider: str) -> str:
     return "openai-codex" if provider == "openai_codex" else provider.replace("_", "-")
+
+
+def _runtime_settings_extension_path() -> Path:
+    return Path(__file__).with_name("pi_runtime_settings_extension.ts").resolve()
+
+
+def _validated_service_tier(provider: str, service_tier: str | None) -> str | None:
+    normalized = str(service_tier or "").strip()
+    if not normalized:
+        return None
+    if (
+        _pi_provider(provider) != "openai-codex"
+        or normalized not in PI_OPENAI_CODEX_SERVICE_TIERS
+    ):
+        raise RuntimeError("The selected Pi model does not support this service tier")
+    return normalized
 
 
 def _pi_request_timeout_seconds() -> int:
@@ -145,6 +162,7 @@ class PiTextClient:
         provider: str,
         model: str,
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
         binary: str | None = None,
         runtime_root: Path | None = None,
         process_runner: PiProcessRunner | None = None,
@@ -156,6 +174,7 @@ class PiTextClient:
         self.provider = provider
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.service_tier = _validated_service_tier(provider, service_tier)
         self.binary = resolved_binary
         self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
         self._process_runner = process_runner or subprocess.run
@@ -182,6 +201,8 @@ class PiTextClient:
         ]
         if self.reasoning_effort:
             command.extend(["--thinking", self.reasoning_effort])
+        if self.service_tier:
+            command.extend(["--extension", str(_runtime_settings_extension_path())])
         return command
 
     def _run_once(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -201,6 +222,8 @@ class PiTextClient:
                 "PI_TELEMETRY": "0",
             }
         )
+        if self.service_tier:
+            environment["OPENCLASS_PI_SERVICE_TIER"] = self.service_tier
         with tempfile.TemporaryDirectory(prefix="turn-", dir=workspace_root) as temporary:
             timeout_seconds = _pi_request_timeout_seconds()
             try:
