@@ -419,10 +419,31 @@ def test_turn_intent_requires_explicit_board_write_authorization() -> None:
         interaction_mode="ask",
         has_pending_offer=False,
     )
+    long_title_edit = turn_intent.decide_board_write_action(
+        message=(
+            "请把板书的一级标题“面向真实场景的完整课程标题”"
+            "修改为“新的课程标题”，其他内容保持不变。"
+        ),
+        interaction_mode="ask",
+        has_pending_offer=False,
+    )
+    heading_confirmation = turn_intent.decide_board_write_action(
+        message="确认，请修改这个一级标题",
+        interaction_mode="ask",
+        has_pending_offer=True,
+    )
+    how_to_question = turn_intent.decide_board_write_action(
+        message="如何修改文档标题？",
+        interaction_mode="ask",
+        has_pending_offer=False,
+    )
 
     assert explicit.action == "edit_now"
+    assert long_title_edit.action == "edit_now"
+    assert heading_confirmation.action == "edit_now"
     assert question.action == "answer_then_offer"
     assert advice_only.action == "answer_then_offer"
+    assert how_to_question.action == "answer_then_offer"
     assert conversation.action == "chat_without_offer"
 
 
