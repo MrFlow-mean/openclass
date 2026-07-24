@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -43,6 +45,21 @@ PI_SOURCE_TOOLS = (
     "catalog_append",
     "write_catalog",
 )
+
+logger = logging.getLogger(__name__)
+
+_SOURCE_TOOL_LABELS = {
+    "source_info": "资料 Agent 已读取文件信息",
+    "pdf_text": "资料 Agent 已读取 PDF 页面",
+    "pdf_page_image": "资料 Agent 已核对 PDF 页面",
+    "archive_list": "资料 Agent 已读取资料目录清单",
+    "archive_read": "资料 Agent 已读取目录文件",
+    "text_read": "资料 Agent 已读取文本区间",
+    "catalog_status": "资料 Agent 已检查目录进度",
+    "catalog_start": "资料 Agent 已建立目录检查点",
+    "catalog_append": "资料 Agent 已保存目录节点",
+    "write_catalog": "资料 Agent 已写入完整目录",
+}
 
 
 @dataclass(frozen=True)
@@ -132,7 +149,7 @@ class PiSourceTextClient:
         self.owner_user_id = owner_user_id
         self.binary = resolved_binary
         self.runtime_root = runtime_root or DATA_DIR / "pi-runtime"
-        self._process_runner = process_runner or subprocess.run
+        self._process_runner = process_runner
 
     def _command(
         self,
@@ -285,20 +302,22 @@ class PiSourceTextClient:
                             "and submit a complete replacement artifact."
                         )
                 try:
-                    result = self._process_runner(
-                        self._command(
-                            provider=provider,
-                            model=model,
-                            reasoning_effort=reasoning_effort,
-                            system_prompt=source_system_prompt,
-                        ),
+                    command = self._command(
+                        provider=provider,
+                        model=model,
+                        reasoning_effort=reasoning_effort,
+                        system_prompt=source_system_prompt,
+                    )
+                    result = self._run_attempt(
+                        command,
                         input=attempt_prompt,
-                        text=True,
-                        capture_output=True,
                         cwd=cwd,
                         env=environment,
                         timeout=_source_timeout_seconds(),
-                        check=False,
+                        turn_id=turn_id,
+                        provider=provider,
+                        model=model,
+                        on_activity=on_activity,
                     )
                 except subprocess.TimeoutExpired as exc:
                     # write_catalog publishes with an atomic rename. If the model already
@@ -410,3 +429,168 @@ class PiSourceTextClient:
             source_sha256=source_hash,
             source_turn_count=attempts,
         )
+
+    def _run_attempt(
+        self,
+        command: list[str],
+        *,
+        input: str,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: int,
+        turn_id: str,
+        provider: str,
+        model: str,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> subprocess.CompletedProcess[str]:
+        if self._process_runner is not None:
+            return self._process_runner(
+                command,
+                input=input,
+                text=True,
+                capture_output=True,
+                cwd=cwd,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+        return _run_streaming_pi_process(
+            command,
+            input_text=input,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            turn_id=turn_id,
+            provider=provider,
+            model=model,
+            on_activity=on_activity,
+        )
+
+
+def _run_streaming_pi_process(
+    command: list[str],
+    *,
+    input_text: str,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    turn_id: str,
+    provider: str,
+    model: str,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        cwd=cwd,
+        env=env,
+    )
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    tool_args: dict[str, tuple[str, dict[str, object]]] = {}
+
+    def read_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stdout_lines.append(line)
+            event = _pi_source_activity_event(
+                line,
+                tool_args=tool_args,
+                turn_id=turn_id,
+                provider=provider,
+                model=model,
+            )
+            if event is not None and on_activity is not None:
+                try:
+                    on_activity(event)
+                except Exception:
+                    logger.exception("Failed to persist live Pi source activity")
+
+    def read_stderr() -> None:
+        assert process.stderr is not None
+        stderr_lines.extend(process.stderr)
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    assert process.stdin is not None
+    try:
+        process.stdin.write(input_text)
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output="".join(stdout_lines),
+            stderr="".join(stderr_lines),
+        ) from exc
+    stdout_thread.join()
+    stderr_thread.join()
+    return subprocess.CompletedProcess(
+        command,
+        returncode,
+        "".join(stdout_lines),
+        "".join(stderr_lines),
+    )
+
+
+def _pi_source_activity_event(
+    line: str,
+    *,
+    tool_args: dict[str, tuple[str, dict[str, object]]],
+    turn_id: str,
+    provider: str,
+    model: str,
+) -> AgentActivityEvent | None:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    event_type = str(payload.get("type") or "")
+    tool_call_id = str(payload.get("toolCallId") or "")
+    tool_name = str(payload.get("toolName") or "")
+    if event_type == "tool_execution_start" and tool_call_id and tool_name:
+        args = payload.get("args")
+        tool_args[tool_call_id] = (
+            tool_name,
+            args if isinstance(args, dict) else {},
+        )
+        return None
+    if event_type != "tool_execution_end" or not tool_call_id or not tool_name:
+        return None
+    stored_name, args = tool_args.pop(tool_call_id, (tool_name, {}))
+    result = payload.get("result")
+    result_details = result.get("details") if isinstance(result, dict) else None
+    is_error = bool(payload.get("isError"))
+    return AgentActivityEvent(
+        turn_id=turn_id,
+        stage="execute_role",
+        label=_SOURCE_TOOL_LABELS.get(stored_name, "资料 Agent 已完成一次资料检查"),
+        status="failed" if is_error else "completed",
+        role="pi",
+        metadata={
+            "kind": "dynamicToolCall",
+            "agent_backend": "pi",
+            "provider": provider,
+            "model": model,
+            "tool_name": stored_name,
+            "tool_args": args,
+            "tool_details": result_details if isinstance(result_details, dict) else {},
+            "is_error": is_error,
+        },
+    )
