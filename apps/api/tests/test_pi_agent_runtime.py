@@ -218,19 +218,26 @@ import json
 import sys
 import time
 
-sys.stdin.read()
-print(json.dumps({"type": "agent_start"}), flush=True)
-time.sleep(0.2)
-print(json.dumps({
-    "type": "message_update",
-    "assistantMessageEvent": {"type": "text_start", "contentIndex": 0},
-}), flush=True)
-time.sleep(0.2)
-print(json.dumps({
-    "type": "message_end",
-    "message": {"role": "assistant", "content": [{"type": "text", "text": "{\\\"answer\\\":\\\"ok\\\"}"}]},
-}), flush=True)
-print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
+for line in sys.stdin:
+    command = json.loads(line)
+    if command["type"] == "set_auto_retry":
+        print(json.dumps({
+            "id": command["id"], "type": "response",
+            "command": "set_auto_retry", "success": True,
+        }), flush=True)
+    elif command["type"] == "prompt":
+        print(json.dumps({"type": "agent_start"}), flush=True)
+        time.sleep(0.2)
+        print(json.dumps({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_start", "contentIndex": 0},
+        }), flush=True)
+        time.sleep(0.2)
+        print(json.dumps({
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "{\\\"answer\\\":\\\"ok\\\"}"}]},
+        }), flush=True)
+        print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
 """,
         encoding="utf-8",
     )
@@ -264,22 +271,29 @@ import json
 import sys
 import time
 
-sys.stdin.read()
-print(json.dumps({"type": "agent_start"}), flush=True)
-print(json.dumps({
-    "type": "message_update",
-    "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "第一段"},
-}), flush=True)
-time.sleep(0.25)
-print(json.dumps({
-    "type": "message_update",
-    "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "第二段"},
-}), flush=True)
-print(json.dumps({
-    "type": "message_end",
-    "message": {"role": "assistant", "content": [{"type": "text", "text": "第一段第二段"}]},
-}), flush=True)
-print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
+for line in sys.stdin:
+    command = json.loads(line)
+    if command["type"] == "set_auto_retry":
+        print(json.dumps({
+            "id": command["id"], "type": "response",
+            "command": "set_auto_retry", "success": True,
+        }), flush=True)
+    elif command["type"] == "prompt":
+        print(json.dumps({"type": "agent_start"}), flush=True)
+        print(json.dumps({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "第一段"},
+        }), flush=True)
+        time.sleep(0.25)
+        print(json.dumps({
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "第二段"},
+        }), flush=True)
+        print(json.dumps({
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "第一段第二段"}]},
+        }), flush=True)
+        print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
 """,
         encoding="utf-8",
     )
@@ -399,9 +413,16 @@ import json
 import sys
 import time
 
-sys.stdin.read()
-print(json.dumps({"type": "agent_start"}), flush=True)
-time.sleep(30)
+for line in sys.stdin:
+    command = json.loads(line)
+    if command["type"] == "set_auto_retry":
+        print(json.dumps({
+            "id": command["id"], "type": "response",
+            "command": "set_auto_retry", "success": True,
+        }), flush=True)
+    elif command["type"] == "prompt":
+        print(json.dumps({"type": "agent_start"}), flush=True)
+        time.sleep(30)
 """,
         encoding="utf-8",
     )
@@ -467,6 +488,63 @@ def test_pi_client_does_not_retry_after_visible_text_was_streamed(tmp_path) -> N
         )
 
     assert calls == 1
+
+
+def test_pi_client_stops_an_internal_retry_before_duplicate_text(tmp_path) -> None:
+    fake_pi = tmp_path / "fake-pi-internal-retry"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+retry_disabled = False
+for line in sys.stdin:
+    command = json.loads(line)
+    if command["type"] == "set_auto_retry":
+        retry_disabled = command["enabled"] is False
+        print(json.dumps({
+            "id": command["id"], "type": "response",
+            "command": "set_auto_retry", "success": retry_disabled,
+        }), flush=True)
+    elif command["type"] == "prompt":
+        assert retry_disabled
+        print(json.dumps({"type": "agent_start"}), flush=True)
+        print(json.dumps({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_delta", "contentIndex": 0, "delta": "partial",
+            },
+        }), flush=True)
+        print(json.dumps({
+            "type": "auto_retry_start", "attempt": 1, "maxAttempts": 3,
+            "errorMessage": "WebSocket error",
+        }), flush=True)
+        print(json.dumps({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_delta", "contentIndex": 0, "delta": "duplicate",
+            },
+        }), flush=True)
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_pi, 0o700)
+    observed: list[str] = []
+
+    with pytest.raises(RuntimeError, match="WebSocket error"):
+        PiTextClient(
+            owner_user_id="user_test",
+            provider="openai_codex",
+            model="gpt-5.5",
+            binary=str(fake_pi),
+            runtime_root=tmp_path / "runtime",
+        ).complete_text(
+            system_prompt="Answer.",
+            user_prompt="Question",
+            on_text_delta=observed.append,
+        )
+
+    assert observed == ["partial"]
 
 
 def test_pi_client_accepts_a_bounded_request_timeout(monkeypatch, tmp_path) -> None:
