@@ -67,6 +67,7 @@ def test_pi_source_client_exposes_only_openclass_source_tools(
     assert command[command.index("--extension") + 1].endswith("pi_source_agent_extension.ts")
     assert kwargs["env"]["OPENCLASS_PI_SOURCE_FILE"] == "source.txt"
     assert kwargs["env"]["OPENCLASS_PI_SOURCE_SCRATCH"] == "scratch"
+    assert kwargs["env"]["OPENCLASS_PI_SOURCE_INSPECTION_SCOPE"] == "directory_only"
     assert response.source_turn_count == 1
     assert response.activity[0].metadata["source_tool_policy"] == (
         "openclass_read_only_directory_tools"
@@ -89,7 +90,7 @@ def test_pi_source_client_retries_a_mechanically_rejected_artifact(
 
     def validate(payload: object) -> None:
         if isinstance(payload, dict) and payload.get("nodes") == ["wrong"]:
-            raise ValueError("directory entries do not match the source")
+            raise RuntimeError("directory entries do not match the source")
 
     response = PiSourceTextClient(
         "user_test",

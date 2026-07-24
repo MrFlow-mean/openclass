@@ -84,6 +84,7 @@ def test_health_reports_provider_neutral_board_and_realtime_status(
 ) -> None:
     monkeypatch.setattr(main_module, "codex_app_server_runtime_enabled", lambda: True)
     monkeypatch.setattr(main_module, "codex_app_server_available", lambda: True)
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "false")
 
     response = api_client.get("/health")
 

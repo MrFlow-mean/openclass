@@ -527,18 +527,22 @@ def _text_model_selection(request: ChatRequest, *, user_id: str) -> AIModelSelec
     if request.text_model is not None:
         selected_model = request.text_model.model.strip()
         if request.text_model.provider in {"openai_codex", "deepseek"} and selected_model:
-            return request.text_model.model_copy(update={"model": selected_model})
+            return request.text_model.model_copy(
+                update={"model": selected_model, "agent_backend": "pi"}
+            )
         raise RuntimeError(f"Unsupported text model provider: {request.text_model.provider}")
     try:
         default_selection = build_model_catalog(user_id).defaults["text"]
         if isinstance(default_selection, AIModelSelection):
-            return default_selection
+            return default_selection.model_copy(update={"agent_backend": "pi"})
         return AIModelSelection(
+            agent_backend="pi",
             provider=getattr(default_selection, "provider", "openai_codex"),
             model=str(getattr(default_selection, "model", DEFAULT_CODEX_MODEL)),
         )
     except Exception:
         return AIModelSelection(
+            agent_backend="pi",
             provider="openai_codex",
             model=_codex_model(request, user_id=user_id),
         )

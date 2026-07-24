@@ -36,6 +36,24 @@ def pi_runtime_available() -> bool:
     return shutil.which("pi") is not None
 
 
+def pi_credentials_available(
+    *, owner_user_id: str, runtime_root: Path | None = None
+) -> bool:
+    """Report whether the selected Pi account directory has usable auth state."""
+    configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()
+    if configured_agent_dir:
+        agent_dir = Path(configured_agent_dir).expanduser().resolve()
+    else:
+        root = runtime_root or DATA_DIR / "pi-runtime"
+        owner_key = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:24]
+        agent_dir = root / "agents" / owner_key
+    auth_path = agent_dir / "auth.json"
+    try:
+        return auth_path.is_file() and auth_path.stat().st_size > 2
+    except OSError:
+        return False
+
+
 def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
     owner_key = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:24]
     configured_agent_dir = (os.getenv("OPENCLASS_PI_AGENT_DIR") or "").strip()

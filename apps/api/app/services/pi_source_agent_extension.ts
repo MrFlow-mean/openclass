@@ -27,6 +27,10 @@ const workspace = resolve(process.cwd());
 const sourcePath = resolve(workspace, requiredEnvironment("OPENCLASS_PI_SOURCE_FILE"));
 const scratchPath = resolve(workspace, requiredEnvironment("OPENCLASS_PI_SOURCE_SCRATCH"));
 const toolboxBin = resolve(requiredEnvironment("OPENCLASS_PI_SOURCE_TOOLBOX_BIN"));
+const inspectionScope = requiredEnvironment("OPENCLASS_PI_SOURCE_INSPECTION_SCOPE");
+if (inspectionScope !== "directory_only" && inspectionScope !== "source") {
+  throw new Error("OpenClass source runtime received an unsupported inspection scope");
+}
 const catalogPath = join(scratchPath, "catalog.json");
 const catalogHeaderPath = join(scratchPath, "catalog-header.json");
 const catalogNodesPath = join(scratchPath, "catalog-nodes.json");
@@ -377,11 +381,10 @@ export default function openClassPiSourceTools(pi: ExtensionAPI) {
         if (!state.started || !state.nodes.length) {
           throw new Error("A non-empty catalog checkpoint is required before final submission");
         }
-        const bytes = await atomicJsonWrite(catalogPath, {
-          complete: true,
-          pdf: state.pdf,
-          nodes: state.nodes,
-        });
+        const artifact = inspectionScope === "directory_only"
+          ? { complete: true, pdf: state.pdf, nodes: state.nodes }
+          : { complete: true, nodes: state.nodes };
+        const bytes = await atomicJsonWrite(catalogPath, artifact);
         const receipt = {
           artifact_path: "scratch/catalog.json",
           sha256: createHash("sha256").update(bytes).digest("hex"),

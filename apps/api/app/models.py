@@ -1331,7 +1331,9 @@ class AIAgentBackendOption(BaseModel):
 
 
 class AIModelSelection(BaseModel):
-    agent_backend: Literal["codex", "pi"] = "codex"
+    # Retain the legacy value for request and stored-metadata compatibility.
+    # Server-side runtime routing normalizes every text task to Pi.
+    agent_backend: Literal["codex", "pi"] = "pi"
     provider: AIProvider
     model: str
     reasoning_effort: str | None = None

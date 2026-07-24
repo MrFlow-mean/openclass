@@ -359,7 +359,7 @@ def test_directory_only_catalog_enforces_the_three_step_contract(tmp_path: Path)
     assert all(chapter.metadata["body_range_investigated"] is False for chapter in result.chapters)
 
 
-def test_directory_only_catalog_routes_pi_selection_to_pi_source_runtime(
+def test_directory_only_catalog_forces_pi_for_a_legacy_codex_selection(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -390,7 +390,7 @@ def test_directory_only_catalog_routes_pi_selection_to_pi_source_runtime(
         return client
 
     monkeypatch.setattr(source_codex_catalog_module, "PiSourceTextClient", build_client)
-    selection = _model().model_copy(update={"agent_backend": "pi"})
+    selection = _model().model_copy(update={"agent_backend": "codex"})
 
     result = generate_directory_only_catalog(
         record=_record(path),
@@ -481,7 +481,7 @@ def test_source_codex_materializes_exact_authored_pdf_ranges(tmp_path: Path) -> 
     ]
     assert [chapter.page_end for chapter in result.chapters] == [4, 3]
     assert all(chapter.mapping_status == "verified" for chapter in result.chapters)
-    assert all(chapter.metadata["source_range_authority"] == "source_codex" for chapter in result.chapters)
+    assert all(chapter.metadata["source_range_authority"] == "source_pi" for chapter in result.chapters)
 
 
 def test_source_codex_validator_rejects_a_child_outside_its_authored_parent(
@@ -949,7 +949,7 @@ def test_source_codex_rejects_unsupported_or_mismatched_suffix(tmp_path: Path) -
         )
 
 
-def test_production_processor_publishes_unmapped_catalog_without_indexes(
+def test_production_processor_publishes_verified_catalog_without_indexes(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -960,25 +960,25 @@ def test_production_processor_publishes_unmapped_catalog_without_indexes(
         update={"metadata": {"content_hash": content_hash}}
     )
     client = FakeSourceCodexClient(
-        _directory_only_catalog(
-            _directory_node(
+        _catalog(
+            _node(
                 "n1",
                 title="First",
-                directory_page=2,
-                printed_page=1,
+                source_range=_pdf_range(5, 44),
+                evidence=_pdf_evidence(5),
             ),
-            _directory_node(
+            _node(
                 "n1-1",
                 title="Child",
                 parent_key="n1",
                 level=2,
-                directory_page=3,
-                printed_page=21,
+                source_range=_pdf_range(25, 44),
+                evidence=_pdf_evidence(25),
             ),
         ),
         source_sha256=content_hash,
     )
-    direct_result = generate_directory_only_catalog(
+    direct_result = generate_codex_direct_catalog(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -987,7 +987,7 @@ def test_production_processor_publishes_unmapped_catalog_without_indexes(
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_directory_only_catalog",
+        "generate_codex_direct_catalog",
         lambda **_kwargs: direct_result,
     )
     monkeypatch.setattr(
@@ -1018,23 +1018,22 @@ def test_production_processor_publishes_unmapped_catalog_without_indexes(
     assert structure.metadata["vector_index_created"] is False
     assert structure.metadata["visual_index_created"] is False
     assert [chapter.title for chapter in view.chapters] == ["First", "Child"]
-    assert all(chapter.mapping_status == "unmapped" for chapter in view.chapters)
-    assert all(chapter.range is None for chapter in view.chapters)
-    assert view.task_contract == "directory_pages_offset_tree_v1"
+    assert all(chapter.mapping_status == "verified" for chapter in view.chapters)
+    assert [chapter.range.start for chapter in view.chapters if chapter.range] == [5, 25]
     runs = store.list_catalog_runs(
         owner_user_id=record.owner_user_id,
         package_id=record.package_id,
         source_id=record.id,
     )
     assert runs[-1].turn_count == 1
-    assert "directory_pages_offset_tree_verified" in runs[-1].stage_history
-    assert "validating_directory" in runs[-1].stage_history
+    assert "directory_and_ranges_verified" in runs[-1].stage_history
+    assert "validating_directory_ranges" in runs[-1].stage_history
     with sqlite3.connect(database) as conn:
         assert conn.execute("SELECT COUNT(*) FROM source_chunks").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM source_visual_assets").fetchone()[0] == 0
 
 
-def test_production_processor_persists_only_directory_pages_p_and_tree(
+def test_production_processor_persists_ranges_and_evidence(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1043,24 +1042,24 @@ def test_production_processor_persists_only_directory_pages_p_and_tree(
     content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
     client = FakeSourceCodexClient(
-        _directory_only_catalog(
-            _directory_node(
+        _catalog(
+            _node(
                 "chapter-1",
                 title="First",
-                directory_page=2,
-                printed_page=1,
+                source_range=_pdf_range(5, 24),
+                evidence=_pdf_evidence(5),
             ),
-            _directory_node(
+            _node(
                 "chapter-2",
                 title="Second",
-                directory_page=3,
-                printed_page=21,
+                source_range=_pdf_range(25, 44),
+                evidence=_pdf_evidence(25),
             ),
         ),
         source_sha256=content_hash,
         source_turn_count=2,
     )
-    direct_result = generate_directory_only_catalog(
+    direct_result = generate_codex_direct_catalog(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1069,7 +1068,7 @@ def test_production_processor_persists_only_directory_pages_p_and_tree(
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_directory_only_catalog",
+        "generate_codex_direct_catalog",
         lambda **_kwargs: direct_result,
     )
     store = SourceStructureStore(tmp_path / "openclass.sqlite3")
@@ -1087,24 +1086,16 @@ def test_production_processor_persists_only_directory_pages_p_and_tree(
     )
 
     assert structure.has_verified_toc is True
-    assert all(chapter.range is None for chapter in view.chapters)
-    assert all(not chapter.catalog_evidence for chapter in view.chapters)
-    assert structure.metadata["pdf_directory_task"] == {
-        "directory_pages": [2, 3],
-        "page_offset_p": 5,
-        "anchors": [
-            {"pdf_file_page": 5, "printed_page": 1},
-            {"pdf_file_page": 25, "printed_page": 21},
-            {"pdf_file_page": 45, "printed_page": 41},
-        ],
-    }
+    assert [chapter.range.start for chapter in view.chapters if chapter.range] == [5, 25]
+    assert all(chapter.catalog_evidence for chapter in view.chapters)
+    assert structure.metadata["catalog_authority"] == "source_pi"
     assert runs[-1].turn_count == 2
     assert "source_codex_investigation" in runs[-1].stage_history
-    assert "directory_pages_offset_tree_verified" in runs[-1].stage_history
-    assert "validating_directory" in runs[-1].stage_history
+    assert "directory_and_ranges_verified" in runs[-1].stage_history
+    assert "validating_directory_ranges" in runs[-1].stage_history
 
 
-def test_source_codex_directory_tree_publishes_without_body_mapping(
+def test_source_pi_directory_tree_publishes_with_body_mapping(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1113,23 +1104,23 @@ def test_source_codex_directory_tree_publishes_without_body_mapping(
     content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     record = _record(path).model_copy(update={"metadata": {"content_hash": content_hash}})
     client = FakeSourceCodexClient(
-        _directory_only_catalog(
-            _directory_node(
+        _catalog(
+            _node(
                 "chapter-1",
                 title="First",
-                directory_page=2,
-                printed_page=1,
+                source_range=_pdf_range(5, 24),
+                evidence=_pdf_evidence(5),
             ),
-            _directory_node(
+            _node(
                 "chapter-2",
                 title="Second",
-                directory_page=3,
-                printed_page=21,
+                source_range=_pdf_range(25, 44),
+                evidence=_pdf_evidence(25),
             ),
         ),
         source_sha256=content_hash,
     )
-    direct_result = generate_directory_only_catalog(
+    direct_result = generate_codex_direct_catalog(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1138,7 +1129,7 @@ def test_source_codex_directory_tree_publishes_without_body_mapping(
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_directory_only_catalog",
+        "generate_codex_direct_catalog",
         lambda **_kwargs: direct_result,
     )
 
@@ -1158,10 +1149,10 @@ def test_source_codex_directory_tree_publishes_without_body_mapping(
 
     assert structure.status == "ready"
     assert structure.has_verified_toc is True
-    assert all(chapter.mapping_status == "unmapped" for chapter in view.chapters)
-    assert all(chapter.metadata["body_range_investigated"] is False for chapter in view.chapters)
+    assert all(chapter.mapping_status == "verified" for chapter in view.chapters)
+    assert all(chapter.metadata["source_range_mapped"] is True for chapter in view.chapters)
     assert runs[-1].turn_count == 1
-    assert "source_codex_ranges_authored" not in runs[-1].stage_history
+    assert "directory_and_ranges_verified" in runs[-1].stage_history
 
 
 def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) -> None:
@@ -1172,23 +1163,23 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
         update={"metadata": {"content_hash": content_hash}}
     )
     client = FakeSourceCodexClient(
-        _directory_only_catalog(
-            _directory_node(
+        _catalog(
+            _node(
                 "n1",
                 title="Published",
-                directory_page=2,
-                printed_page=1,
+                source_range=_pdf_range(5, 24),
+                evidence=_pdf_evidence(5),
             ),
-            _directory_node(
+            _node(
                 "n2",
                 title="Published second",
-                directory_page=3,
-                printed_page=21,
+                source_range=_pdf_range(25, 44),
+                evidence=_pdf_evidence(25),
             ),
         ),
         source_sha256=content_hash,
     )
-    successful_result = generate_directory_only_catalog(
+    successful_result = generate_codex_direct_catalog(
         record=record,
         source_path=path,
         source_content_hash=content_hash,
@@ -1197,7 +1188,7 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
     )
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_directory_only_catalog",
+        "generate_codex_direct_catalog",
         lambda **_kwargs: successful_result,
     )
     store = SourceStructureStore(tmp_path / "openclass.sqlite3")
@@ -1209,7 +1200,7 @@ def test_failed_rebuild_preserves_previous_catalog(monkeypatch, tmp_path: Path) 
 
     monkeypatch.setattr(
         directory_processor_module,
-        "generate_directory_only_catalog",
+        "generate_codex_direct_catalog",
         fail_catalog,
     )
     with pytest.raises(SourceDirectoryProcessingError, match="single-turn"):

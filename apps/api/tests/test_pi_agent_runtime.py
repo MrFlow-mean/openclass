@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.services.pi_agent_runtime import PiTextClient
 from app.models import AIModelSelection
-from app.services import ai_execution_adapter
+from app.services import ai_execution_adapter, pi_agent_runtime
 
 
 class _Answer(BaseModel):
@@ -38,6 +38,7 @@ def test_pi_client_runs_without_tools_or_discovered_resources(
     tmp_path,
 ) -> None:
     monkeypatch.delenv("OPENCLASS_PI_AGENT_DIR", raising=False)
+    monkeypatch.setattr(pi_agent_runtime, "load_root_dotenv", lambda: None)
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def run(command, **kwargs):
@@ -127,7 +128,7 @@ def test_pi_client_maps_codex_provider_and_repairs_invalid_json(tmp_path) -> Non
     assert commands[0][-2:] == ["--thinking", "high"]
 
 
-def test_pi_backend_builds_pi_adapter_independently_of_provider(monkeypatch) -> None:
+def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakePiTextClient:
@@ -143,7 +144,7 @@ def test_pi_backend_builds_pi_adapter_independently_of_provider(monkeypatch) -> 
     monkeypatch.setattr(ai_execution_adapter, "PiTextClient", FakePiTextClient)
     adapter = ai_execution_adapter.build_ai_execution_adapter(
         AIModelSelection(
-            agent_backend="pi",
+            agent_backend="codex",
             provider="deepseek",
             model="deepseek-v4-flash",
         ),

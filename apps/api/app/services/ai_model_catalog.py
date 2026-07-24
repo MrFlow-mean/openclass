@@ -11,33 +11,33 @@ from app.models import (
     AIReasoningEffortOption,
     AIServiceTierOption,
 )
-from app.services.codex_app_server import (
-    CODEX_DEFAULT_MODELS,
-    codex_provider_status,
-    list_codex_models,
-)
 from app.services.deepseek_api import (
     DEEPSEEK_CURATED_MODELS,
     deepseek_config,
 )
-from app.services.pi_agent_runtime import pi_runtime_available
+from app.services.pi_agent_runtime import pi_credentials_available, pi_runtime_available
 
 
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
+PI_OPENAI_CODEX_MODELS = (
+    ("gpt-5.5", "OpenAI GPT-5.5"),
+    ("gpt-5.4", "OpenAI GPT-5.4"),
+    ("gpt-5.4-mini", "OpenAI GPT-5.4 Mini"),
+    ("gpt-5.3-codex-spark", "OpenAI GPT-5.3 Codex Spark"),
+)
 
 
 def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
     codex_option = AIAgentBackendOption(
         id="codex",
         label="Codex Agent",
-        description="使用当前 Codex Agent 运行框架。",
-        enabled=True,
+        description="Codex 后端已停用，仅保留回退适配器。",
+        enabled=False,
     )
     pi_available = pi_runtime_available()
     teaching_options = [
-        codex_option,
         AIAgentBackendOption(
             id="pi",
             label="Pi Agent",
@@ -48,11 +48,11 @@ def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
             ),
             enabled=pi_available,
         ),
+        codex_option,
     ]
     return {
         "teaching": teaching_options,
         "source": [
-            codex_option.model_copy(),
             AIAgentBackendOption(
                 id="pi",
                 label="Pi Agent",
@@ -63,6 +63,7 @@ def _agent_backend_options() -> dict[str, list[AIAgentBackendOption]]:
                 ),
                 enabled=pi_available,
             ),
+            codex_option.model_copy(),
         ],
     }
 
@@ -106,33 +107,11 @@ def _configured_secret(name: str) -> bool:
     )
 
 
-def _fallback_codex_models() -> tuple[dict[str, Any], ...]:
+def _pi_text_models() -> tuple[dict[str, Any], ...]:
     return tuple(
-        {
-            "model": model,
-            "displayName": label.removeprefix("OpenAI Codex "),
-        }
-        for model, label in CODEX_DEFAULT_MODELS
+        {"model": model, "displayName": label}
+        for model, label in PI_OPENAI_CODEX_MODELS
     )
-
-
-def _codex_text_models(user_id: str) -> tuple[dict[str, Any], ...]:
-    try:
-        models = list_codex_models(user_id)
-    except Exception:
-        return _fallback_codex_models()
-    options: list[dict[str, Any]] = []
-    for item in models:
-        if not isinstance(item, dict):
-            continue
-        model = str(item.get("model") or item.get("id") or "").strip()
-        if not model:
-            continue
-        display_name = str(
-            item.get("displayName") or item.get("display_name") or model
-        ).strip()
-        options.append({**item, "model": model, "displayName": display_name})
-    return tuple(options) or _fallback_codex_models()
 
 
 def _reasoning_efforts(item: dict[str, Any]) -> list[AIReasoningEffortOption]:
@@ -194,7 +173,10 @@ def _default_model_id(models: list[dict[str, Any]]) -> str:
 
 
 def build_model_catalog(user_id: str) -> AIModelCatalog:
-    status = codex_provider_status(user_id, refresh=False)
+    pi_available = pi_runtime_available()
+    pi_openai_configured = pi_available and pi_credentials_available(
+        owner_user_id=user_id
+    )
     shared_deepseek = deepseek_config()
     realtime_default = default_realtime_selection()
     realtime_configured = _configured_secret("OPENAI_API_KEY")
@@ -205,7 +187,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     ]
     if not any(model == realtime_default.model for model, _label in realtime_models):
         realtime_models.insert(0, (realtime_default.model, f"OpenAI {realtime_default.model}"))
-    models = list(_codex_text_models(user_id))
+    models = list(_pi_text_models())
     default_model_id = _default_model_id(models)
     if not any(item["model"] == default_model_id for item in models):
         models.insert(
@@ -218,8 +200,8 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
             model=str(item["model"]),
             label=f"OpenAI Codex {item['displayName']}",
             capability="text",
-            enabled=status.configured,
-            configured=status.configured,
+            enabled=pi_openai_configured,
+            configured=pi_openai_configured,
             default=item["model"] == default_model_id,
             default_reasoning_effort=_optional_string(
                 item.get("defaultReasoningEffort")
@@ -237,7 +219,7 @@ def build_model_catalog(user_id: str) -> AIModelCatalog:
     deepseek_models = list(DEEPSEEK_CURATED_MODELS)
     if not any(model == shared_deepseek.model for model, _label in deepseek_models):
         deepseek_models.insert(0, (shared_deepseek.model, f"DeepSeek {shared_deepseek.model}"))
-    deepseek_is_default = shared_deepseek.configured and not status.configured
+    deepseek_is_default = shared_deepseek.configured and not pi_openai_configured
     text_options.extend(
         AIModelOption(
             provider="deepseek",

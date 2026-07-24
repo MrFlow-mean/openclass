@@ -397,22 +397,14 @@ def build_ai_execution_adapter(
     board_runner: BoardRunner | None = None,
     image_analysis_runner: ImageAnalysisRunner | None = None,
 ) -> AIExecutionAdapter:
-    if selection.agent_backend == "pi":
-        return PiAIExecutionAdapter(
-            owner_user_id=owner_user_id,
-            provider=selection.provider,
-            model=selection.model,
-            reasoning_effort=selection.reasoning_effort,
-        )
-    if selection.provider == "openai_codex":
-        return CodexAIExecutionAdapter(
-            owner_user_id=owner_user_id,
-            model=selection.model,
-            reasoning_effort=selection.reasoning_effort,
-            service_tier=selection.service_tier,
-            board_runner=board_runner,
-            image_analysis_runner=image_analysis_runner,
-        )
-    if selection.provider == "deepseek":
-        return DeepSeekAIExecutionAdapter(model=selection.model)
-    raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
+    del board_runner, image_analysis_runner
+    if selection.provider not in {"openai_codex", "deepseek"}:
+        raise RuntimeError(f"Unsupported text model provider: {selection.provider}")
+    # Runtime selection is server-owned. Cached clients and stored records may
+    # still carry agent_backend="codex", but no text task routes back to Codex.
+    return PiAIExecutionAdapter(
+        owner_user_id=owner_user_id,
+        provider=selection.provider,
+        model=selection.model,
+        reasoning_effort=selection.reasoning_effort,
+    )

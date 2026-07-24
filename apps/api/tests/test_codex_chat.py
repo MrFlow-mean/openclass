@@ -30,6 +30,7 @@ from app.models import (
     SourceVisualEvidence,
 )
 from app.services import (
+    ai_execution_adapter,
     blank_board_intake,
     board_visual_insertion,
     chat_attachments,
@@ -66,6 +67,7 @@ from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VE
 
 
 TEST_USER_ID = "user_codex_chat"
+PRODUCTION_TEXT_MODEL_SELECTION = codex_chat._text_model_selection
 
 
 def test_chat_attachments_are_verified_materialized_and_sent_as_images(
@@ -986,7 +988,15 @@ def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent
     def fail_if_board_agent_runs(**_kwargs):
         raise AssertionError("ordinary chat must not enter the board agent")
 
-    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    class FakePiAdapter:
+        def parse_structured(self, **kwargs):
+            return fake_parse(self, **kwargs)
+
+    monkeypatch.setattr(
+        codex_chat,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakePiAdapter(),
+    )
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fail_if_board_agent_runs)
 
     response = codex_chat.process_codex_chat_on_lesson(
@@ -1040,7 +1050,15 @@ def test_empty_board_live_chat_failure_does_not_commit_or_change_requirements(
             )
         )
 
-    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    class FakePiAdapter:
+        def parse_structured(self, **kwargs):
+            return fake_parse(self, **kwargs)
+
+    monkeypatch.setattr(
+        codex_chat,
+        "build_ai_execution_adapter",
+        lambda *_args, **_kwargs: FakePiAdapter(),
+    )
 
     with pytest.raises(CodexAppServerError, match="live web search failed"):
         codex_chat.process_codex_chat_on_lesson(
@@ -2513,6 +2531,37 @@ def codex_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "delete_codex_thread",
         lambda _thread_id, **_kwargs: None,
     )
+
+    # This historical suite exercises the retained Codex rollback adapter by
+    # replacing its app-server calls with fakes. Production routing is covered
+    # separately and always normalizes the public request to Pi.
+    def legacy_text_model_selection(request: ChatRequest, *, user_id: str):
+        return PRODUCTION_TEXT_MODEL_SELECTION(
+            request,
+            user_id=user_id,
+        ).model_copy(update={"agent_backend": "codex"})
+
+    def legacy_adapter(selection, **kwargs):
+        if selection.agent_backend == "pi":
+            return ai_execution_adapter.PiAIExecutionAdapter(
+                owner_user_id=kwargs["owner_user_id"],
+                provider=selection.provider,
+                model=selection.model,
+                reasoning_effort=selection.reasoning_effort,
+            )
+        if selection.provider == "openai_codex":
+            return ai_execution_adapter.CodexAIExecutionAdapter(
+                owner_user_id=kwargs["owner_user_id"],
+                model=selection.model,
+                reasoning_effort=selection.reasoning_effort,
+                service_tier=selection.service_tier,
+                board_runner=kwargs.get("board_runner"),
+                image_analysis_runner=kwargs.get("image_analysis_runner"),
+            )
+        return ai_execution_adapter.DeepSeekAIExecutionAdapter(model=selection.model)
+
+    monkeypatch.setattr(codex_chat, "_text_model_selection", legacy_text_model_selection)
+    monkeypatch.setattr(codex_chat, "build_ai_execution_adapter", legacy_adapter)
     return store
 
 
@@ -3913,11 +3962,16 @@ def test_deepseek_selection_uses_shared_provider_for_an_authorized_board_edit(
     assert codex_chat._StructuredExistingBoardTurn in calls
 
 
-def test_pi_backend_uses_structured_workflow_with_a_codex_provider_model(
+def test_chat_normalizes_a_legacy_codex_backend_request_to_pi(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="# Existing\n\nOriginal content.")
+    monkeypatch.setattr(
+        codex_chat,
+        "_text_model_selection",
+        PRODUCTION_TEXT_MODEL_SELECTION,
+    )
 
     class FakePiAdapter:
         def parse_structured(self, **kwargs):
@@ -3942,7 +3996,7 @@ def test_pi_backend_uses_structured_workflow_with_a_codex_provider_model(
         ChatRequest(
             message="Explain this paragraph.",
             text_model={
-                "agent_backend": "pi",
+                "agent_backend": "codex",
                 "provider": "openai_codex",
                 "model": "gpt-5.5",
             },
