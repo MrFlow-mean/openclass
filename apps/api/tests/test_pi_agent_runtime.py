@@ -33,6 +33,25 @@ def _pi_stdout(content: str) -> str:
     )
 
 
+def _pi_error_stdout(message: str) -> str:
+    return "\n".join(
+        [
+            json.dumps({"type": "agent_start"}),
+            json.dumps(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [],
+                        "errorMessage": message,
+                    },
+                }
+            ),
+            json.dumps({"type": "agent_end", "messages": []}),
+        ]
+    )
+
+
 def test_pi_client_runs_without_tools_or_discovered_resources(
     monkeypatch,
     tmp_path,
@@ -94,6 +113,65 @@ def test_pi_client_accepts_a_bounded_request_timeout(monkeypatch, tmp_path) -> N
     ).parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
 
     assert calls[0]["timeout"] == 420
+
+
+def test_pi_client_retries_one_transient_websocket_failure(tmp_path) -> None:
+    outputs = iter(
+        [
+            _pi_error_stdout("WebSocket error"),
+            _pi_stdout('{"answer":"recovered"}'),
+        ]
+    )
+    calls = 0
+
+    def run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(command, 0, next(outputs), "")
+
+    response = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    ).parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
+
+    assert response.output_parsed.answer == "recovered"
+    assert calls == 2
+
+
+def test_pi_client_does_not_retry_a_non_transient_failure(tmp_path) -> None:
+    calls = 0
+
+    def run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _pi_error_stdout("Invalid authentication"),
+            "",
+        )
+
+    client = PiTextClient(
+        owner_user_id="user_test",
+        provider="openai_codex",
+        model="gpt-5.5",
+        binary="/test/pi",
+        runtime_root=tmp_path,
+        process_runner=run,
+    )
+
+    try:
+        client.parse(system_prompt="Answer.", user_prompt="Question", schema=_Answer)
+    except RuntimeError as error:
+        assert str(error) == "Pi model request failed: Invalid authentication"
+    else:  # pragma: no cover - guards retry classification
+        raise AssertionError("non-transient Pi failure was accepted")
+
+    assert calls == 1
 
 
 def test_pi_client_rejects_an_invalid_request_timeout(monkeypatch, tmp_path) -> None:
