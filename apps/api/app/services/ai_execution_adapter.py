@@ -347,6 +347,7 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         model: str,
         reasoning_effort: str | None = None,
     ) -> None:
+        self.provider = provider
         self.model = model
         self._client = PiTextClient(
             owner_user_id=owner_user_id,
@@ -365,19 +366,114 @@ class PiAIExecutionAdapter(DeepSeekAIExecutionAdapter):
         allow_live_web_search: bool = False,
         on_activity: Callable[[AgentActivityEvent], None] | None = None,
     ) -> StructuredExecutionResult:
-        response = self._client.parse(
+        return self._parse_with_visible_activity(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
             image_inputs=image_inputs,
+            on_activity=on_activity,
+            running_label="OpenClass 正在处理当前步骤",
+            completed_label="OpenClass 已完成当前步骤",
+            failed_label="OpenClass 当前步骤未完成",
+            activity_kind="structured_model_step",
         )
-        for event in response.activity:
+
+    def _parse_with_visible_activity(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredModel],
+        image_inputs: list[str] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+        running_label: str,
+        completed_label: str,
+        failed_label: str,
+        activity_kind: str,
+    ) -> StructuredExecutionResult:
+        lifecycle_event = AgentActivityEvent(
+            turn_id=new_id("piworkflow"),
+            stage="execute_role",
+            label=running_label,
+            status="running",
+            role="OpenClass",
+            metadata={
+                "kind": activity_kind,
+                "agent_backend": "pi",
+                "provider": self.provider,
+                "model": self.model,
+            },
+        )
+        if on_activity is not None:
+            on_activity(lifecycle_event)
+        try:
+            response = self._client.parse(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                image_inputs=image_inputs,
+            )
+        except Exception:
+            failed_event = lifecycle_event.model_copy(
+                update={"label": failed_label, "status": "failed"}
+            )
             if on_activity is not None:
-                on_activity(event)
+                on_activity(failed_event)
+            raise
+        completed_event = lifecycle_event.model_copy(
+            update={"label": completed_label, "status": "completed"}
+        )
+        if on_activity is not None:
+            on_activity(completed_event)
         return StructuredExecutionResult(
             output_parsed=response.output_parsed,
+            activity=[completed_event],
+        )
+
+    def generate_board(
+        self,
+        request: BoardGenerationExecutionRequest,
+        *,
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> tuple[BoardGenerationExecutionResult, str]:
+        if is_cancelled is not None and is_cancelled():
+            raise RuntimeError(f"{self.runtime_label} board generation was cancelled")
+        response = self._parse_with_visible_activity(
+            system_prompt=STRUCTURED_BOARD_GENERATION_INSTRUCTIONS,
+            user_prompt=(
+                "Frozen board-generation payload:\n"
+                + json.dumps(
+                    {
+                        "learning_requirement": request.requirement.model_dump(mode="json"),
+                        "teaching_plan": request.teaching_plan,
+                        "visual_manifest": request.visual_manifest,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ),
+            schema=_StructuredBoardResponse,
+            image_inputs=request.image_inputs,
+            on_activity=on_activity,
+            running_label="OpenClass 正在生成板书",
+            completed_label="OpenClass 已生成板书",
+            failed_label="OpenClass 板书生成未完成",
+            activity_kind="board_generation",
+        )
+        output = _StructuredBoardResponse.model_validate(response.output_parsed)
+        if not output.content_text.strip():
+            raise RuntimeError(
+                f"{self.runtime_label} board generation returned empty content"
+            )
+        turn_id = response.activity[0].turn_id
+        result = StructuredBoardGenerationResult(
+            thread_id=turn_id,
+            turn_id=turn_id,
+            final_response=output.chatbot_message.strip(),
             activity=response.activity,
         )
+        return result, output.content_text
 
     def analyze_image_batch(
         self,

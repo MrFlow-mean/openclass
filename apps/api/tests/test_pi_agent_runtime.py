@@ -130,12 +130,14 @@ def test_pi_client_maps_codex_provider_and_repairs_invalid_json(tmp_path) -> Non
 
 def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypatch) -> None:
     captured: dict[str, object] = {}
+    observed_activity = []
 
     class FakePiTextClient:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
         def parse(self, **kwargs):
+            assert observed_activity[0].status == "running"
             return SimpleNamespace(
                 output_parsed=kwargs["schema"](answer="through pi"),
                 activity=[],
@@ -155,6 +157,7 @@ def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypat
         system_prompt="Answer.",
         user_prompt="Question",
         schema=_Answer,
+        on_activity=observed_activity.append,
     )
 
     assert captured == {
@@ -164,3 +167,6 @@ def test_server_forces_pi_adapter_for_a_legacy_codex_backend_selection(monkeypat
         "reasoning_effort": None,
     }
     assert result.output_parsed.answer == "through pi"
+    assert [event.status for event in observed_activity] == ["running", "completed"]
+    assert observed_activity[0].id == observed_activity[1].id
+    assert result.activity == [observed_activity[1]]
