@@ -15,7 +15,7 @@ type SourceProcessingProgressProps = {
 type SourceProcessingState = {
   label: string;
   detail?: string;
-  value: number;
+  value?: number;
   activity?: AgentActivityEvent[];
 };
 
@@ -198,6 +198,8 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
   if (job && ACTIVE_JOB_STATUSES.has(job.status)) {
     const phase = job.phase_history.at(-1) ?? "";
     const sourceProgress = latestSourceProgress(job.agent_activity ?? []);
+    const isAwaitingMeasuredAgentProgress =
+      isDirectoryCatalog && phase === "source_codex_investigation" && sourceProgress === null;
     return {
       label:
         sourceProgress?.label ??
@@ -205,7 +207,7 @@ export function getSourceProcessingState(source: SourceIngestionRecord): SourceP
         statusProgress[job.status]?.label ??
         (isDirectoryCatalog ? "正在建立目录" : "正在处理资料"),
       detail: sourceProgress?.detail,
-      value: job.progress,
+      value: isAwaitingMeasuredAgentProgress ? undefined : job.progress,
       activity: job.agent_activity ?? [],
     };
   }
