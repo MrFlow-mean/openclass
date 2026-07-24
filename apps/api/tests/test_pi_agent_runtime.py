@@ -91,7 +91,7 @@ def test_pi_client_runs_without_tools_or_discovered_resources(
     assert "--no-context-files" in command
     assert kwargs["input"] == "Question"
     assert kwargs["env"]["PI_TELEMETRY"] == "0"
-    assert kwargs["timeout"] == 300
+    assert kwargs["timeout"] == 600
     assert str(kwargs["env"]["PI_CODING_AGENT_DIR"]).startswith(str(tmp_path))
 
 

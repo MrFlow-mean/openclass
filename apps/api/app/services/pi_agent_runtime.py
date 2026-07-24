@@ -24,7 +24,7 @@ from app.services.structured_output import (
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 PiProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
-PI_REQUEST_TIMEOUT_SECONDS = 5 * 60
+PI_REQUEST_TIMEOUT_SECONDS = 10 * 60
 PI_TRANSIENT_RETRY_ATTEMPTS = 1
 PI_TRANSIENT_ERROR_MARKERS = (
     "websocket error",
