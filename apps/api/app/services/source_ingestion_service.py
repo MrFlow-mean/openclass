@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import ipaddress
 import os
 import re
@@ -76,6 +77,7 @@ SUPPORTED_FILE_MIME_PREFIXES = (
 
 _DIRECTORY_CATALOG_LOCKS_GUARD = threading.Lock()
 _DIRECTORY_CATALOG_LOCKS: dict[tuple[str, str, str, str], threading.RLock] = {}
+_DIRECTORY_CATALOG_LOCK_DEPTH = threading.local()
 
 
 @contextmanager
@@ -93,7 +95,28 @@ def _directory_catalog_processing_slot(
     with _DIRECTORY_CATALOG_LOCKS_GUARD:
         lock = _DIRECTORY_CATALOG_LOCKS.setdefault(key, threading.RLock())
     with lock:
-        yield
+        depths = getattr(_DIRECTORY_CATALOG_LOCK_DEPTH, "values", None)
+        if depths is None:
+            depths = {}
+            _DIRECTORY_CATALOG_LOCK_DEPTH.values = depths
+        if depths.get(key, 0):
+            depths[key] += 1
+            try:
+                yield
+            finally:
+                depths[key] -= 1
+            return
+        lock_directory = database_path.parent / "source-ingestion-locks"
+        lock_directory.mkdir(parents=True, exist_ok=True)
+        lock_name = hashlib.sha256("\0".join(key).encode("utf-8")).hexdigest()
+        with (lock_directory / f"{lock_name}.lock").open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            depths[key] = 1
+            try:
+                yield
+            finally:
+                depths.pop(key, None)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class SourceIngestionError(RuntimeError):
@@ -342,20 +365,20 @@ class SourceIngestionService:
         )
         if record is None:
             raise SourceIngestionError("Source not found.")
-        if supports_directory_catalog(record):
-            with _directory_catalog_processing_slot(
-                database_path=self.store.path,
-                record=record,
-            ):
-                current = self.store.get_source(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    source_id=source_id,
-                )
-                if current is None:
-                    raise SourceIngestionError("Source not found.")
-                return self._process_file_source_unlocked(current)
-        return self._process_file_source_unlocked(record)
+        with _directory_catalog_processing_slot(
+            database_path=self.store.path,
+            record=record,
+        ):
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if current is None:
+                raise SourceIngestionError("Source not found.")
+            if current.status in {"ready", "failed"}:
+                return self._attach_job(self.structure_store.attach_summary(current))
+            return self._process_file_source_unlocked(current)
 
     def _process_file_source_unlocked(
         self,
@@ -724,20 +747,18 @@ class SourceIngestionService:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
-        if supports_directory_catalog(record):
-            with _directory_catalog_processing_slot(
-                database_path=self.store.path,
-                record=record,
-            ):
-                current = self.store.get_source(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    source_id=source_id,
-                )
-                if current is None:
-                    return None
-                return self._retry_source_unlocked(current)
-        return self._retry_source_unlocked(record)
+        with _directory_catalog_processing_slot(
+            database_path=self.store.path,
+            record=record,
+        ):
+            current = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if current is None:
+                return None
+            return self._retry_source_unlocked(current)
 
     def _retry_source_unlocked(self, record: SourceIngestionRecord) -> SourceIngestionRecord | None:
         record = _repair_local_source_storage(record)
