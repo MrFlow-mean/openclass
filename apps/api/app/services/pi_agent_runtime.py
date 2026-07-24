@@ -24,6 +24,7 @@ from app.services.structured_output import (
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
 PiProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
+PI_REQUEST_TIMEOUT_SECONDS = 5 * 60
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,21 @@ def pi_agent_directory(*, owner_user_id: str, runtime_root: Path) -> Path:
 
 def _pi_provider(provider: str) -> str:
     return "openai-codex" if provider == "openai_codex" else provider.replace("_", "-")
+
+
+def _pi_request_timeout_seconds() -> int:
+    raw = (os.getenv("OPENCLASS_PI_REQUEST_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return PI_REQUEST_TIMEOUT_SECONDS
+    try:
+        timeout = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("OPENCLASS_PI_REQUEST_TIMEOUT_SECONDS must be an integer") from exc
+    if not 30 <= timeout <= 30 * 60:
+        raise RuntimeError(
+            "OPENCLASS_PI_REQUEST_TIMEOUT_SECONDS must be between 30 and 1800 seconds"
+        )
+    return timeout
 
 
 def _assistant_text(stdout: str) -> str:
@@ -173,6 +189,7 @@ class PiTextClient:
             }
         )
         with tempfile.TemporaryDirectory(prefix="turn-", dir=workspace_root) as temporary:
+            timeout_seconds = _pi_request_timeout_seconds()
             try:
                 result = self._process_runner(
                     self._command(system_prompt=system_prompt),
@@ -181,11 +198,13 @@ class PiTextClient:
                     capture_output=True,
                     cwd=temporary,
                     env=environment,
-                    timeout=180,
+                    timeout=timeout_seconds,
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
-                raise RuntimeError("Pi model request timed out") from exc
+                raise RuntimeError(
+                    f"Pi model request timed out after {timeout_seconds} seconds"
+                ) from exc
         if result.returncode != 0:
             detail = (result.stderr or "").strip()[-600:]
             raise RuntimeError(
