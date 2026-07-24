@@ -66,6 +66,21 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
 const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
 const ACTIVE_STRUCTURE_STATUSES = new Set<SourceIngestionRecord["structure_status"]>(["pending", "building"]);
 const CATALOG_MODEL_STORAGE_KEY = "blackboard-ai:selected-catalog-model";
+const sourceRefreshRequests = new Map<string, Promise<SourceIngestionRecord[]>>();
+
+function listPackageSourcesOnce(packageId: string) {
+  const currentRequest = sourceRefreshRequests.get(packageId);
+  if (currentRequest) {
+    return currentRequest;
+  }
+  const request = api.listPackageSources(packageId).finally(() => {
+    if (sourceRefreshRequests.get(packageId) === request) {
+      sourceRefreshRequests.delete(packageId);
+    }
+  });
+  sourceRefreshRequests.set(packageId, request);
+  return request;
+}
 
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
@@ -93,6 +108,7 @@ export function SourceImportPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const didRestoreCatalogModelRef = useRef(false);
+  const isRefreshingSourcesRef = useRef(false);
   const {
     ensureCurrentSource,
     invalidateSource,
@@ -152,16 +168,18 @@ export function SourceImportPanel({
   }, [onError, packageId, prefetchPackage, sources]);
 
   const refreshSources = useCallback(async () => {
-    if (!packageId) {
+    if (!packageId || isRefreshingSourcesRef.current) {
       return;
     }
+    isRefreshingSourcesRef.current = true;
     setIsLoading(true);
     try {
-      setSources(await api.listPackageSources(packageId));
+      setSources(await listPackageSourcesOnce(packageId));
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料列表读取失败");
     } finally {
       setIsLoading(false);
+      isRefreshingSourcesRef.current = false;
     }
   }, [onError, packageId]);
 
@@ -487,7 +505,6 @@ export function SourceImportPanel({
                   );
                 }}
                 onCatalogInvalidate={() => invalidateSource(source.id)}
-                onRefresh={refreshSources}
               />
             ))}
           </div>
@@ -563,7 +580,6 @@ function SourceRow({
   onSourceUpdate,
   onCatalogUpdate,
   onCatalogInvalidate,
-  onRefresh,
 }: {
   packageId: string;
   source: SourceIngestionRecord;
@@ -581,7 +597,6 @@ function SourceRow({
   onSourceUpdate: (source: SourceIngestionRecord) => void;
   onCatalogUpdate: (catalog: SourceCatalogView) => void;
   onCatalogInvalidate: () => void;
-  onRefresh: () => Promise<void>;
 }) {
   const [isStructureOpen, setIsStructureOpen] = useState(false);
   const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
@@ -620,17 +635,6 @@ function SourceRow({
     structureQualityLevel
   );
   const processingState = getSourceProcessingState(source);
-
-  useEffect(() => {
-    if (!isRebuildingStructure && !isRetrying) {
-      return;
-    }
-    void onRefresh();
-    const intervalId = window.setInterval(() => {
-      void onRefresh();
-    }, 1000);
-    return () => window.clearInterval(intervalId);
-  }, [isRebuildingStructure, isRetrying, onRefresh]);
 
   function toggleStructure() {
     if (!isReady) {
